@@ -33,9 +33,36 @@ def make_agent(a):
     raise SystemExit(f"unknown agent {a.agent}")
 
 
+def load_env(path: Path) -> None:
+    """Read KEY=VALUE lines from a private .env file (git-ignored). Values already set in the
+    shell win. Never prints or logs anything it reads."""
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key, value = key.strip().removeprefix("export ").strip(), value.strip().strip('"').strip("'")
+        if key and value and not os.environ.get(key):
+            os.environ[key] = value
+
+
+def missing_modules(a) -> list[str]:
+    import importlib.util
+    needed = ["pytest"]
+    if a.agent == "claude-sdk":
+        needed.append("claude_agent_sdk")
+    if a.sandbox == "daytona":
+        needed.append("daytona")
+    return [m for m in needed if importlib.util.find_spec(m) is None]
+
+
 def preflight(a) -> list[str]:
     """Catch missing setup before spending any money."""
     problems = []
+    if missing := missing_modules(a):
+        problems.append(f"missing Python packages: {', '.join(missing)}. Run: pip install {' '.join(m.replace('_', '-') for m in missing)}")
     if a.agent.startswith("claude") and not os.environ.get("ANTHROPIC_API_KEY"):
         problems.append("ANTHROPIC_API_KEY is not set")
     if a.sandbox == "daytona":
@@ -91,6 +118,7 @@ def main():
     p.add_argument("--repo-url", help="GitHub repo URL for --sandbox daytona")
     a = p.parse_args()
 
+    load_env(ROOT / ".env")
     if problems := preflight(a):
         print("Not ready to run:\n- " + "\n- ".join(problems))
         sys.exit(2)
