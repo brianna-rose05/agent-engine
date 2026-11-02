@@ -74,6 +74,28 @@ def test_feedback_from_failure_reaches_next_attempt(tmp_path):
     assert seen[0] is None and "acceptance tests failed" in seen[1] and "Test output" in seen[1]
 
 
+def test_unrunnable_test_command_is_a_setup_error_not_agent_failure(tmp_path):
+    """Regression (first Daytona run): tests were launched with this Mac's Python path, which
+    didn't exist in the sandbox. Every attempt 'failed', retries were wasted, and 24 false
+    silent failures were recorded. Now it stops at once and reports a setup error."""
+    repo = build_repo(tmp_path / "r")
+    calls = []
+
+    class Counting(ReferenceAgent):
+        def run(self, task, box, attempt, feedback):
+            calls.append(attempt)
+            return super().run(task, box, attempt, feedback)
+
+    task = load_tasks(["B6"], python="/Users/someone/.venv/bin/python3")[0]   # path missing here
+    r = engine(repo, Counting(HERE / "solutions")).run_task(task)
+    assert r.status == "error" and "could not run" in r.error
+    assert calls == [1] and r.silent_failures == 0                          # no wasted retries
+
+
+def test_cloud_tasks_use_the_sandbox_python():
+    assert load_tasks(["B1"], python="python3")[0].test_cmd.startswith("python3 -m pytest")
+
+
 def test_infra_crash_is_reported_not_hidden(tmp_path):
     repo = build_repo(tmp_path / "r")
 

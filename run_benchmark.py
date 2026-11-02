@@ -97,16 +97,19 @@ def main():
 
     out = ROOT / "results" / f"{datetime.now():%Y%m%d-%H%M%S}-{a.agent}-{a.sandbox}"
     repo = build_repo(out / "repo")
-    tasks = load_tasks(a.tasks)
-
     if a.sandbox == "local":
         from engine.sandboxes.local_worktree import LocalWorktreeSandbox
+        tasks = load_tasks(a.tasks, python=sys.executable)      # same machine, same Python
         factory = lambda t, n: LocalWorktreeSandbox(repo, t.id, n)
     else:
         from engine.sandboxes.daytona_sandbox import DaytonaSandbox
+        tasks = load_tasks(a.tasks, python="python3")           # the sandbox's own Python
         token = os.environ["GITHUB_TOKEN"]
-        authed = a.repo_url.replace("https://", f"https://x-access-token:{token}@")
-        subprocess.run(["git", "remote", "add", "origin", authed], cwd=repo, check=True)
+        subprocess.run(["git", "remote", "add", "origin", a.repo_url], cwd=repo, check=True)
+        # Read the token from the environment at push time; never write it into .git/config.
+        subprocess.run(["git", "config", "credential.helper",
+                        '!f() { echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f'],
+                       cwd=repo, check=True)
         subprocess.run(["git", "push", "-q", "-f", "origin", "main"], cwd=repo, check=True)
         factory = lambda t, n: DaytonaSandbox(a.repo_url, t.id, n, github_token=token)
 

@@ -16,6 +16,10 @@ from engine.interfaces import Agent, Sandbox, Task
 MAX_ATTEMPTS = 3
 
 
+class SetupError(RuntimeError):
+    """The environment is broken (missing tool, unreachable service), not the agent's work."""
+
+
 @dataclass
 class Attempt:
     n: int
@@ -85,6 +89,10 @@ class Engine:
             box.write_file(path, body)
         r = box.exec(task.test_cmd)
         tail = "\n".join(r.output.strip().splitlines()[-15:])
+        if r.code in (126, 127) or "No module named pytest" in r.output:
+            # The checks themselves couldn't run. That's a setup problem, not the agent's fault:
+            # stop instead of burning retries and recording false "silent failures".
+            raise SetupError(f"test command could not run (exit {r.code}): {tail[-300:]}")
         if r.code != 0:
             return False, "acceptance tests failed", changed, tail
         return True, "", changed, tail

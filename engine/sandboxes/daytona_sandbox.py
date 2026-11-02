@@ -11,8 +11,11 @@ import shlex
 from engine.interfaces import ExecResult
 
 WORKDIR = "repo"
-# Installs the Claude Code CLI so a CLI agent can run inside the sandbox.
-SETUP = "command -v claude >/dev/null || npm install -g @anthropic-ai/claude-code >/dev/null 2>&1"
+# Installs what the agent and the checks need inside the sandbox: the Claude Code CLI and pytest.
+SETUP = ("(command -v claude >/dev/null || npm install -g @anthropic-ai/claude-code >/dev/null 2>&1) && "
+         "(python3 -m pytest --version >/dev/null 2>&1 || python3 -m pip install -q pytest >/dev/null 2>&1 "
+         "|| python3 -m pip install -q --break-system-packages pytest >/dev/null 2>&1) && "
+         "python3 -m pytest --version >/dev/null 2>&1")
 
 
 class DaytonaSandbox:

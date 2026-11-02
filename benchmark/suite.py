@@ -36,7 +36,9 @@ def build_repo(dest: Path) -> Path:
     return dest
 
 
-def load_tasks(only: list[str] | None = None) -> list[Task]:
+def load_tasks(only: list[str] | None = None, python: str = "python3") -> list[Task]:
+    """`python` is the interpreter *inside the sandbox*: plain python3 in the cloud,
+    this machine's interpreter for local sandboxes."""
     out = []
     for t in TASKS:
         if only and t["id"] not in only:
@@ -47,7 +49,7 @@ def load_tasks(only: list[str] | None = None) -> list[Task]:
             id=t["id"], title=t["title"],
             spec=f"Implement `{t['signature']}` in {t['module']}.\n\n{t['spec']}",
             can_edit=[t["module"], f"tests/agent_test_{mod}*.py"],
-            test_cmd=f"{sys.executable} -m pytest -q -p no:cacheprovider {test_path}",
+            test_cmd=f"{python} -m pytest -q -p no:cacheprovider {test_path}",
             hidden_tests={test_path: (HERE / "hidden_tests" / f"test_{mod}.py").read_text()},
         ))
     return out
