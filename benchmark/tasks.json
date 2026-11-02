@@ -1,0 +1,42 @@
+[
+  {
+    "id": "B1", "title": "Show open time slots", "module": "slots.py", "size": "small",
+    "signature": "def open_slots(store: Store, day: date, tz: str) -> list[Slot]",
+    "spec": "Return the slots whose start time falls on the given calendar day in the given IANA timezone (e.g. 'America/Los_Angeles'). Exclude slots that have a booking with status 'booked'; slots whose only bookings are 'cancelled' are open again. Sort by start time, earliest first."
+  },
+  {
+    "id": "B2", "title": "Book a slot", "module": "booking.py", "size": "medium",
+    "signature": "def book(store: Store, customer_id: int, pet_id: int, slot_id: int, now: datetime) -> Booking",
+    "spec": "Create a Booking with status 'booked', add it to store.bookings using store.next_booking_id(), and return it. Raise BookingError (from store) if: the slot does not exist; the pet does not exist or does not belong to the customer; the slot already has a 'booked' booking (cancelled ones don't count); or the slot starts at or before `now`."
+  },
+  {
+    "id": "B3", "title": "Cancel a booking", "module": "cancel.py", "size": "small",
+    "signature": "def cancel(store: Store, booking_id: int, by_customer_id: int, now: datetime) -> Booking",
+    "spec": "Set the booking's status to 'cancelled' and return it. Raise BookingError if: the booking does not exist; it belongs to a different customer; it is already cancelled; or the slot starts less than 2 hours after `now` (exactly 2 hours is allowed)."
+  },
+  {
+    "id": "B4", "title": "Reschedule a booking", "module": "reschedule.py", "size": "medium",
+    "signature": "def reschedule(store: Store, booking_id: int, new_slot_id: int, by_customer_id: int, now: datetime) -> Booking",
+    "spec": "Move an existing 'booked' booking to a different slot by updating its slot_id (keep the same booking id) and return it. Raise BookingError if: the booking does not exist, is cancelled, or belongs to someone else; the new slot does not exist, starts at or before `now`, or already has a 'booked' booking by someone else. Rescheduling to the slot it is already in is an error too. The old slot becomes free automatically because the booking no longer points to it."
+  },
+  {
+    "id": "B5", "title": "Find reminders to send", "module": "reminders.py", "size": "small",
+    "signature": "def reminders_due(store: Store, now: datetime) -> list[Booking]",
+    "spec": "Return 'booked' bookings whose slot starts more than 23 hours and at most 25 hours after `now` (a reminder window around 24 hours before). `now` and slot times are timezone-aware; compare correctly even if `now` is given in a non-UTC timezone. Sort by slot start time."
+  },
+  {
+    "id": "B6", "title": "Calculate the deposit", "module": "payments.py", "size": "small",
+    "signature": "def deposit_cents(price_cents: int) -> int",
+    "spec": "The deposit is 2000 cents ($20). If the service costs less than $20, the deposit is the full price. Free services have no deposit. Raise ValueError for a negative price."
+  },
+  {
+    "id": "B7", "title": "Clean up signup details", "module": "signup.py", "size": "medium",
+    "signature": "def normalize_email(raw: str) -> str\ndef normalize_phone(raw: str) -> str",
+    "spec": "normalize_email: trim spaces and lowercase; raise ValueError unless it has exactly one '@', a non-empty name part, and a domain containing a dot that doesn't start or end with a dot. normalize_phone: accept US numbers in common formats like '(415) 555-0132', '415.555.0132', '415 555 0132', '+1 415-555-0132', '1-415-555-0132' and return E.164 form '+14155550132'. Raise ValueError for anything that isn't exactly 10 digits, or 11 digits starting with 1, after removing formatting characters (spaces, dashes, dots, parentheses, a leading +). Letters are always invalid."
+  },
+  {
+    "id": "B8", "title": "Staff daily schedule", "module": "schedule.py", "size": "medium",
+    "signature": "def daily_schedule(store: Store, day: date, tz: str) -> list[str]",
+    "spec": "Return one line per 'booked' booking on that local calendar day, sorted by start time, formatted exactly like '9:00 AM  Biscuit (Golden Retriever) - Dana' (local time with no leading zero on the hour, two spaces, pet name, breed in parentheses, ' - ', customer name). Skip cancelled bookings. Return an empty list if there are none."
+  }
+]
