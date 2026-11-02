@@ -18,6 +18,16 @@ def test_load_env_reads_file_without_overriding_shell(tmp_path, monkeypatch):
     assert "EMPTY" not in os.environ
 
 
+def test_bench_github_token_is_accepted(monkeypatch):
+    from run_benchmark import map_secret_names
+    import os
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("BENCH_GITHUB_TOKEN", "ghp-bench")
+    map_secret_names()
+    assert os.environ["GITHUB_TOKEN"] == "ghp-bench"
+    monkeypatch.delenv("GITHUB_TOKEN")
+
+
 def test_load_env_missing_file_is_fine(tmp_path):
     load_env(tmp_path / "nope.env")
 

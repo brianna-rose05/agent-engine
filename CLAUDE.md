@@ -27,6 +27,15 @@ in plain language, including total cost.
 - **Spending:** runs that call real models cost money. Haiku runs with `--budget 0.50` or less are
   fine to run when asked. Ask the user before any run with `--model sonnet` or `opus`, a budget
   above $1, or more than one paid run in a row.
+  Exception (set by Brianna, Nov 2 2026): when fixing the engine through GitHub Actions, up to
+  5 Haiku runs at `--budget 0.50` or less per working session are pre-approved so the
+  fix-and-rerun loop can work without her. Anything beyond that, ask first.
+
+## Running in GitHub Actions
+The `Benchmark` workflow runs unit tests on every push. A paid benchmark runs only when triggered:
+`gh workflow run benchmark.yml -f model=haiku -f budget=0.50`. Keys come from repo secrets
+(`ANTHROPIC_API_KEY`, `DAYTONA_API_KEY`, `BENCH_GITHUB_TOKEN`). The report appears in the run
+summary and as the `benchmark-results` artifact. The workflow refuses budgets above $1.00.
 - **Never trust the agent's claim:** the engine verifies work itself. When changing the engine,
   keep that property and add a test for any bug you fix (see tests/test_engine.py for examples).
 - **Daytona:** if a run is interrupted, remind the user to check the Daytona dashboard for

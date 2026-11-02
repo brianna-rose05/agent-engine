@@ -48,6 +48,13 @@ def load_env(path: Path) -> None:
             os.environ[key] = value
 
 
+def map_secret_names() -> None:
+    """GitHub reserves secret names starting with GITHUB_, so in Actions the paws-bench token
+    arrives as BENCH_GITHUB_TOKEN. Accept either name."""
+    if not os.environ.get("GITHUB_TOKEN") and os.environ.get("BENCH_GITHUB_TOKEN"):
+        os.environ["GITHUB_TOKEN"] = os.environ["BENCH_GITHUB_TOKEN"]
+
+
 def missing_modules(a) -> list[str]:
     import importlib.util
     needed = ["pytest"]
@@ -119,6 +126,7 @@ def main():
     a = p.parse_args()
 
     load_env(ROOT / ".env")
+    map_secret_names()
     if problems := preflight(a):
         print("Not ready to run:\n- " + "\n- ".join(problems))
         sys.exit(2)

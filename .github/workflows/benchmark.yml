@@ -1,0 +1,94 @@
+name: Benchmark
+
+# Every push: run the free unit tests.
+# On request (Actions tab -> Benchmark -> Run workflow, or `gh workflow run`): run a paid benchmark.
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model (haiku runs freely; anything else needs Brianna's OK first)"
+        type: choice
+        options: [haiku, sonnet]
+        default: haiku
+      budget:
+        description: "Max USD per agent attempt (hard limit: 1.00)"
+        default: "0.50"
+      tasks:
+        description: "Task ids, space separated (blank = all 8)"
+        default: ""
+
+permissions:
+  contents: read
+
+# Never run two paid benchmarks at once.
+concurrency:
+  group: benchmark-${{ github.event_name }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q claude-agent-sdk daytona pytest
+      - run: python -m pytest -q
+
+  benchmark:
+    if: github.event_name == 'workflow_dispatch'
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q claude-agent-sdk daytona pytest
+
+      - name: Spending guardrail
+        env:
+          BUDGET: ${{ inputs.budget }}
+        run: |
+          python - <<'EOF'
+          import os, sys
+          b = float(os.environ["BUDGET"])
+          if not 0 < b <= 1.00:
+              sys.exit(f"Refusing to run: budget {b} is outside (0, 1.00]. Raise the hard limit in the workflow if Brianna approves.")
+          print(f"Budget OK: ${b:.2f} per attempt")
+          EOF
+
+      - name: Run benchmark
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+          BENCH_GITHUB_TOKEN: ${{ secrets.BENCH_GITHUB_TOKEN }}
+          MODEL: ${{ inputs.model }}
+          BUDGET: ${{ inputs.budget }}
+          TASKS: ${{ inputs.tasks }}
+        run: |
+          git config --global user.email "engine@agents.local"
+          git config --global user.name "engine"
+          python run_benchmark.py --agent claude-cli --sandbox daytona \
+            --repo-url https://github.com/brianna-rose05/paws-bench \
+            --model "$MODEL" --budget "$BUDGET" ${TASKS:+--tasks $TASKS}
+
+      - name: Publish report
+        if: always()
+        run: |
+          f=$(ls -t results/*/report.md 2>/dev/null | head -1)
+          if [ -n "$f" ]; then cat "$f" >> "$GITHUB_STEP_SUMMARY"; else echo "No report was produced." >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Save results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: |
+            results/*/report.md
+            results/*/results.json
+          if-no-files-found: ignore
