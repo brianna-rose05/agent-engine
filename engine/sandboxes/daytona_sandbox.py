@@ -20,9 +20,11 @@ SETUP = ("(command -v claude >/dev/null || npm install -g @anthropic-ai/claude-c
 
 class DaytonaSandbox:
     def __init__(self, repo_url: str, task_id: str, attempt: int, *, github_token: str | None = None,
-                 client=None, setup_cmd: str = SETUP):
+                 client=None, setup_cmd: str = SETUP, run_id: str = ""):
         self.repo_url = repo_url
-        self.branch = f"task/{task_id}-a{attempt}"
+        # Include the run id: branches from earlier runs live on in the shared GitHub repo,
+        # and reusing a name makes the push fail (non-fast-forward).
+        self.branch = f"task/{run_id}/{task_id}-a{attempt}" if run_id else f"task/{task_id}-a{attempt}"
         self.workdir = WORKDIR
         self.token = github_token or os.environ.get("GITHUB_TOKEN", "")
         self.setup_cmd = setup_cmd

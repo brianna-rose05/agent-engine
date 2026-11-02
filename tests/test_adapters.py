@@ -149,6 +149,15 @@ def test_daytona_lifecycle():
     assert fake.deleted                                                 # nothing left billing
 
 
+def test_daytona_branch_names_are_unique_per_run():
+    """Regression (second Daytona run): branches from run 1 already existed on GitHub, so
+    run 2's pushes to the same names were rejected as non-fast-forward."""
+    fake = FakeDaytonaSandbox()
+    a = DaytonaSandbox("u", "B1", 1, github_token="t", client=FakeClient(fake), run_id="20261102-154400")
+    b = DaytonaSandbox("u", "B1", 1, github_token="t", client=FakeClient(fake), run_id="20261102-160000")
+    assert a.branch == "task/20261102-154400/B1-a1" and a.branch != b.branch
+
+
 def test_daytona_deletes_sandbox_when_setup_fails():
     fake = FakeDaytonaSandbox(fail_on="npm install")
     with pytest.raises(RuntimeError, match="setup failed"):

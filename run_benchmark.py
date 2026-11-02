@@ -123,7 +123,8 @@ def main():
         print("Not ready to run:\n- " + "\n- ".join(problems))
         sys.exit(2)
 
-    out = ROOT / "results" / f"{datetime.now():%Y%m%d-%H%M%S}-{a.agent}-{a.sandbox}"
+    run_id = f"{datetime.now():%Y%m%d-%H%M%S}"
+    out = ROOT / "results" / f"{run_id}-{a.agent}-{a.sandbox}"
     repo = build_repo(out / "repo")
     if a.sandbox == "local":
         from engine.sandboxes.local_worktree import LocalWorktreeSandbox
@@ -139,7 +140,7 @@ def main():
                         '!f() { echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f'],
                        cwd=repo, check=True)
         subprocess.run(["git", "push", "-q", "-f", "origin", "main"], cwd=repo, check=True)
-        factory = lambda t, n: DaytonaSandbox(a.repo_url, t.id, n, github_token=token)
+        factory = lambda t, n: DaytonaSandbox(a.repo_url, t.id, n, github_token=token, run_id=run_id)
 
     t0 = time.time()
     results = Engine(repo, make_agent(a), factory).run_all(tasks, parallel=a.parallel)
