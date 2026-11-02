@@ -49,6 +49,10 @@ def preflight(a) -> list[str]:
     return problems
 
 
+def money(c: float) -> str:
+    return f"${c:.4f}" if 0 < c < 0.01 else f"${c:.2f}"
+
+
 def report(results: list[Result], a, seconds: float) -> str:
     n = len(results)
     merged = [r for r in results if r.status == "merged"]
@@ -64,15 +68,15 @@ def report(results: list[Result], a, seconds: float) -> str:
         f"| First-try pass rate | {first}/{n} ({100 * first / n:.0f}%) |",
         f"| Silent failures caught (agent said done, checks said no) | {silent} |",
         f"| Retries used | {retries} |",
-        f"| Total agent cost | ${cost:.2f} |",
-        f"| Avg cost per merged task | ${cost / max(1, len(merged)):.2f} |",
+        f"| Total agent cost | {money(cost)} |",
+        f"| Avg cost per merged task | {money(cost / max(1, len(merged)))} |",
         "", "| Task | Status | Tries | Silent fails | Time (s) | Cost | Why tries were rejected |",
         "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     for r in results:
         why = "; ".join(f"#{t.n}: {t.reason}" for t in r.attempts if not t.passed) or r.error or "-"
         lines.append(f"| {r.task} {r.title} | {r.status} | {len(r.attempts)} | {r.silent_failures} | "
-                     f"{r.seconds} | ${r.cost_usd:.2f} | {why} |")
+                     f"{r.seconds} | {money(r.cost_usd)} | {why} |")
     return "\n".join(lines) + "\n"
 
 
