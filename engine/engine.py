@@ -205,9 +205,11 @@ class Engine:
                 box.__enter__()
                 return _Entered(box)
             except Exception as e:
-                msg = str(e).lower()
-                busy = any(k in msg for k in ("limit exceeded", "rate limit", "too many", "capacity", "timeout", "429", "503"))
-                if wait_s is None or not busy:
+                # Our own setup commands failing (npm ci, git) won't fix themselves: fail fast. Anything
+                # else while creating a sandbox is the provider (capacity, 502s, timeouts): wait and retry.
+                # Regression: a Daytona 502 during start-up ended a whole project at the planning step.
+                ours = "sandbox setup failed on" in str(e).lower()
+                if wait_s is None or ours:
                     raise
                 self.events.emit("task_status", task.id, status="waiting_for_sandbox", attempt=n, error=str(e)[:200])
                 self.sleep(wait_s)

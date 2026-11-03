@@ -158,6 +158,23 @@ def test_sandbox_capacity_errors_wait_and_retry(tmp_path):
     assert r.status == "merged" and naps == [30, 60] and len(r.attempts) == 1
 
 
+def test_provider_gateway_errors_are_retried_too(tmp_path):
+    """Regression (third web run): a Daytona 502 while starting the planner's sandbox ended the project."""
+    repo = build_repo(tmp_path / "r")
+    tries = []
+
+    class Gateway(LocalWorktreeSandbox):
+        def __enter__(self):
+            tries.append(1)
+            if len(tries) == 1:
+                raise RuntimeError("DaytonaBadGatewayError: Failed to create sandbox: Failure during waiting for sandbox to start")
+            return super().__enter__()
+
+    eng = Engine(repo, ReferenceAgent(HERE / "solutions"), lambda t, n: Gateway(repo, t.id, n))
+    eng.sleep = lambda s: None
+    assert eng.run_task(load_tasks(["B6"])[0]).status == "merged" and len(tries) == 2
+
+
 def test_non_capacity_setup_errors_fail_fast(tmp_path):
     repo = build_repo(tmp_path / "r")
 
