@@ -29,6 +29,7 @@ def git_init(dest: Path, message: str) -> None:
 
 class PythonStack:
     name = "python"
+    parallel = 4
     module_rule = "a top-level snake_case .py file"
     contract_rule = module_rule
     stub_marker = "NotImplementedError"
@@ -103,6 +104,7 @@ Use Python 3.11+ standard library only. Every file must import cleanly."""
 
 
 class NextSupabaseStack(PythonStack):
+    parallel = 3            # sandboxes are bigger; 3 x 3 GB fits Daytona's default 10 GB account limit
     """Next.js (App Router, TypeScript) + Supabase Postgres, tested with Vitest against an in-test
     Postgres (PGlite) that applies the project's real migrations."""
     name = "next-supabase"
@@ -213,7 +215,8 @@ AGENTS_MD = """# Team rules (Next.js + Supabase)
   @testing-library/react.
 - Dev agents may add their own tests, but only at the exact path their task names
   (tests/unit/<module path with dashes>.test.ts, e.g. src/server/booking.ts -> tests/unit/server-booking.test.ts).
-- Before saying DONE run: npx tsc --noEmit && npx eslint <your file> && npx vitest run
+- Before saying DONE run: npx tsc --noEmit && npx eslint <your file> && npx vitest run <your tests>
+- Always `vitest run`, never bare `vitest` (that watches for changes and never exits). No dev servers.
 """
 
 STACKS = {"python": PythonStack, "next-supabase": NextSupabaseStack}

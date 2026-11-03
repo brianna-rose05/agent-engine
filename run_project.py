@@ -79,7 +79,7 @@ def main():
     p.add_argument("--description", help="project description file (default: the stack's sample fixture)")
     p.add_argument("--model", default="haiku")
     p.add_argument("--budget", type=float, default=0.50, help="max USD per agent attempt")
-    p.add_argument("--parallel", type=int, default=4)
+    p.add_argument("--parallel", type=int, help="tasks at once (default: the stack's)")
     p.add_argument("--repo-url")
     p.add_argument("--stack", default="python", choices=["python", "next-supabase"])
     a = p.parse_args()
@@ -99,6 +99,7 @@ def main():
         stack = NextSupabaseStack(link_node_modules=a.sandbox == "local")
     else:
         stack = PythonStack(sys.executable if a.sandbox == "local" else "python3")
+    a.parallel = a.parallel or stack.parallel
     repo = build_project_repo(out / "repo", stack)
     if a.sandbox == "local":
         from engine.sandboxes.local_worktree import LocalWorktreeSandbox

@@ -15,7 +15,7 @@ TOOLS = "Read,Edit,Write,Bash,Glob,Grep"
 
 class ClaudeCLIAgent:
     def __init__(self, model: str = "sonnet", max_turns: int = 40, budget_usd: float = 1.00,
-                 timeout_s: int = 60 * 60, api_key: str | None = None):
+                 timeout_s: int = 30 * 60, api_key: str | None = None):
         self.model, self.max_turns, self.budget_usd, self.timeout_s = model, max_turns, budget_usd, timeout_s
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
 
@@ -34,7 +34,8 @@ class ClaudeCLIAgent:
         if not self.api_key:
             return AgentReport("error: ANTHROPIC_API_KEY is not set")
         r = box.exec(self.command(task, feedback), timeout=self.timeout_s,
-                     env={"ANTHROPIC_API_KEY": self.api_key})
+                     # CI=1: test runners like Vitest exit instead of waiting for file changes
+                     env={"ANTHROPIC_API_KEY": self.api_key, "CI": "1"})
         data = parse_cli_json(r.output)
         if data is None:
             return AgentReport(f"error: could not read agent output (exit {r.code})", summary=r.output[-500:])

@@ -40,7 +40,7 @@ def failure_excerpt(output: str, limit: int = 4000) -> str:
     return excerpt
 
 
-SANDBOX_RETRIES = (30, 60, 120)          # seconds to wait when the sandbox provider is at capacity
+SANDBOX_RETRIES = (30, 60, 120, 240, 300)   # seconds to wait while the sandbox provider is at capacity
 
 
 class GraphError(ValueError):

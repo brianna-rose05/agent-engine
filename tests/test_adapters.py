@@ -79,7 +79,7 @@ def test_cli_agent_command_and_secret_handling():
     rep = ClaudeCLIAgent(api_key="sk-test-123", budget_usd=0.75).run(TASK, box, 1, feedback="tests failed")
     cmd, env = box.calls[0]
     assert (rep.claim, rep.cost_usd, rep.turns) == ("done", 0.31, 5)
-    assert "sk-test-123" not in cmd and env == {"ANTHROPIC_API_KEY": "sk-test-123"}
+    assert "sk-test-123" not in cmd and env == {"ANTHROPIC_API_KEY": "sk-test-123", "CI": "1"}
     for flag in ("--bare", "--output-format json", "--permission-mode dontAsk", "--max-budget-usd 0.75"):
         assert flag in cmd
     assert "bypassPermissions" not in cmd and "tests failed" in cmd
@@ -193,5 +193,6 @@ def test_daytona_web_sandbox_uses_bigger_node_image_and_installs_packages():
     with DaytonaSandbox("u", "T1", 1, github_token="t", client=Client(), **opts):
         pass
     params, timeout = created[0]
-    assert params.image == "node:22-bookworm" and params.resources.memory == 2 and timeout >= 600   # 4 x 2 GB fits the 10 GB account limit
+    assert params.image == "node:22-bookworm" and timeout >= 600
+    assert params.resources.memory * NextSupabaseStack.parallel <= 10   # fits the 10 GB account limit
     assert any(e[0] == "exec" and "npm ci" in e[1] for e in fake.log) and fake.deleted
