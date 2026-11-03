@@ -200,6 +200,8 @@ def tasks_from_plan(plan: dict, python_or_stack: "str | PythonStack" = "python3"
             t["id"], t["title"],
             f"Implement everything in {t['module']}. The stub's signatures and doc comments are the spec; "
             f"keep the signatures exactly.\n\n{t['spec']}\n\nShared contracts (read-only): {contracts}."
+            f"\n\nYou may only edit {t['module']}. If you add your own tests, they must match "
+            f"{stack.dev_test_glob(t['module'])} (any other file gets your work rejected)."
             + (f"\n\nThis builds on finished, tested work already in the repo. Import and reuse it; "
                f"you cannot edit it:{builds_on}" if deps else ""),
             [t["module"], stack.dev_test_glob(t["module"])],

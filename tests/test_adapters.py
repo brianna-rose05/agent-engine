@@ -188,5 +188,5 @@ def test_daytona_web_sandbox_uses_bigger_node_image_and_installs_packages():
     with DaytonaSandbox("u", "T1", 1, github_token="t", client=Client(), **opts):
         pass
     params, timeout = created[0]
-    assert params.image == "node:22-bookworm" and params.resources.memory >= 4 and timeout >= 600
+    assert params.image == "node:22-bookworm" and params.resources.memory == 2 and timeout >= 600   # 4 x 2 GB fits the 10 GB account limit
     assert any(e[0] == "exec" and "npm ci" in e[1] for e in fake.log) and fake.deleted

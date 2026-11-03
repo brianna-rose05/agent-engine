@@ -19,13 +19,14 @@ SETUP = ("(command -v claude >/dev/null || npm install -g @anthropic-ai/claude-c
 
 
 # Web projects: a Node image with room for npm packages, TypeScript and an in-test Postgres.
+# 2 GB each so 4 parallel sandboxes stay under Daytona's default 10 GB account limit.
 WEB_SETUP = ("(command -v claude >/dev/null || npm install -g @anthropic-ai/claude-code >/dev/null 2>&1) && "
              "npm ci --no-audit --no-fund --loglevel=error")
 
 
 def web_params():
     from daytona import CreateSandboxFromImageParams, Resources
-    return CreateSandboxFromImageParams(image="node:22-bookworm", resources=Resources(cpu=2, memory=4, disk=10),
+    return CreateSandboxFromImageParams(image="node:22-bookworm", resources=Resources(cpu=2, memory=2, disk=8),
                                         auto_stop_interval=0)
 
 

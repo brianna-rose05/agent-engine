@@ -106,14 +106,14 @@ class NextSupabaseStack(PythonStack):
     """Next.js (App Router, TypeScript) + Supabase Postgres, tested with Vitest against an in-test
     Postgres (PGlite) that applies the project's real migrations."""
     name = "next-supabase"
-    module_rule = "a .ts or .tsx file under src/server/, src/components/ or src/app/"
+    module_rule = "a .ts or .tsx file under src/server/, src/components/, src/app/ or src/lib/"
     contract_rule = "a migration supabase/migrations/NNNN_name.sql or a file under src/contracts/"
     stub_marker = "Not implemented"
     unimplemented_marker = "Not implemented"
     nested_files_ok = True
-    module_re = re.compile(r"^src/(server|components|app)/[A-Za-z0-9_\-/\[\]().]+\.tsx?$")
+    module_re = re.compile(r"^src/(server|components|app|lib)/[A-Za-z0-9_\-/\[\]().]+\.tsx?$")
     contract_re = re.compile(r"^(supabase/migrations/\d{4}_[a-z0-9_]+\.sql|src/contracts/[A-Za-z0-9_\-]+\.ts)$")
-    reserved = {"supabase/migrations/0000_base.sql"}
+    reserved = {"supabase/migrations/0000_base.sql", "src/lib/db.ts", "src/lib/errors.ts", "src/lib/db-postgres.ts"}
     template = TEMPLATES / "next-supabase"
 
     def __init__(self, link_node_modules: bool = True):
@@ -211,7 +211,8 @@ AGENTS_MD = """# Team rules (Next.js + Supabase)
 - Tests: Vitest. Use `createTestDb()` / `createUser()` from src/test/db.ts for a real Postgres with the
   migrations applied. Component tests start with `// @vitest-environment jsdom` and use
   @testing-library/react.
-- Dev agents may add their own tests as tests/unit/<module>*.test.ts(x).
+- Dev agents may add their own tests, but only at the exact path their task names
+  (tests/unit/<module path with dashes>.test.ts, e.g. src/server/booking.ts -> tests/unit/server-booking.test.ts).
 - Before saying DONE run: npx tsc --noEmit && npx eslint <your file> && npx vitest run
 """
 

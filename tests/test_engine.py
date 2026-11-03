@@ -126,3 +126,46 @@ def test_hidden_tests_never_reach_main(tmp_path):
     files = git(repo, "ls-tree", "-r", "--name-only", "main").split()
     assert "tests/test_slots.py" not in files and "tests/test_payments.py" not in files
     assert "slots.py" in files
+
+
+def test_feedback_shows_the_failure_not_just_the_summary():
+    """Regression (first web run): Vitest prints the expected/received diff before a long code frame
+    and summary; keeping only the last 15 lines dropped the diff, so the agent retried blind."""
+    from engine.engine import failure_excerpt
+    out = "\n".join(["noise"] * 40 + [" FAIL  tests/a.test.ts > dogs", "AssertionError: expected { ownerId: 'x' } to match object { owner_id: 'x' }",
+                     "- Expected", "+ Received", "-   owner_id: 'x'", "+   ownerId: 'x'"] + ["  code frame"] * 30 +
+                    [" Tests  1 failed | 45 passed (46)"])
+    ex = failure_excerpt(out)
+    assert "owner_id" in ex and "ownerId" in ex and "45 passed" in ex and "noise\nnoise\nnoise\nnoise" not in ex
+
+
+def test_sandbox_capacity_errors_wait_and_retry(tmp_path):
+    """Spec: provider outages retry with backoff instead of failing the task. Regression: the first web
+    run hit Daytona's 10 GB account limit and marked 8 tasks as errors."""
+    repo = build_repo(tmp_path / "r")
+    tries, naps = [], []
+
+    class Flaky(LocalWorktreeSandbox):
+        def __enter__(self):
+            tries.append(1)
+            if len(tries) < 3:
+                raise RuntimeError("Failed to create sandbox: Total memory limit exceeded. Maximum allowed: 10GiB.")
+            return super().__enter__()
+
+    eng = Engine(repo, ReferenceAgent(HERE / "solutions"), lambda t, n: Flaky(repo, t.id, n))
+    eng.sleep = naps.append
+    r = eng.run_task(load_tasks(["B6"])[0])
+    assert r.status == "merged" and naps == [30, 60] and len(r.attempts) == 1
+
+
+def test_non_capacity_setup_errors_fail_fast(tmp_path):
+    repo = build_repo(tmp_path / "r")
+
+    class Broken(LocalWorktreeSandbox):
+        def __enter__(self):
+            raise RuntimeError("sandbox setup failed on `npm ci`: ERESOLVE")
+
+    eng = Engine(repo, ReferenceAgent(HERE / "solutions"), lambda t, n: Broken(repo, t.id, n))
+    eng.sleep = lambda s: (_ for _ in ()).throw(AssertionError("should not wait"))
+    r = eng.run_task(load_tasks(["B6"])[0])
+    assert r.status == "error" and "npm ci" in r.error

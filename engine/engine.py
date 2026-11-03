@@ -23,6 +23,26 @@ class SetupError(RuntimeError):
     """The environment is broken (missing tool, unreachable service), not the agent's work."""
 
 
+FAILURE_MARKERS = ("AssertionError", "Expected", "Received", "FAIL ", "error TS", "Error:", "assert ")
+
+
+def failure_excerpt(output: str, limit: int = 4000) -> str:
+    """What a retrying agent needs to see: the failure itself (expected vs received, the type error),
+    not just the summary lines at the end. Regression: the first web run cut Vitest output to its last
+    15 lines, which held the code frame and summary but not the diff, so the agent retried blind."""
+    import re
+    text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", output).strip()
+    lines = text.splitlines()
+    start = next((i for i, l in enumerate(lines) if any(m in l for m in FAILURE_MARKERS)), max(0, len(lines) - 15))
+    excerpt = "\n".join(lines[max(0, start - 2):])
+    if len(excerpt) > limit:
+        excerpt = excerpt[: limit - 400] + "\n...\n" + "\n".join(lines[-8:])
+    return excerpt
+
+
+SANDBOX_RETRIES = (30, 60, 120)          # seconds to wait when the sandbox provider is at capacity
+
+
 class GraphError(ValueError):
     """The task plan itself is broken (unknown dependency, cycle). Caught before any money is spent."""
 
@@ -101,6 +121,8 @@ class Engine:
                  max_attempts: int = MAX_ATTEMPTS, events: Emitter | None = None):
         self.repo = Path(repo)
         self.events = events or Emitter()
+        self.sandbox_retries = SANDBOX_RETRIES
+        self.sleep = time.sleep
         self.agent = agent
         self.make_sandbox = make_sandbox
         self.max_attempts = max_attempts
@@ -128,7 +150,7 @@ class Engine:
         # Remove them again before anything is committed, or they'd merge into main where later
         # agents could read them (regression: milestone 3 found this leak).
         box.exec("rm -f " + " ".join(shlex.quote(p) for p in task.hidden_tests))
-        tail = "\n".join(r.output.strip().splitlines()[-15:])
+        tail = failure_excerpt(r.output)
         if r.code in (126, 127) or "No module named pytest" in r.output:
             # The checks themselves couldn't run. That's a setup problem, not the agent's fault:
             # stop instead of burning retries and recording false "silent failures".
@@ -150,7 +172,7 @@ class Engine:
         try:
             for n in range(1, self.max_attempts + 1):
                 t0 = time.time()
-                with self.make_sandbox(task, n) as box:
+                with self._open_sandbox(task, n) as box:
                     emit("task_status", task.id, status="working", attempt=n)
                     rep = self.agent.run(task, box, attempt=n, feedback=feedback)
                     emit("task_status", task.id, status="checking", attempt=n)
@@ -173,6 +195,22 @@ class Engine:
         except Exception as e:                                  # infra problems are reported, not hidden
             res.status, res.error = "error", f"{type(e).__name__}: {e}"
         return res
+
+    def _open_sandbox(self, task: Task, n: int):
+        """Create and enter a sandbox, waiting and retrying while the provider is at capacity
+        (spec: provider outages retry with backoff instead of failing the task)."""
+        for wait_s in (*self.sandbox_retries, None):
+            box = self.make_sandbox(task, n)
+            try:
+                box.__enter__()
+                return _Entered(box)
+            except Exception as e:
+                msg = str(e).lower()
+                busy = any(k in msg for k in ("limit exceeded", "rate limit", "too many", "capacity", "timeout", "429", "503"))
+                if wait_s is None or not busy:
+                    raise
+                self.events.emit("task_status", task.id, status="waiting_for_sandbox", attempt=n, error=str(e)[:200])
+                self.sleep(wait_s)
 
     def merge(self, branch: str, task_id: str) -> str:
         with self.merge_lock:                                   # one merge at a time, main never half-merged
@@ -219,6 +257,19 @@ class Engine:
                 for f in done:
                     results[running.pop(f)] = f.result()
         return [results[t.id] for t in tasks]
+
+
+class _Entered:
+    """Context manager around a sandbox that is already entered; exiting cleans it up."""
+
+    def __init__(self, box):
+        self.box = box
+
+    def __enter__(self):
+        return self.box
+
+    def __exit__(self, *exc):
+        return self.box.__exit__(*exc)
 
 
 def results_to_json(results: list[Result]) -> str:
