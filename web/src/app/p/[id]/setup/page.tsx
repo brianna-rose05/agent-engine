@@ -101,7 +101,7 @@ export default function SetupPage() {
 
       <AnimatePresence mode="wait">
         <motion.div key={shown} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
-          {wizard?.error && shown === current && <ErrorBox text={wizard.error} />}
+          {wizard?.error && shown === current && hasDraft(wizard, current) && <ErrorBox text={wizard.error} />}
           {shown === "describe" && <DescribeStep name={project.name} description={project.description} />}
           {shown === "questions" && <QuestionsStep w={wizard!} readOnly={current !== "questions"} />}
           {shown === "requirements" && <RequirementsStep w={wizard!} readOnly={current !== "requirements"} />}
@@ -113,6 +113,11 @@ export default function SetupPage() {
     </div>
   );
 }
+
+/** Steps show their own error (with a retry) until they have a draft; after that errors show above it. */
+const hasDraft = (w: Wizard, step: StepId) =>
+  (step === "questions" && !!w.questions) || (step === "requirements" && !!w.requirements) ||
+  (step === "stack" && !!w.stack) || (step === "design" && !!w.design);
 
 /* ----------------------------------------------------------------- shared bits */
 function Empty({ title, text }: { title: string; text: string }) {

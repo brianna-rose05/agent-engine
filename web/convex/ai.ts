@@ -15,26 +15,29 @@ export async function callClaude<T>(opts: {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error("ANTHROPIC_API_KEY is not set in Convex (Settings > Environment Variables).");
   const model = process.env.WIZARD_MODEL ?? "claude-sonnet-5-5";
-  const r = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-    body: JSON.stringify({
-      model,
-      max_tokens: opts.maxTokens ?? 8000,
-      system: opts.system,
-      tools: [{ name: opts.tool, description: "Return the result.", input_schema: opts.schema }],
-      tool_choice: { type: "tool", name: opts.tool },
-      messages: [{ role: "user", content: opts.prompt }],
-    }),
-  });
-  if (!r.ok) {
-    const text = await r.text();
-    throw new Error(`Claude call failed (HTTP ${r.status}): ${text.slice(0, 300)}`);
+  // Forced tool_choice isn't supported on every model, so ask with "auto" and insist; retry once if it answers in prose.
+  for (let tryN = 0; tryN < 2; tryN++) {
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+      body: JSON.stringify({
+        model,
+        max_tokens: opts.maxTokens ?? 8000,
+        system: `${opts.system}\n\nAlways answer by calling the "${opts.tool}" tool exactly once, with the complete result. Never reply in plain text.`,
+        tools: [{ name: opts.tool, description: "Return the complete result.", input_schema: opts.schema }],
+        tool_choice: { type: "auto" },
+        messages: [{ role: "user", content: opts.prompt }],
+      }),
+    });
+    if (!r.ok) {
+      const text = await r.text();
+      throw new Error(`Claude call failed (HTTP ${r.status}): ${text.slice(0, 300)}`);
+    }
+    const body = (await r.json()) as { content: { type: string; name?: string; input?: unknown }[] };
+    const block = body.content.find((c) => c.type === "tool_use" && c.name === opts.tool);
+    if (block?.input) return block.input as T;
   }
-  const body = (await r.json()) as { content: { type: string; input?: unknown }[]; usage?: { input_tokens: number; output_tokens: number } };
-  const block = body.content.find((c) => c.type === "tool_use");
-  if (!block?.input) throw new Error("Claude returned no structured result.");
-  return block.input as T;
+  throw new Error("Claude returned no structured result.");
 }
 
 /** Ask, check with code, and if the checks fail ask once more with the problems listed. */
