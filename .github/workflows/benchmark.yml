@@ -99,6 +99,12 @@ jobs:
             --repo-url https://github.com/brianna-rose05/paws-bench \
             --model "$MODEL" --budget "$BUDGET" ${TASKS:+--tasks $TASKS}
 
+      - name: Delete any sandboxes this run left behind
+        if: always()
+        env:
+          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+        run: python scripts/daytona_cleanup.py delete-engine
+
       - name: Publish report
         if: always()
         run: |

@@ -126,19 +126,24 @@ class FakeClient:
     def __init__(self, sb):
         self.sb = sb
 
-    def create(self):
+    def create(self, params=None, timeout=60):
+        self.params = params
         return self.sb
 
 
 def test_daytona_lifecycle():
     fake = FakeDaytonaSandbox()
-    with DaytonaSandbox("https://github.com/b/repo", "B6", 2, github_token="ghp_x", client=FakeClient(fake)) as box:
+    client = FakeClient(fake)
+    with DaytonaSandbox("https://github.com/b/repo", "B6", 2, github_token="ghp_x", client=client) as box:
         assert box.branch == "task/B6-a2"
         box.write_file("payments.py", "x = 1\n")
         assert box.exec("pytest").code == 0
         box.publish("B6: Deposit")
     kinds = [e[0] for e in fake.log]
-    assert ("autostop", 0) in fake.log                                  # won't die mid-task
+    # Regression (cancelled web run): sandboxes outlived the engine with auto-stop off. Now every one is
+    # labeled for cleanup, stops after 60 idle minutes and deletes itself when it stops.
+    assert client.params.labels == {"app": "agent-engine"}
+    assert client.params.auto_stop_interval == 60 and client.params.ephemeral
     assert kinds.index("clone") < kinds.index("push")
     clone = next(e for e in fake.log if e[0] == "clone")
     assert clone[2]["password"] == "ghp_x"

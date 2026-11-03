@@ -1,0 +1,29 @@
+name: Daytona cleanup
+
+# List the account's sandboxes, or delete the engine's leftovers (e.g. after a cancelled run).
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "list = read only"
+        type: choice
+        options: [list, delete-engine, delete-unlabeled-engine]
+        default: list
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q daytona
+      - env:
+          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+          MODE: ${{ inputs.mode }}
+        run: python scripts/daytona_cleanup.py "$MODE"

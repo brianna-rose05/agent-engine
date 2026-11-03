@@ -42,6 +42,11 @@ jobs:
           git config --global user.email "engine@agents.local"
           git config --global user.name "engine"
           python worker.py --project-id "$PROJECT_ID" --budget 0.50
+      - name: Delete any sandboxes this run left behind
+        if: always()
+        env:
+          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+        run: python scripts/daytona_cleanup.py delete-engine
       - name: Save the event log and built code
         if: always()
         uses: actions/upload-artifact@v4

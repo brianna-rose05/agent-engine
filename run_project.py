@@ -34,6 +34,27 @@ def make_agent(a):
     return ClaudeCLIAgent(model=a.model, budget_usd=a.budget)
 
 
+class ConsoleSink:
+    """One line per step in the job log, so a run that is stopped early can still be diagnosed."""
+
+    def __init__(self, t0: float):
+        self.t0 = t0
+
+    def write(self, e) -> None:
+        d = e.data
+        if e.kind == "task_status":
+            what = f"{d.get('status')}" + (f" (try {d['attempt']})" if d.get("attempt") else "")
+            if d.get("error"):
+                what += f": {str(d['error'])[:160]}"
+        elif e.kind == "attempt_finished":
+            what = f"try {d['n']} {'passed' if d['passed'] else 'rejected: ' + d['reason'][:160]} (${d['cost_usd']:.4f}, {d['seconds']}s)"
+        elif e.kind == "plan_ready":
+            what = f"plan ready: {len(d['plan']['tasks'])} tasks"
+        else:
+            what = e.kind
+        print(f"[{(e.ts - self.t0) / 60:5.1f} min] {e.task_id or '-':>8}  {what}", flush=True)
+
+
 def stage_costs(results) -> str:
     stage = lambda r: "plan" if r.task == "PLAN" else ("QA tests" if r.task.endswith("-qa") else "build")
     totals: dict[str, float] = {}
@@ -93,9 +114,11 @@ def main():
         opts = stack.daytona_options()
         factory = lambda t, n: DaytonaSandbox(a.repo_url, t.id, n, github_token=token, run_id=run_id, **opts)
 
+    from engine.events import Emitter, JsonlSink
     t0 = time.time()
-    plan, results = run_project(description, repo, Engine(repo, make_agent(a), factory), python, a.parallel,
-                                stack=stack)
+    events = Emitter(JsonlSink(out / "events.jsonl"), ConsoleSink(t0))
+    plan, results = run_project(description, repo, Engine(repo, make_agent(a), factory, events=events),
+                                python, a.parallel, stack=stack)
     needs = {t["id"]: t.get("depends_on", []) for t in (plan or {}).get("tasks", [])}
     needs.update({f"{k}-qa": [] for k in list(needs)})
     for k in list(needs):

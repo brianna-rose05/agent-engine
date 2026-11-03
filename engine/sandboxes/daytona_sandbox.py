@@ -24,10 +24,22 @@ WEB_SETUP = ("(command -v claude >/dev/null || npm install -g @anthropic-ai/clau
              "npm ci --no-audit --no-fund --loglevel=error")
 
 
+# Every sandbox is labeled as the engine's and cleans itself up if the engine dies mid-task (a cancelled
+# job can't run its `finally`): it stops after 60 idle minutes (an attempt is capped well below that)
+# and is deleted as soon as it stops. scripts/daytona_cleanup.py deletes by the same label.
+LABELS = {"app": "agent-engine"}
+IDLE_STOP_MINUTES = 60
+
+
 def web_params():
     from daytona import CreateSandboxFromImageParams, Resources
     return CreateSandboxFromImageParams(image="node:22-bookworm", resources=Resources(cpu=2, memory=2, disk=8),
-                                        auto_stop_interval=0)
+                                        labels=LABELS, auto_stop_interval=IDLE_STOP_MINUTES, ephemeral=True)
+
+
+def default_params():
+    from daytona import CreateSandboxFromSnapshotParams
+    return CreateSandboxFromSnapshotParams(labels=LABELS, auto_stop_interval=IDLE_STOP_MINUTES, ephemeral=True)
 
 
 class DaytonaSandbox:
@@ -48,12 +60,9 @@ class DaytonaSandbox:
         if self._client is None:
             from daytona import Daytona          # imported lazily so local runs don't need it
             self._client = Daytona()
-        if self.create_params is None:
-            self.sb = self._client.create()
-        else:                                   # a custom image is built once, then cached by Daytona
-            self.sb = self._client.create(self.create_params, timeout=900)
+        params = self.create_params if self.create_params is not None else default_params()
+        self.sb = self._client.create(params, timeout=900)   # a custom image is built once, then cached
         try:
-            self.sb.set_autostop_interval(0)    # default stops after 15 idle minutes, mid-task
             self.sb.git.clone(self.repo_url, WORKDIR, username="x-access-token", password=self.token)
             for cmd in ("git config user.email engine@agents.local", "git config user.name engine",
                         f"git checkout -q -b {shlex.quote(self.branch)}", self.setup_cmd):

@@ -32,7 +32,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -68,6 +68,12 @@ jobs:
           python run_project.py --agent claude-cli --sandbox daytona \
             --repo-url https://github.com/brianna-rose05/paws-bench \
             --description "$DESCRIPTION" --stack "$STACK" --model "$MODEL" --budget "$BUDGET"
+
+      - name: Delete any sandboxes this run left behind
+        if: always()
+        env:
+          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+        run: python scripts/daytona_cleanup.py delete-engine
 
       - name: Publish report
         if: always()
