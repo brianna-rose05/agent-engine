@@ -319,6 +319,28 @@ def test_web_plan_listing_template_files_as_contracts_is_accepted(tmp_path):
     assert "supabase/migrations/0000_base.sql" not in plan["contracts"]
 
 
+@web
+def test_web_plan_that_touches_template_files_is_accepted(tmp_path):
+    """Regression (Pawfect rebuild): the planner edited src/app/page.tsx without listing it, then listed
+    src/test/db.ts and src/app/layout.tsx as contracts, and lost the plan twice. Template edits that the
+    plan doesn't own are undone, and template files listed as contracts are dropped."""
+    class TouchesTemplate(ScriptedTeam):
+        def run(self, task, box, attempt, feedback):
+            rep = super().run(task, box, attempt, feedback)
+            if task.role == "planner":
+                plan = json.loads((WEB / "plan" / "plan.json").read_text())
+                plan["contracts"] += ["src/test/db.ts", "src/app/layout.tsx"]
+                box.write_file("plan.json", json.dumps(plan))
+                box.write_file("src/app/page.tsx", "export default function Home() { return null; }\n")
+            return rep
+
+    repo, plan, res = go_web(tmp_path, TouchesTemplate(WEB))
+    assert res["PLAN"].status == "merged" and len(res["PLAN"].attempts) == 1
+    assert not {"src/test/db.ts", "src/app/layout.tsx"} & set(plan["contracts"])
+    assert "return null" not in subprocess.run(["git", "show", "main:src/app/page.tsx"], cwd=repo,
+                                               capture_output=True, text=True).stdout
+
+
 def test_failures_carry_their_output_and_hidden_tests_are_saved(tmp_path):
     """Regression (first live build): two features failed 3 times and nobody could see why, because
     attempt events had no test output and the hidden tests were gone after the run."""

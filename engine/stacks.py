@@ -115,7 +115,8 @@ class NextSupabaseStack(PythonStack):
     nested_files_ok = True
     module_re = re.compile(r"^src/(server|components|app|lib)/[A-Za-z0-9_\-/\[\]().]+\.tsx?$")
     contract_re = re.compile(r"^(supabase/migrations/\d{4}_[a-z0-9_]+\.sql|src/contracts/[A-Za-z0-9_\-]+\.ts)$")
-    reserved = {"supabase/migrations/0000_base.sql", "src/lib/db.ts", "src/lib/errors.ts", "src/lib/db-postgres.ts"}
+    reserved = {"supabase/migrations/0000_base.sql", "src/lib/db.ts", "src/lib/errors.ts", "src/lib/db-postgres.ts",
+                "src/test/db.ts", "src/app/layout.tsx"}
     template = TEMPLATES / "next-supabase"
 
     def __init__(self, link_node_modules: bool = True):
@@ -202,6 +203,9 @@ Write these files:
    - UI modules export React components that take everything through props (data and callbacks), so they
      can be tested without a server. No data fetching inside components.
    - Pages (src/app/**/page.tsx) are thin: fetch with server functions, render components.
+   - Template files (src/lib/db.ts, src/lib/errors.ts, src/lib/db-postgres.ts, src/test/db.ts,
+     src/app/layout.tsx, supabase/migrations/0000_base.sql) are fixed: never edit or list them. The home
+     page src/app/page.tsx may be a task module; if it is, list it in plan.json, otherwise leave it alone.
 Everything must type-check (`npx tsc --noEmit`) and every migration must apply to a fresh database."""
 
 

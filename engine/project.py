@@ -131,7 +131,14 @@ def plan_check(stack: PythonStack):
             return False, f"planning files must be top-level; remove {', '.join(nested)}", ""
         modules = [t["module"] for t in plan["tasks"]]
         expected = set(modules) | set(plan["contracts"]) | {"plan.json"}
-        if extra := sorted(set(changed) - expected):
+        extra = sorted(set(changed) - expected)
+        # Stray edits to files that already existed (template files) are undone rather than failing a good
+        # plan; nothing in the plan depends on them. Regression: Pawfect rebuild lost a plan to src/app/page.tsx.
+        existed = set(box.exec("git ls-tree -r --name-only $(git merge-base HEAD main)").output.split())
+        if stray := [f for f in extra if f in existed]:
+            box.exec("git checkout $(git merge-base HEAD main) -- " + " ".join(shlex.quote(f) for f in stray))
+            extra = [f for f in extra if f not in existed]
+        if extra:
             return False, f"files not named in plan.json: {', '.join(extra)}", ""
         if missing := [f for f in sorted(expected) if box.exec(f"test -f {shlex.quote(f)}").code]:
             return False, f"plan.json names files that don't exist: {', '.join(missing)}", ""
