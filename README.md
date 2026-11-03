@@ -89,7 +89,22 @@ run_benchmark.py   one command to run it all and write the report
 tests/             35 tests for the engine, adapters, and benchmark
 ```
 
-## Next (milestone 2)
+## Milestone 2: dependency graph and contracts first
 
-Run tasks from a dependency graph (B4 waits on B2), add the contract-first step, and measure how
-results change with task size and model. Do that after the first real benchmark numbers are in.
+- Tasks can list `depends_on`. The engine starts a task only after everything it depends on has
+  merged, so its sandbox already holds that code. Independent tasks still run in parallel.
+- If a dependency fails, everything downstream is marked **blocked** and never started, so no
+  money is spent on work that can't succeed. A broken plan (unknown dependency, cycle) is
+  rejected before any agent runs.
+- Contract first: an architect task (`kind: contract`) writes the shared types before the dev
+  tasks that use them start. Downstream tasks can't edit it, and their hidden tests check that
+  they reuse existing modules instead of copying logic.
+- Benchmark project D1-D4 (checkout): D1 contract -> D2 validation and D3 pricing (in parallel;
+  D3 also needs B6 and B11) -> D4 checkout. Downstream tests run against the code earlier
+  *agents* wrote, not the reference solutions.
+- `--tasks D4` automatically brings in everything D4 depends on.
+
+## Next (milestone 3)
+
+Let a planning agent produce the task graph and contracts from a project description, then run
+it with this engine.

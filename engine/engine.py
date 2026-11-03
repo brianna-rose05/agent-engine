@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import subprocess
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
@@ -18,6 +18,36 @@ MAX_ATTEMPTS = 3
 
 class SetupError(RuntimeError):
     """The environment is broken (missing tool, unreachable service), not the agent's work."""
+
+
+class GraphError(ValueError):
+    """The task plan itself is broken (unknown dependency, cycle). Caught before any money is spent."""
+
+
+def check_graph(tasks: list[Task]) -> None:
+    ids = [t.id for t in tasks]
+    if len(set(ids)) != len(ids):
+        raise GraphError("duplicate task ids")
+    known = set(ids)
+    for t in tasks:
+        if missing := [d for d in t.depends_on if d not in known]:
+            raise GraphError(f"{t.id} depends on {', '.join(missing)}, which is not in this run")
+    deps = {t.id: list(t.depends_on) for t in tasks}
+    state: dict[str, int] = {}                     # 1 = visiting, 2 = done
+
+    def visit(tid: str, path: list[str]) -> None:
+        if state.get(tid) == 2:
+            return
+        if state.get(tid) == 1:
+            loop = path[path.index(tid):] + [tid]
+            raise GraphError("dependency cycle: " + " -> ".join(loop))
+        state[tid] = 1
+        for d in deps[tid]:
+            visit(d, path + [tid])
+        state[tid] = 2
+
+    for tid in ids:
+        visit(tid, [])
 
 
 @dataclass
@@ -37,7 +67,7 @@ class Attempt:
 class Result:
     task: str
     title: str
-    status: str = "queued"      # merged | failed | merge_conflict | error
+    status: str = "queued"      # merged | failed | merge_conflict | error | blocked
     attempts: list[Attempt] = field(default_factory=list)
     error: str = ""
 
@@ -132,8 +162,35 @@ class Engine:
             return "merged"
 
     def run_all(self, tasks: list[Task], parallel: int = 4) -> list[Result]:
+        """Run tasks as a dependency graph. A task starts only after everything it depends on has
+        merged into main, so its sandbox already contains that code. If a dependency doesn't merge,
+        everything downstream is marked blocked (escalated) instead of being attempted."""
+        check_graph(tasks)
+        pending = {t.id: t for t in tasks}
+        results: dict[str, Result] = {}
         with ThreadPoolExecutor(parallel) as pool:
-            return list(pool.map(self.run_task, tasks))
+            running = {}
+            while pending or running:
+                blocked_any = True
+                while blocked_any:                          # propagate failures down the graph
+                    blocked_any = False
+                    for tid, t in list(pending.items()):
+                        bad = [d for d in t.depends_on if d in results and results[d].status != "merged"]
+                        if bad:
+                            results[tid] = Result(tid, t.title, status="blocked",
+                                                  error=f"waiting on {', '.join(bad)}, which did not merge")
+                            del pending[tid]
+                            blocked_any = True
+                for tid, t in list(pending.items()):
+                    if all(d in results for d in t.depends_on):
+                        running[pool.submit(self.run_task, t)] = tid
+                        del pending[tid]
+                if not running:
+                    break
+                done, _ = wait(running, return_when=FIRST_COMPLETED)
+                for f in done:
+                    results[running.pop(f)] = f.result()
+        return [results[t.id] for t in tasks]
 
 
 def results_to_json(results: list[Result]) -> str:

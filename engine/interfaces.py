@@ -13,6 +13,7 @@ class Task:
     can_edit: list[str]               # glob patterns the agent may change
     test_cmd: str                     # run by the ENGINE, never trusted from the agent
     hidden_tests: dict[str, str] = field(default_factory=dict)  # path -> contents, added only at verify time
+    depends_on: list[str] = field(default_factory=list)         # task ids that must merge before this starts
 
 
 @dataclass

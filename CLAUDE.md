@@ -12,10 +12,10 @@ Always run commands with the venv active: `source .venv/bin/activate && ...`
 ## Common commands
 ```bash
 python3 -m pytest -q                                   # unit tests, free, must stay green
-python3 run_benchmark.py --agent reference             # free sanity check, expect 14/14 merged
+python3 run_benchmark.py --agent reference             # free sanity check, expect 18/18 merged
 python3 run_benchmark.py --agent claude-sdk --tasks B6 --model haiku --budget 0.25      # ~1 cent, local
 python3 run_benchmark.py --agent claude-cli --sandbox daytona \
-  --repo-url https://github.com/brianna-rose05/paws-bench --model haiku --budget 0.50  # all 14 tasks, cloud
+  --repo-url https://github.com/brianna-rose05/paws-bench --model haiku --budget 0.50  # all 18 tasks, cloud
 ```
 Each run writes `results/<time>/report.md` and `results.json`. Summarize the report for the user
 in plain language, including total cost.

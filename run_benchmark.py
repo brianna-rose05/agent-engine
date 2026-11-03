@@ -87,7 +87,8 @@ def money(c: float) -> str:
     return f"${c:.4f}" if 0 < c < 0.01 else f"${c:.2f}"
 
 
-def report(results: list[Result], a, seconds: float) -> str:
+def report(results: list[Result], a, seconds: float, needs: dict[str, list[str]] | None = None) -> str:
+    needs = needs or {}
     n = len(results)
     merged = [r for r in results if r.status == "merged"]
     first = sum(r.first_pass for r in results)
@@ -99,17 +100,19 @@ def report(results: list[Result], a, seconds: float) -> str:
         "", f"{datetime.now():%Y-%m-%d %H:%M}, {n} tasks, {a.parallel} in parallel, wall time {seconds:.0f}s", "",
         "| Metric | Value |", "| --- | --- |",
         f"| Merged | {len(merged)} of {n} |",
+        f"| Blocked (a task it depends on didn't merge) | {sum(r.status == 'blocked' for r in results)} |",
         f"| First-try pass rate | {first}/{n} ({100 * first / n:.0f}%) |",
         f"| Silent failures caught (agent said done, checks said no) | {silent} |",
         f"| Retries used | {retries} |",
         f"| Total agent cost | {money(cost)} |",
         f"| Avg cost per merged task | {money(cost / max(1, len(merged)))} |",
-        "", "| Task | Status | Tries | Silent fails | Time (s) | Cost | Why tries were rejected |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "", "| Task | Needs | Status | Tries | Silent fails | Time (s) | Cost | Why tries were rejected |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for r in results:
         why = "; ".join(f"#{t.n}: {t.reason}" for t in r.attempts if not t.passed) or r.error or "-"
-        lines.append(f"| {r.task} {r.title} | {r.status} | {len(r.attempts)} | {r.silent_failures} | "
+        lines.append(f"| {r.task} {r.title} | {', '.join(needs.get(r.task, [])) or '-'} | {r.status} | "
+                     f"{len(r.attempts)} | {r.silent_failures} | "
                      f"{r.seconds} | {money(r.cost_usd)} | {why} |")
     return "\n".join(lines) + "\n"
 
@@ -152,7 +155,7 @@ def main():
 
     t0 = time.time()
     results = Engine(repo, make_agent(a), factory).run_all(tasks, parallel=a.parallel)
-    md = report(results, a, time.time() - t0)
+    md = report(results, a, time.time() - t0, {t.id: t.depends_on for t in tasks})
     (out / "report.md").write_text(md)
     (out / "results.json").write_text(results_to_json(results))
     print(md)

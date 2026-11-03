@@ -110,5 +110,50 @@
     "size": "large",
     "signature": "def import_customers(store: Store, csv_text: str) -> dict",
     "spec": "Import customers from CSV text and return {'added': int, 'updated': int, 'skipped': list of (line_number, reason)}. Line 1 is a header containing name, email and optionally timezone columns, in any order and any letter case; extra columns are ignored. The text may start with a byte-order mark (\\ufeff) and fields may be quoted and contain commas. Line numbers count the header as line 1. For each data row: trim name and email and lowercase the email. Skip (with any short reason string) rows with an empty name, an email without exactly one '@' or without a dot in the part after it, or a timezone that isn't a valid IANA name (an empty or missing timezone means 'America/Los_Angeles'). Skip a row whose email already appeared on an earlier row of this same file. Blank lines are ignored entirely. If a customer with that email (case-insensitive) already exists in store.customers, update their name and timezone and count it as updated; otherwise add Customer(id=max existing id + 1, ...) and count it as added."
+  },
+  {
+    "id": "D1",
+    "title": "Checkout contract (shared types)",
+    "module": "cart_types.py",
+    "size": "small",
+    "kind": "contract",
+    "signature": "class Cart\nclass Receipt\nclass CheckoutError(BookingError)",
+    "spec": "You are the architect. Write the shared types that three other dev agents will build on in parallel, so they must match exactly. In cart_types.py define: (1) a dataclass Cart with fields, in this order: customer_id: int, slot_id: int, pet_ids: list[int], services: list[str] (default: a new empty list per instance), coupon: str | None (default None). (2) a dataclass Receipt with fields, in this order: booking_ids: list[int], total_cents: int, deposit_cents: int. (3) an exception class CheckoutError that subclasses store.BookingError. Types only: no business logic."
+  },
+  {
+    "id": "D2",
+    "title": "Validate a checkout cart",
+    "module": "cart_validation.py",
+    "size": "medium",
+    "depends_on": [
+      "D1"
+    ],
+    "signature": "def validate_cart(store: Store, cart: Cart, now: datetime) -> None",
+    "spec": "Check a Cart (from cart_types) before checkout and raise cart_types.CheckoutError with a short customer-friendly message if anything is wrong; return None if it's fine. Problems: the customer doesn't exist; pet_ids is empty or lists the same pet twice; any pet doesn't exist or doesn't belong to that customer; the slot doesn't exist or starts at or before `now`; the slot already has a booking with status 'booked' (cancelled bookings don't count). Import the types with `from cart_types import Cart, CheckoutError`."
+  },
+  {
+    "id": "D3",
+    "title": "Price a checkout cart",
+    "module": "cart_pricing.py",
+    "size": "medium",
+    "depends_on": [
+      "D1",
+      "B6",
+      "B11"
+    ],
+    "signature": "def price_cart(cart: Cart, profiles: dict[int, dict]) -> tuple[int, int]",
+    "spec": "Return (total_cents, deposit_cents) for a Cart. profiles maps pet_id to that pet's {'size': ..., 'coat': ...} dict. The total is pricing.quote(cart.services, [profiles[pet_id] for each pet in cart order], cart.coupon) and the deposit is payments.deposit_cents(total). Both functions already exist and are tested: call them through their modules (`import pricing, payments` then `pricing.quote(...)`), do not copy their logic. If a pet in the cart has no profile, or pricing.quote raises ValueError (unknown coupon, size, service...), raise cart_types.CheckoutError with a short friendly message instead."
+  },
+  {
+    "id": "D4",
+    "title": "Check out a cart",
+    "module": "checkout.py",
+    "size": "large",
+    "depends_on": [
+      "D2",
+      "D3"
+    ],
+    "signature": "def checkout(store: Store, cart: Cart, profiles: dict[int, dict], now: datetime) -> Receipt",
+    "spec": "Turn a Cart into bookings. First call cart_validation.validate_cart(store, cart, now), then cart_pricing.price_cart(cart, profiles); call both through their modules (`import cart_validation, cart_pricing`), don't reimplement them. If either raises, let the CheckoutError propagate and leave the store completely unchanged. Otherwise create one Booking per pet in cart.pet_ids order, all for cart.slot_id and cart.customer_id with status 'booked', using store.next_booking_id() for each and adding each to store.bookings. Return a cart_types.Receipt with the new booking ids in order, the total and the deposit."
   }
 ]
