@@ -172,3 +172,21 @@ def test_daytona_deletes_sandbox_when_task_crashes():
         with DaytonaSandbox("u", "B1", 1, github_token="t", client=FakeClient(fake)):
             1 / 0
     assert fake.deleted
+
+
+def test_daytona_web_sandbox_uses_bigger_node_image_and_installs_packages():
+    from engine.stacks import NextSupabaseStack
+    opts = NextSupabaseStack(link_node_modules=False).daytona_options()
+    created = []
+    fake = FakeDaytonaSandbox()
+
+    class Client:
+        def create(self, params=None, timeout=60):
+            created.append((params, timeout))
+            return fake
+
+    with DaytonaSandbox("u", "T1", 1, github_token="t", client=Client(), **opts):
+        pass
+    params, timeout = created[0]
+    assert params.image == "node:22-bookworm" and params.resources.memory >= 4 and timeout >= 600
+    assert any(e[0] == "exec" and "npm ci" in e[1] for e in fake.log) and fake.deleted

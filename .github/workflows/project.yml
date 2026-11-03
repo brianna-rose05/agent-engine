@@ -16,6 +16,11 @@ on:
       description:
         description: "Project description file in this repo"
         default: "projects/samples/community_garden.md"
+      stack:
+        description: "Tech stack"
+        type: choice
+        options: [python, next-supabase]
+        default: python
 
 permissions:
   contents: read
@@ -56,12 +61,13 @@ jobs:
           MODEL: ${{ inputs.model }}
           BUDGET: ${{ inputs.budget }}
           DESCRIPTION: ${{ inputs.description }}
+          STACK: ${{ inputs.stack }}
         run: |
           git config --global user.email "engine@agents.local"
           git config --global user.name "engine"
           python run_project.py --agent claude-cli --sandbox daytona \
             --repo-url https://github.com/brianna-rose05/paws-bench \
-            --description "$DESCRIPTION" --model "$MODEL" --budget "$BUDGET"
+            --description "$DESCRIPTION" --stack "$STACK" --model "$MODEL" --budget "$BUDGET"
 
       - name: Publish report
         if: always()

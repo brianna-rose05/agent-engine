@@ -18,9 +18,20 @@ SETUP = ("(command -v claude >/dev/null || npm install -g @anthropic-ai/claude-c
          "python3 -m pytest --version >/dev/null 2>&1")
 
 
+# Web projects: a Node image with room for npm packages, TypeScript and an in-test Postgres.
+WEB_SETUP = ("(command -v claude >/dev/null || npm install -g @anthropic-ai/claude-code >/dev/null 2>&1) && "
+             "npm ci --no-audit --no-fund --loglevel=error")
+
+
+def web_params():
+    from daytona import CreateSandboxFromImageParams, Resources
+    return CreateSandboxFromImageParams(image="node:22-bookworm", resources=Resources(cpu=2, memory=4, disk=10),
+                                        auto_stop_interval=0)
+
+
 class DaytonaSandbox:
     def __init__(self, repo_url: str, task_id: str, attempt: int, *, github_token: str | None = None,
-                 client=None, setup_cmd: str = SETUP, run_id: str = ""):
+                 client=None, setup_cmd: str = SETUP, run_id: str = "", create_params=None):
         self.repo_url = repo_url
         # Include the run id: branches from earlier runs live on in the shared GitHub repo,
         # and reusing a name makes the push fail (non-fast-forward).
@@ -28,6 +39,7 @@ class DaytonaSandbox:
         self.workdir = WORKDIR
         self.token = github_token or os.environ.get("GITHUB_TOKEN", "")
         self.setup_cmd = setup_cmd
+        self.create_params = create_params
         self._client = client
         self.sb = None
 
@@ -35,13 +47,16 @@ class DaytonaSandbox:
         if self._client is None:
             from daytona import Daytona          # imported lazily so local runs don't need it
             self._client = Daytona()
-        self.sb = self._client.create()
+        if self.create_params is None:
+            self.sb = self._client.create()
+        else:                                   # a custom image is built once, then cached by Daytona
+            self.sb = self._client.create(self.create_params, timeout=900)
         try:
             self.sb.set_autostop_interval(0)    # default stops after 15 idle minutes, mid-task
             self.sb.git.clone(self.repo_url, WORKDIR, username="x-access-token", password=self.token)
             for cmd in ("git config user.email engine@agents.local", "git config user.name engine",
                         f"git checkout -q -b {shlex.quote(self.branch)}", self.setup_cmd):
-                r = self.exec(cmd, timeout=600)
+                r = self.exec(cmd, timeout=900)
                 if r.code != 0:
                     raise RuntimeError(f"sandbox setup failed on `{cmd}`: {r.output[-300:]}")
         except Exception:

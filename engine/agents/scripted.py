@@ -45,8 +45,9 @@ class ScriptedTeam:
 
     def run(self, task: Task, box: Sandbox, attempt: int, feedback: str | None) -> AgentReport:
         if task.role == "planner":
-            for f in sorted((self.fixture / "plan").iterdir()):
-                box.write_file(f.name, f.read_text())
+            plan_dir = self.fixture / "plan"
+            for f in sorted(x for x in plan_dir.rglob("*") if x.is_file()):
+                box.write_file(str(f.relative_to(plan_dir)), f.read_text())
         elif task.role == "qa":
             path = task.can_edit[0]
             box.write_file(path, (self.fixture / path).read_text())

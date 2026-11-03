@@ -36,6 +36,11 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -q claude-agent-sdk daytona pytest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install the web template (so the Next.js pipeline tests run)
+        run: npm ci --prefix templates/next-supabase --no-audit --no-fund
       - run: python -m pytest -q
 
   web:

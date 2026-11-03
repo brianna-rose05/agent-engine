@@ -26,7 +26,7 @@ FIXTURE = ROOT / "projects" / "tool_library"
 def make_agent(a):
     if a.agent == "scripted":
         from engine.agents.scripted import ScriptedTeam
-        return ScriptedTeam(FIXTURE)
+        return ScriptedTeam(ROOT / "projects" / "web_bookings" if a.stack == "next-supabase" else FIXTURE)
     if a.agent == "claude-sdk":
         from engine.agents.claude_sdk import ClaudeSDKAgent
         return ClaudeSDKAgent(model=a.model, budget_usd=a.budget)
@@ -55,11 +55,12 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--agent", default="scripted", choices=["scripted", "claude-sdk", "claude-cli"])
     p.add_argument("--sandbox", default="local", choices=["local", "daytona"])
-    p.add_argument("--description", default=str(FIXTURE / "description.md"))
+    p.add_argument("--description", help="project description file (default: the stack's sample fixture)")
     p.add_argument("--model", default="haiku")
     p.add_argument("--budget", type=float, default=0.50, help="max USD per agent attempt")
     p.add_argument("--parallel", type=int, default=4)
     p.add_argument("--repo-url")
+    p.add_argument("--stack", default="python", choices=["python", "next-supabase"])
     a = p.parse_args()
 
     load_env(ROOT / ".env")
@@ -67,11 +68,17 @@ def main():
     if problems := preflight(a):
         print("Not ready to run:\n- " + "\n- ".join(problems))
         sys.exit(2)
-    description = Path(a.description).read_text()
+    default_desc = ROOT / "projects" / ("web_bookings" if a.stack == "next-supabase" else "tool_library") / "description.md"
+    description = Path(a.description or default_desc).read_text()
 
     run_id = f"{datetime.now():%Y%m%d-%H%M%S}"
     out = ROOT / "results" / f"{run_id}-project-{a.agent}-{a.sandbox}"
-    repo = build_project_repo(out / "repo")
+    from engine.stacks import NextSupabaseStack, PythonStack
+    if a.stack == "next-supabase":
+        stack = NextSupabaseStack(link_node_modules=a.sandbox == "local")
+    else:
+        stack = PythonStack(sys.executable if a.sandbox == "local" else "python3")
+    repo = build_project_repo(out / "repo", stack)
     if a.sandbox == "local":
         from engine.sandboxes.local_worktree import LocalWorktreeSandbox
         python, factory = sys.executable, lambda t, n: LocalWorktreeSandbox(repo, t.id, n)
@@ -83,10 +90,12 @@ def main():
                         '!f() { echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f'],
                        cwd=repo, check=True)
         subprocess.run(["git", "push", "-q", "-f", "origin", "main"], cwd=repo, check=True)
-        factory = lambda t, n: DaytonaSandbox(a.repo_url, t.id, n, github_token=token, run_id=run_id)
+        opts = stack.daytona_options()
+        factory = lambda t, n: DaytonaSandbox(a.repo_url, t.id, n, github_token=token, run_id=run_id, **opts)
 
     t0 = time.time()
-    plan, results = run_project(description, repo, Engine(repo, make_agent(a), factory), python, a.parallel)
+    plan, results = run_project(description, repo, Engine(repo, make_agent(a), factory), python, a.parallel,
+                                stack=stack)
     needs = {t["id"]: t.get("depends_on", []) for t in (plan or {}).get("tasks", [])}
     needs.update({f"{k}-qa": [] for k in list(needs)})
     for k in list(needs):

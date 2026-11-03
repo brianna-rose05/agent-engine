@@ -1,0 +1,12 @@
+{
+  "project": "Pet grooming bookings",
+  "contracts": ["supabase/migrations/0001_bookings.sql", "src/contracts/types.ts"],
+  "tasks": [
+    {"id": "T1", "title": "Slots", "module": "src/server/slots.ts", "depends_on": [],
+     "spec": "Staff create slots; anyone lists a day's open slots."},
+    {"id": "T2", "title": "Bookings", "module": "src/server/bookings.ts", "depends_on": ["T1"],
+     "spec": "Customers book an open slot for a pet and cancel their own booking up to 24h before."},
+    {"id": "T3", "title": "Slot picker", "module": "src/components/SlotPicker.tsx", "depends_on": [],
+     "spec": "Buttons for open slots with local times; calls onPick with the slot id."}
+  ]
+}

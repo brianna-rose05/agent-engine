@@ -21,6 +21,9 @@ class LocalWorktreeSandbox:
                            cwd=self.repo, capture_output=True, text=True)
         if r.returncode:
             raise RuntimeError(r.stderr)
+        modules = self.repo / "node_modules"
+        if modules.exists():                     # web projects: share installed packages, never commit them
+            (self.path / "node_modules").symlink_to(modules.resolve())
         return self
 
     def __exit__(self, *exc):

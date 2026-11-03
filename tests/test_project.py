@@ -99,7 +99,7 @@ def test_stubs_that_dont_import_are_rejected(tmp_path):
             return rep
 
     _, _, res = go(tmp_path, Broken(FIXTURE))
-    assert "don't import cleanly" in res["PLAN"].attempts[0].reason and res["PLAN"].status == "merged"
+    assert "don't pass the checks" in res["PLAN"].attempts[0].reason and res["PLAN"].status == "merged"
 
 
 @pytest.mark.parametrize("plan_edit,msg", [
@@ -216,3 +216,82 @@ def test_a_broken_sink_never_breaks_a_build(tmp_path):
     eng = Engine(repo, ScriptedTeam(FIXTURE), lambda t, n: LocalWorktreeSandbox(repo, t.id, n), events=Emitter(Broken()))
     _, results = run_project(DESCRIPTION, repo, eng, python=sys.executable)
     assert all(r.status in ("merged", "passed") for r in results)
+
+
+# ------------------------------------------------------- phase 1: Next.js + Supabase web apps
+WEB = Path(__file__).parent.parent / "projects" / "web_bookings"
+TEMPLATE_READY = (Path(__file__).parent.parent / "templates" / "next-supabase" / "node_modules").exists()
+web = pytest.mark.skipif(not TEMPLATE_READY, reason="run `npm ci` in templates/next-supabase first")
+
+
+def go_web(tmp_path, agent):
+    from engine.stacks import NextSupabaseStack
+    stack = NextSupabaseStack()
+    repo = build_project_repo(tmp_path / "r", stack)
+    eng = Engine(repo, agent, lambda t, n: LocalWorktreeSandbox(repo, t.id, n))
+    plan, results = run_project((WEB / "description.md").read_text(), repo, eng, stack=stack, parallel=3)
+    return repo, plan, {r.task: r for r in results}
+
+
+@web
+def test_web_project_plans_tests_and_builds(tmp_path):
+    repo, plan, res = go_web(tmp_path, ScriptedTeam(WEB))
+    assert {k: r.status for k, r in res.items()} == {
+        "PLAN": "merged", "T1-qa": "passed", "T2-qa": "passed", "T3-qa": "passed",
+        "T1": "merged", "T2": "merged", "T3": "merged"}, {k: [a.reason for a in r.attempts] for k, r in res.items()}
+    tracked = git(repo, "ls-tree", "-r", "--name-only", "main").split()
+    assert "src/server/bookings.ts" in tracked and "node_modules" not in tracked
+    assert not [f for f in tracked if f.startswith("tests/acceptance/")]          # hidden tests never merged
+
+
+@web
+def test_web_dev_work_that_fails_types_or_tests_is_rejected(tmp_path):
+    class Sloppy(ScriptedTeam):
+        def run(self, task, box, attempt, feedback):
+            rep = super().run(task, box, attempt, feedback)
+            if task.id == "T2" and attempt == 1:       # type error
+                box.write_file("src/server/bookings.ts", (WEB / "solutions/src/server/bookings.ts").read_text()
+                               .replace("return toBooking(u.rows[0]);", "return u.rows[0].nope;"))
+            if task.id == "T1" and attempt == 1:       # compiles, wrong behavior: ignores time zone
+                box.write_file("src/server/slots.ts", (WEB / "solutions/src/server/slots.ts").read_text()
+                               .replace("(s.starts_at at time zone $2)::date = $1::date", "s.starts_at::date = $1::date and $2::text is not null"))
+            return rep
+
+    _, _, res = go_web(tmp_path, Sloppy(WEB))
+    assert res["T1"].status == res["T2"].status == "merged"
+    assert len(res["T1"].attempts) == 2 and res["T1"].attempts[0].reason == "acceptance tests failed"
+    assert len(res["T2"].attempts) == 2 and "error TS" in res["T2"].attempts[0].test_output
+
+
+@web
+def test_web_qa_tests_must_fail_on_the_stub_for_the_right_reason(tmp_path):
+    class LazyQA(ScriptedTeam):
+        def run(self, task, box, attempt, feedback):
+            rep = super().run(task, box, attempt, feedback)
+            if task.id == "T3-qa" and attempt == 1:
+                box.write_file(task.can_edit[0], 'import { it, expect } from "vitest";\n'
+                               'it("a", () => expect(1).toBe(1));\nit("b", () => expect(2).toBe(2));\nit("c", () => expect(3).toBe(3));\n')
+            return rep
+
+    _, _, res = go_web(tmp_path, LazyQA(WEB))
+    assert "already pass" in res["T3-qa"].attempts[0].reason and res["T3"].status == "merged"
+
+
+def test_web_plan_rules():
+    from engine.stacks import NextSupabaseStack
+    plan = json.loads((WEB / "plan" / "plan.json").read_text())
+    st = NextSupabaseStack(link_node_modules=False)
+    assert plan_problems(plan, st) == []
+    bad = copy.deepcopy(plan)
+    bad["tasks"][0]["module"] = "lib/slots.py"
+    bad["contracts"].append("db.sql")
+    msgs = " ".join(plan_problems(bad, st))
+    assert "src/server/" in msgs and "migration" in msgs
+    assert st.qa_test_path("src/components/SlotPicker.tsx") == "tests/acceptance/components-slotpicker.test.tsx"
+
+
+def test_vitest_summary_parsing():
+    from engine.stacks import NextSupabaseStack
+    st = NextSupabaseStack(link_node_modules=False)
+    assert st.counts(" Test Files  1 failed (1)\n      Tests  3 failed | 1 passed (4)\n") == {"passed": 1, "failed": 3, "errors": 0}
+    assert st.counts(" Test Files  1 failed (1)\n      Tests  no tests\n")["errors"] == 1
