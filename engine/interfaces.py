@@ -18,6 +18,12 @@ class Task:
     # Custom verification instead of hidden tests: check(box) -> (passed, reason, output). Run by the engine.
     check: Callable[..., tuple[bool, str, str]] | None = field(default=None, repr=False)
     merge: bool = True                                          # False: verified work is kept out of main
+    # Written into the sandbox before the agent starts (e.g. the tests a referee reviews).
+    setup_files: dict[str, str] = field(default_factory=dict, repr=False)
+    agent: object | None = field(default=None, repr=False)      # overrides the engine's agent (e.g. a referee)
+    max_attempts: int | None = None                             # overrides the engine's retry limit
+    # dispute(failure_output) -> True if the hidden tests were wrong and have been corrected.
+    dispute: Callable[[str], bool] | None = field(default=None, repr=False)
 
 
 class SandboxUnavailable(RuntimeError):

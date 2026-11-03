@@ -171,12 +171,16 @@ class Engine:
         res = Result(task.id, task.title)
         feedback = None
         emit = self.events.emit
+        agent = task.agent or self.agent
+        disputed = False
         try:
-            for n in range(1, self.max_attempts + 1):
+            for n in range(1, (task.max_attempts or self.max_attempts) + 1):
                 t0 = time.time()
                 with self._open_sandbox(task, n) as box:
+                    for path, body in task.setup_files.items():
+                        box.write_file(path, body)
                     emit("task_status", task.id, status="working", attempt=n)
-                    rep = self.agent.run(task, box, attempt=n, feedback=feedback)
+                    rep = agent.run(task, box, attempt=n, feedback=feedback)
                     emit("task_status", task.id, status="checking", attempt=n)
                     ok, reason, changed, out = self.verify(task, box)
                     a = Attempt(n, rep.claim, ok, reason, changed, out,
@@ -196,6 +200,20 @@ class Engine:
                         res.status = self.merge(box.branch, task.id)
                         return res
                     feedback = f"Your previous attempt was rejected: {reason}." + (f"\nTest output:\n{out}" if out else "")
+                if (not ok and reason == "acceptance tests failed" and task.dispute and not disputed
+                        and n < (task.max_attempts or self.max_attempts)):
+                    # A referee (a different model from the one that wrote the tests) checks the failing tests
+                    # against the spec before the next try. Regression: in both live builds, features were
+                    # lost to QA tests that contradicted the spec while the dev's code was right.
+                    disputed = True
+                    emit("task_status", task.id, status="disputing", attempt=n)
+                    fixed = bool(task.dispute(out))
+                    emit("dispute_resolved", task.id, test_fixed=fixed)
+                    if fixed:
+                        feedback = ("A reviewer found that some hidden acceptance tests contradicted the spec, and "
+                                    "they have been corrected. Implement the task exactly as the doc comments say.")
+                    else:
+                        feedback += "\nA reviewer checked these tests against the spec and confirmed they are right."
             res.status = "failed"
         except Exception as e:                                  # infra problems are reported, not hidden
             res.status, res.error = "error", f"{type(e).__name__}: {e}"

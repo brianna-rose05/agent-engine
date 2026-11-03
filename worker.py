@@ -106,7 +106,9 @@ def main():
     try:
         plan, results = run_project(project["description"], repo, engine, "python3",
                                     parallel=stack.parallel, approve=wait_for_decision(backend.project), stack=stack,
-                                    save_tests=out / "hidden_tests")
+                                    save_tests=out / "hidden_tests",
+                                    # spec: work is never graded only by the model that wrote it
+                                    referee=ClaudeCLIAgent(model="sonnet", budget_usd=a.budget))
         if plan is None:
             status = "failed"
         elif len(results) == 1:

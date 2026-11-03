@@ -184,8 +184,56 @@ def qa_check(test_path: str, stack: PythonStack, bucket: dict[str, str]):
     return check
 
 
+# ---------------------------------------------------------------- referee
+REFEREE_SPEC = """A dev agent implemented {module} for task {tid} ({title}), and some of the hidden acceptance tests
+in {test_path} fail. Your job is to decide who is wrong, using only the spec below and the doc comments
+in {module} (the stub's comments in the shared contract files too). The tests are in {test_path}.
+
+Task spec: {spec}
+
+Failing test output:
+{output}
+
+- If a failing test contradicts the spec or the doc comments (wrong arithmetic, wrong expected value, or an
+  expectation the spec rules out), fix only that test so it matches the spec. Keep every other test as it is.
+- If the failing tests are right, change nothing.
+End with DONE if you corrected tests, or BLOCKED: tests are correct."""
+
+
+def referee_check(test_path: str, stack: PythonStack, original: str, bucket: dict[str, str]):
+    """A review counts only if it changed the tests and they still pass QA's rules (run cleanly, >= 3,
+    every test fails on the stub because it's unimplemented)."""
+    inner = qa_check(test_path, stack, {})
+
+    def check(box: Sandbox) -> tuple[bool, str, str]:
+        now = box.exec(f"cat {shlex.quote(test_path)}").output
+        if now.strip() == original.strip():
+            return False, "the reviewer confirmed the tests", ""
+        ok, reason, out = inner(box)
+        if ok:
+            bucket.clear()
+            bucket[test_path] = now
+        return ok, reason, out
+    return check
+
+
+def make_dispute(t: dict, test_path: str, stack: PythonStack, bucket: dict[str, str], engine: Engine, referee):
+    def dispute(output: str) -> bool:
+        if not bucket.get(test_path):
+            return False
+        review = Task(f"{t['id']}-review", f"Review tests for {t['title']}",
+                      REFEREE_SPEC.format(module=t["module"], tid=t["id"], title=t["title"], test_path=test_path,
+                                          spec=t["spec"], output=output[-3000:]),
+                      [test_path], "", role="qa", merge=False, max_attempts=1, agent=referee,
+                      setup_files={test_path: bucket[test_path]},
+                      check=referee_check(test_path, stack, bucket[test_path], bucket))
+        return engine.run_task(review).status == "passed"
+    return dispute
+
+
 # ------------------------------------------------------------------ tasks
-def tasks_from_plan(plan: dict, python_or_stack: "str | PythonStack" = "python3") -> list[Task]:
+def tasks_from_plan(plan: dict, python_or_stack: "str | PythonStack" = "python3",
+                    engine: Engine | None = None, referee=None) -> list[Task]:
     stack = python_or_stack if isinstance(python_or_stack, PythonStack) else default_stack(python_or_stack)
     by_id = {t["id"]: t for t in plan["tasks"]}
     contracts = ", ".join(plan["contracts"]) or "none"
@@ -211,7 +259,8 @@ def tasks_from_plan(plan: dict, python_or_stack: "str | PythonStack" = "python3"
                f"you cannot edit it:{builds_on}" if deps else ""),
             [t["module"], stack.dev_test_glob(t["module"])],
             stack.verify_cmd(t["module"], test_path),
-            hidden_tests=hidden, depends_on=[*deps, f"{t['id']}-qa"]))
+            hidden_tests=hidden, depends_on=[*deps, f"{t['id']}-qa"],
+            dispute=make_dispute(t, test_path, stack, hidden, engine, referee) if engine and referee else None))
     return out
 
 
@@ -225,9 +274,11 @@ def auto_approve(plan: dict) -> tuple[bool, str]:
 
 def run_project(description: str, repo: Path, engine: Engine, python: str = "python3",
                 parallel: int = 4, approve: Approver = auto_approve,
-                stack: PythonStack | None = None, save_tests: Path | None = None) -> tuple[dict | None, list[Result]]:
+                stack: PythonStack | None = None, save_tests: Path | None = None,
+                referee=None) -> tuple[dict | None, list[Result]]:
     """Plan, then pause for approval, then QA + build. `approve(plan)` returns (approved, note); in the
-    app it waits for the user's click, offline it approves automatically."""
+    app it waits for the user's click, offline it approves automatically. `referee` is the agent that settles
+    test disputes; a different model from QA's, so work is never graded only by the model that wrote it."""
     emit = engine.events.emit
     stack = stack or default_stack(python)
     planner = planning_task(description, stack)
@@ -241,7 +292,7 @@ def run_project(description: str, repo: Path, engine: Engine, python: str = "pyt
     emit("plan_decision", approved=approved, note=note)
     if not approved:
         return plan, [plan_result]
-    tasks = tasks_from_plan(plan, stack)
+    tasks = tasks_from_plan(plan, stack, engine=engine, referee=referee)
     try:
         results = engine.run_all(tasks, parallel=parallel)
     finally:

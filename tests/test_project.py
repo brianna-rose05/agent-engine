@@ -337,3 +337,52 @@ def test_failures_carry_their_output_and_hidden_tests_are_saved(tmp_path):
     failed = [e for e in sink.events if e.kind == "attempt_finished" and not e.data["passed"]]
     assert failed and "assert" in failed[0].data["output"]
     assert (tmp_path / "saved" / "acceptance" / "test_fees.py").exists()
+
+
+# --------------------------------------------------------------------------- referee
+class WrongFeeTest(ScriptedTeam):
+    """QA writes a test whose expected value contradicts the spec (2 days late at 300/day is 600, not 700),
+    as happened in both live builds."""
+    def run(self, task, box, attempt, feedback):
+        rep = super().run(task, box, attempt, feedback)
+        if task.id == "T2-qa":
+            box.write_file(task.can_edit[0], (FIXTURE / task.can_edit[0]).read_text().replace("== 600", "== 700"))
+        return rep
+
+
+def go_ref(tmp_path, team, referee):
+    from engine.events import Emitter, ListSink
+    sink = ListSink()
+    repo = build_project_repo(tmp_path / "r")
+    eng = Engine(repo, team, lambda t, n: LocalWorktreeSandbox(repo, t.id, n), events=Emitter(sink))
+    _, results = run_project(DESCRIPTION, repo, eng, python=sys.executable, referee=referee)
+    return {r.task: r for r in results}, sink.events
+
+
+def test_referee_fixes_a_wrong_qa_test_and_the_feature_merges(tmp_path):
+    res, events = go_ref(tmp_path, WrongFeeTest(FIXTURE), referee=ScriptedTeam(FIXTURE))
+    assert res["T2"].status == "merged" and len(res["T2"].attempts) == 2
+    assert [e.data for e in events if e.kind == "dispute_resolved"] == [{"test_fixed": True}]
+    assert res["T3"].status == "merged"                      # downstream no longer blocked
+
+
+def test_referee_that_confirms_the_tests_changes_nothing(tmp_path):
+    class Confirms:
+        def run(self, task, box, attempt, feedback):
+            return AgentReport("blocked: tests are correct")
+
+    res, events = go_ref(tmp_path, WrongFeeTest(FIXTURE), referee=Confirms())
+    assert res["T2"].status == "failed" and len(res["T2"].attempts) == 3
+    assert [e.data for e in events if e.kind == "dispute_resolved"] == [{"test_fixed": False}]
+    assert res["T3"].status == "blocked"
+
+
+def test_referee_edits_that_break_qa_rules_are_rejected(tmp_path):
+    class Gutter:
+        def run(self, task, box, attempt, feedback):
+            box.write_file(task.can_edit[0], "def test_a():\n    assert True\n")   # "fixes" by deleting tests
+            return AgentReport("done")
+
+    res, events = go_ref(tmp_path, WrongFeeTest(FIXTURE), referee=Gutter())
+    assert [e.data for e in events if e.kind == "dispute_resolved"] == [{"test_fixed": False}]
+    assert res["T2"].status == "failed"

@@ -8,6 +8,7 @@ export type EngineEvent = {
     | "attempt_finished"
     | "plan_ready"
     | "plan_decision"
+    | "dispute_resolved"
     | "project_finished";
   task_id: string | null;
   data: Record<string, unknown>;

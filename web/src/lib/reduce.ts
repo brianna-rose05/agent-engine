@@ -58,6 +58,9 @@ export function reduce(s: ProjectState, e: EngineEvent): ProjectState {
           say({ who: task.role, channel: ch, task_id: task.id,
                 text: task.role === "qa" ? `${name(task)}: writing acceptance tests.` : `${name(task)}: building ${mod(task)}.` });
         }
+      } else if (d.status === "disputing") {
+        say({ who: "engine", channel: "tests", task_id: task.id, tone: "warn",
+              text: `${name(task)} keeps failing a few hidden tests, so a referee (a different model) is checking whether the tests match the spec.` });
       } else if (d.status === "merged" && task.role === "dev") {
         say({ who: "engine", channel: "build", task_id: task.id, tone: "good", text: `Verified and merged ${mod(task)}.` });
       } else if (d.status === "passed" && task.role === "qa") {
@@ -83,6 +86,15 @@ export function reduce(s: ProjectState, e: EngineEvent): ProjectState {
                 ? `The agent on ${name(task)} said it was done, but the checks disagree (${a.reason}). Sent it back with the details.`
                 : `Try ${a.n} on ${name(task)} was rejected: ${a.reason}.` });
       }
+      break;
+    }
+    case "dispute_resolved": {
+      if (!task) break;
+      const fixed = Boolean((e.data as { test_fixed: boolean }).test_fixed);
+      say({ who: "engine", channel: "tests", task_id: task.id, tone: fixed ? "good" : undefined,
+            text: fixed
+              ? `The referee found tests for ${name(task)} that contradicted the spec and corrected them. The dev agent gets another try.`
+              : `The referee confirmed the tests for ${name(task)} match the spec, so the code needs fixing.` });
       break;
     }
     case "plan_ready": {
@@ -151,7 +163,7 @@ export function features(s: ProjectState): Feature[] {
     let active: Role | null = null;
     if ((qa && BAD.has(qa.status)) || (dev && BAD.has(dev.status))) column = "attention";
     else if (dev?.status === "merged") column = "done";
-    else if (dev && (dev.status === "checking" || dev.status === "merging")) { column = "checking"; active = "dev"; }
+    else if (dev && ["checking", "merging", "disputing"].includes(dev.status)) { column = "checking"; active = "dev"; }
     else if (dev?.status === "working") { column = "building"; active = "dev"; }
     else if (qa && ["working", "checking"].includes(qa.status)) { column = "tests"; active = "qa"; }
     const waitingOn = p.depends_on.filter((d) => s.tasks[d]?.status !== "merged");
