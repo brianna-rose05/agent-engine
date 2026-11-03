@@ -15,7 +15,7 @@ on:
         description: "Max USD per agent attempt (hard limit: 1.00)"
         default: "0.50"
       tasks:
-        description: "Task ids, space separated (blank = all 8)"
+        description: "Task ids, space separated (blank = all)"
         default: ""
 
 permissions:

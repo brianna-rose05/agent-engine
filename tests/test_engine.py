@@ -29,7 +29,8 @@ def test_sloppy_agent_is_caught_and_main_stays_clean(tmp_path):
     results = {r.task: r for r in engine(repo, agent).run_all(load_tasks(), parallel=4)}
     assert results["B6"].status == "failed" and len(results["B6"].attempts) == 3
     assert "outside its scope: store.py" in results["B3"].attempts[0].reason
-    assert sum(r.silent_failures for r in results.values()) == 10
+    # B6 fails all 3 tries; every other task (including the cheater, B3) fails its first try silently
+    assert sum(r.silent_failures for r in results.values()) == 3 + (len(results) - 1)
     assert "locked" in git(repo, "show", "main:store.py")                # cheat never reached main
     assert "NotImplementedError" in git(repo, "show", "main:payments.py")   # failed task never merged
     assert subprocess.run(["python3", "-m", "pytest", "-q", "-p", "no:cacheprovider"], cwd=repo).returncode == 0

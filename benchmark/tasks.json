@@ -1,42 +1,114 @@
 [
   {
-    "id": "B1", "title": "Show open time slots", "module": "slots.py", "size": "small",
+    "id": "B1",
+    "title": "Show open time slots",
+    "module": "slots.py",
+    "size": "small",
     "signature": "def open_slots(store: Store, day: date, tz: str) -> list[Slot]",
     "spec": "Return the slots whose start time falls on the given calendar day in the given IANA timezone (e.g. 'America/Los_Angeles'). Exclude slots that have a booking with status 'booked'; slots whose only bookings are 'cancelled' are open again. Sort by start time, earliest first."
   },
   {
-    "id": "B2", "title": "Book a slot", "module": "booking.py", "size": "medium",
+    "id": "B2",
+    "title": "Book a slot",
+    "module": "booking.py",
+    "size": "medium",
     "signature": "def book(store: Store, customer_id: int, pet_id: int, slot_id: int, now: datetime) -> Booking",
     "spec": "Create a Booking with status 'booked', add it to store.bookings using store.next_booking_id(), and return it. Raise BookingError (from store) if: the slot does not exist; the pet does not exist or does not belong to the customer; the slot already has a 'booked' booking (cancelled ones don't count); or the slot starts at or before `now`."
   },
   {
-    "id": "B3", "title": "Cancel a booking", "module": "cancel.py", "size": "small",
+    "id": "B3",
+    "title": "Cancel a booking",
+    "module": "cancel.py",
+    "size": "small",
     "signature": "def cancel(store: Store, booking_id: int, by_customer_id: int, now: datetime) -> Booking",
     "spec": "Set the booking's status to 'cancelled' and return it. Raise BookingError if: the booking does not exist; it belongs to a different customer; it is already cancelled; or the slot starts less than 2 hours after `now` (exactly 2 hours is allowed)."
   },
   {
-    "id": "B4", "title": "Reschedule a booking", "module": "reschedule.py", "size": "medium",
+    "id": "B4",
+    "title": "Reschedule a booking",
+    "module": "reschedule.py",
+    "size": "medium",
     "signature": "def reschedule(store: Store, booking_id: int, new_slot_id: int, by_customer_id: int, now: datetime) -> Booking",
     "spec": "Move an existing 'booked' booking to a different slot by updating its slot_id (keep the same booking id) and return it. Raise BookingError if: the booking does not exist, is cancelled, or belongs to someone else; the new slot does not exist, starts at or before `now`, or already has a 'booked' booking by someone else. Rescheduling to the slot it is already in is an error too. The old slot becomes free automatically because the booking no longer points to it."
   },
   {
-    "id": "B5", "title": "Find reminders to send", "module": "reminders.py", "size": "small",
+    "id": "B5",
+    "title": "Find reminders to send",
+    "module": "reminders.py",
+    "size": "small",
     "signature": "def reminders_due(store: Store, now: datetime) -> list[Booking]",
     "spec": "Return 'booked' bookings whose slot starts more than 23 hours and at most 25 hours after `now` (a reminder window around 24 hours before). `now` and slot times are timezone-aware; compare correctly even if `now` is given in a non-UTC timezone. Sort by slot start time."
   },
   {
-    "id": "B6", "title": "Calculate the deposit", "module": "payments.py", "size": "small",
+    "id": "B6",
+    "title": "Calculate the deposit",
+    "module": "payments.py",
+    "size": "small",
     "signature": "def deposit_cents(price_cents: int) -> int",
     "spec": "The deposit is 2000 cents ($20). If the service costs less than $20, the deposit is the full price. Free services have no deposit. Raise ValueError for a negative price."
   },
   {
-    "id": "B7", "title": "Clean up signup details", "module": "signup.py", "size": "medium",
+    "id": "B7",
+    "title": "Clean up signup details",
+    "module": "signup.py",
+    "size": "medium",
     "signature": "def normalize_email(raw: str) -> str\ndef normalize_phone(raw: str) -> str",
     "spec": "normalize_email: trim spaces and lowercase; raise ValueError unless it has exactly one '@', a non-empty name part, and a domain containing a dot that doesn't start or end with a dot. normalize_phone: accept US numbers in common formats like '(415) 555-0132', '415.555.0132', '415 555 0132', '+1 415-555-0132', '1-415-555-0132' and return E.164 form '+14155550132'. Raise ValueError for anything that isn't exactly 10 digits, or 11 digits starting with 1, after removing formatting characters (spaces, dashes, dots, parentheses, a leading +). Letters are always invalid."
   },
   {
-    "id": "B8", "title": "Staff daily schedule", "module": "schedule.py", "size": "medium",
+    "id": "B8",
+    "title": "Staff daily schedule",
+    "module": "schedule.py",
+    "size": "medium",
     "signature": "def daily_schedule(store: Store, day: date, tz: str) -> list[str]",
     "spec": "Return one line per 'booked' booking on that local calendar day, sorted by start time, formatted exactly like '9:00 AM  Biscuit (Golden Retriever) - Dana' (local time with no leading zero on the hour, two spaces, pet name, breed in parentheses, ' - ', customer name). Skip cancelled bookings. Return an empty list if there are none."
+  },
+  {
+    "id": "B9",
+    "title": "Waitlist when a day is full",
+    "module": "waitlist.py",
+    "size": "large",
+    "signature": "def join_waitlist(waitlist: list, customer_id: int, pet_id: int, day: date) -> object\ndef promote_from_waitlist(store: Store, waitlist: list, slot_id: int, tz: str, now: datetime) -> Booking | None",
+    "spec": "Define a dataclass WaitlistEntry in this module with fields customer_id, pet_id, day (a date), and order (int). join_waitlist appends a new entry to `waitlist` and returns it; order starts at 1 and increases by one for each entry ever added to that list (use max existing order + 1). Joining twice with the same customer, pet and day raises ValueError. promote_from_waitlist is called when a slot frees up: if the slot exists, starts after `now`, and has no 'booked' booking, find the entry with the lowest order whose day equals the slot's local calendar date in `tz`, whose pet belongs to that customer (store.pets), and whose customer has no other 'booked' booking on that same local day. Book it (new Booking with store.next_booking_id(), added to store.bookings), remove that entry from the waitlist, and return the booking. Skip ineligible entries and keep looking. If nothing qualifies, or the slot doesn't exist, is taken, or isn't in the future, return None and leave the waitlist unchanged."
+  },
+  {
+    "id": "B10",
+    "title": "Generate the day's appointment slots",
+    "module": "availability.py",
+    "size": "large",
+    "signature": "def generate_slots(day: date, tz: str, open_time: time, close_time: time, duration_min: int, buffer_min: int, breaks: list[tuple[time, time]]) -> list[datetime]",
+    "spec": "Return the start times (timezone-aware, in UTC) of appointments for one day, using local wall-clock times in the IANA timezone `tz`. The first appointment starts at open_time. Each next candidate starts duration_min + buffer_min after the previous candidate's start. An appointment is only allowed if it ends (start + duration) at or before close_time. If a candidate appointment overlaps a break (start < break_end and end > break_start), skip it and continue from the end of that break instead. Breaks are local times. Must be correct on daylight saving transition days (local 9:00 AM maps to different UTC hours on different dates). Raise ValueError if duration_min <= 0, buffer_min < 0, or close_time <= open_time. Also add `from datetime import time` if you need it."
+  },
+  {
+    "id": "B11",
+    "title": "Price a grooming order",
+    "module": "pricing.py",
+    "size": "large",
+    "signature": "def quote(services: list[str], pets: list[dict], coupon: str | None) -> int",
+    "spec": "Return the order total in cents. Each pet is a dict with 'size' ('small' 4000, 'medium' 5500, 'large' 7000 base price) and 'coat' ('short' +0, 'long' +1000). Each service in `services` is applied to every pet: 'nails' 800, 'teeth' 1250, 'deshed' 1500 (deshed only applies to long-coat pets; short-coat pets are not charged for it). Duplicate service names count once. Unknown sizes, coats or services raise ValueError, and so does an empty pets list. Multi-pet discount: with 2 or more pets, take 15% off the cheapest pet's total, rounding the discount half up to a whole cent (787.5 becomes 788). Then apply the coupon to the remaining order total: 'WELCOME10' takes 10% off (discount rounded half up to a whole cent), 'FLAT15' takes 1500 off but never below 0. Coupon codes are case-insensitive and ignore surrounding spaces; None or '' means no coupon; any other code raises ValueError. Note: Python's round() rounds halves to even, which is wrong here."
+  },
+  {
+    "id": "B12",
+    "title": "Work out a refund",
+    "module": "refunds.py",
+    "size": "medium",
+    "signature": "def refund_cents(deposit_paid_cents: int, slot_start: datetime, cancelled_at: datetime, by_staff: bool, already_refunded_cents: int) -> int",
+    "spec": "Return how many cents to refund now for a cancelled booking's deposit. If staff cancelled (by_staff=True), the full deposit is refundable. Otherwise use the time from cancelled_at to slot_start: 48 hours or more: full deposit; at least 24 but under 48 hours: half the deposit, rounded down to a whole cent; under 24 hours, or after the start: nothing. Subtract already_refunded_cents and never return a negative number. Raise ValueError for negative amounts or if either datetime is naive (no timezone). Datetimes may be in different timezones; compare them correctly."
+  },
+  {
+    "id": "B13",
+    "title": "Book a recurring appointment",
+    "module": "recurring.py",
+    "size": "large",
+    "signature": "def book_recurring(store: Store, customer_id: int, pet_id: int, first_slot_id: int, every_weeks: int, count: int, now: datetime, tz: str) -> tuple[list[Booking], list[datetime]]",
+    "spec": "Book the same appointment every `every_weeks` weeks, `count` times, starting with first_slot_id. Raise ValueError if every_weeks < 1 or count < 1. Raise BookingError (and book nothing) if the pet doesn't belong to the customer, or the first slot doesn't exist, isn't after `now`, or already has a 'booked' booking. Occurrence k (0-based) is at the same local wall-clock time as the first slot in timezone `tz`, on the local date first_date + 7 * every_weeks * k days, so it stays at 9:00 AM local across daylight saving changes. For each occurrence, find a slot in store.slots starting at exactly that instant; if one exists and has no 'booked' booking, book it (store.next_booking_id(), added to store.bookings). Otherwise record the target start time (timezone-aware, UTC) as skipped. Return (bookings made in order, skipped start times in order)."
+  },
+  {
+    "id": "B14",
+    "title": "Import customers from a spreadsheet",
+    "module": "importer.py",
+    "size": "large",
+    "signature": "def import_customers(store: Store, csv_text: str) -> dict",
+    "spec": "Import customers from CSV text and return {'added': int, 'updated': int, 'skipped': list of (line_number, reason)}. Line 1 is a header containing name, email and optionally timezone columns, in any order and any letter case; extra columns are ignored. The text may start with a byte-order mark (\\ufeff) and fields may be quoted and contain commas. Line numbers count the header as line 1. For each data row: trim name and email and lowercase the email. Skip (with any short reason string) rows with an empty name, an email without exactly one '@' or without a dot in the part after it, or a timezone that isn't a valid IANA name (an empty or missing timezone means 'America/Los_Angeles'). Skip a row whose email already appeared on an earlier row of this same file. Blank lines are ignored entirely. If a customer with that email (case-insensitive) already exists in store.customers, update their name and timezone and count it as updated; otherwise add Customer(id=max existing id + 1, ...) and count it as added."
   }
 ]
