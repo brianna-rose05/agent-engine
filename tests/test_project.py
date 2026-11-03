@@ -215,7 +215,8 @@ def test_a_broken_sink_never_breaks_a_build(tmp_path):
     repo = build_project_repo(tmp_path / "r")
     eng = Engine(repo, ScriptedTeam(FIXTURE), lambda t, n: LocalWorktreeSandbox(repo, t.id, n), events=Emitter(Broken()))
     _, results = run_project(DESCRIPTION, repo, eng, python=sys.executable)
-    assert all(r.status in ("merged", "passed") for r in results)
+    assert all(r.status in ("merged", "passed") for r in results), \
+        [(r.task, r.status, r.error, [a.reason for a in r.attempts]) for r in results]
 
 
 # ------------------------------------------------------- phase 1: Next.js + Supabase web apps
