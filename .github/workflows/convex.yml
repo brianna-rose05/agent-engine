@@ -1,0 +1,45 @@
+name: Convex backend
+
+# Deploys web/convex (the app's backend) and sets the engine's shared secret on it.
+on:
+  push:
+    branches: [main]
+    paths: ["web/convex/**", ".github/workflows/convex.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: convex-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web
+    env:
+      CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - name: Deploy functions and schema
+        run: npx convex deploy --typecheck disable
+      - name: Set server-side settings (values never printed)
+        run: |
+          # ENGINE_SECRET: shared with worker.py, derived from the deploy key (engine/convex_sink.py).
+          SECRET=$(python3 -c 'import hashlib,os; print(hashlib.sha256(("studio-engine:"+os.environ["CONVEX_DEPLOY_KEY"]).encode()).hexdigest())')
+          echo "::add-mask::$SECRET"
+          npx convex env set ENGINE_SECRET "$SECRET" > /dev/null
+          # GITHUB_DISPATCH_TOKEN (lets the app start the Worker) is pasted into the Convex dashboard by hand:
+          # a token limited to starting workflows on this repo, never copied here from another service.
+          npx convex env set ENGINE_REPO "${{ github.repository }}" > /dev/null
+          echo "Convex settings updated."

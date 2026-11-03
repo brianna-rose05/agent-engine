@@ -10,12 +10,36 @@ import type { Plan } from "@/lib/types";
 import { Avatar, Mono } from "@/components/ui";
 
 export default function PlanPage() {
-  const { state, approve, sendBack, project } = useProject();
+  const { state, approve, sendBack, project, liveStatus, liveError } = useProject();
   const router = useRouter();
   const [note, setNote] = useState("");
   const [replying, setReplying] = useState(false);
   const [busy, setBusy] = useState(false);
   const plan = state.plan;
+
+  if (!plan && liveError) {
+    return (
+      <div className="mx-auto flex max-w-xl flex-col items-center gap-3 px-6 py-24 text-center">
+        <Avatar who="engine" size={48} />
+        <h2 className="text-xl font-semibold tracking-tight">The team couldn&apos;t start</h2>
+        <p className="text-muted">{liveError}</p>
+      </div>
+    );
+  }
+
+  if (!plan && (liveStatus === "queued" || liveStatus === "starting")) {
+    return (
+      <div className="mx-auto flex max-w-xl flex-col items-center gap-4 px-6 py-24 text-center">
+        <Avatar who="engine" size={48} active />
+        <h2 className="text-xl font-semibold tracking-tight">Getting the team ready</h2>
+        <p className="text-muted">
+          Creating a private GitHub repo for {project.name} and starting a cloud sandbox for the planner. This takes
+          about a minute.
+        </p>
+        <Loader2 className="animate-spin text-faint motion-reduce:animate-none" size={18} />
+      </div>
+    );
+  }
 
   if (!plan) {
     return (

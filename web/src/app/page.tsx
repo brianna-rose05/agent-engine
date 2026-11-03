@@ -6,15 +6,40 @@ import { motion } from "motion/react";
 import { ArrowRight, ClipboardCheck, Code2, ShieldCheck, Sparkles } from "lucide-react";
 import demo from "@/demo/garden.json";
 import { Shell } from "@/components/Shell";
-import { liveEnabled } from "@/lib/supabase";
+import { useMutation } from "convex/react";
+import { api, liveEnabled, useOwner } from "@/lib/convex";
+import { OwnerGate } from "@/components/OwnerGate";
 
 const MODELS = [
   { id: "haiku", name: "Haiku", note: "Fast and cheap. About $0.10 for a small project.", recommended: true },
   { id: "sonnet", name: "Sonnet", note: "Stronger reasoning, about 4× the cost." },
 ];
 
-export default function NewProject() {
+export default function NewProjectPage() {
+  return (
+    <Shell>
+      <OwnerGate>{liveEnabled ? <LiveForm /> : <NewProject create={null} />}</OwnerGate>
+    </Shell>
+  );
+}
+
+function LiveForm() {
+  const { key } = useOwner();
+  const create = useMutation(api.projects.create);
+  return (
+    <NewProject
+      create={async (name, description, model) =>
+        (await create({ key: key!, name, description, model })) as string}
+    />
+  );
+}
+
+type Create = ((name: string, description: string, model: "haiku" | "sonnet") => Promise<string>) | null;
+
+function NewProject({ create }: { create: Create }) {
   const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [model, setModel] = useState("haiku");
@@ -25,13 +50,21 @@ export default function NewProject() {
     setDescription(demo.project.description.replace(/^# .*\n+/, ""));
   };
 
-  const start = () => {
-    // Live project creation arrives with the Supabase hookup; until then this opens the recorded run.
-    router.push("/p/demo/plan");
+  const start = async () => {
+    if (!create) return router.push("/p/demo/plan");     // demo mode: the recorded run
+    setBusy(true);
+    setError("");
+    try {
+      const id = await create(name, description, model as "haiku" | "sonnet");
+      router.push(`/p/${id}/plan`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message.replace(/^.*ConvexError: /, "").split("\n")[0] : "Couldn't start the project.");
+      setBusy(false);
+    }
   };
 
   return (
-    <Shell>
+    <>
       <main className="mx-auto w-full max-w-3xl px-4 py-10 md:px-8 md:py-16">
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25 }}>
           <p className="mb-2 text-sm text-muted">New project</p>
@@ -90,15 +123,15 @@ export default function NewProject() {
           </fieldset>
 
           <div className="flex flex-wrap items-center gap-3 border-t border-line pt-5">
-            <p className="mr-auto text-xs text-muted">
-              {liveEnabled ? "Nothing is built until you approve the plan." : "Demo mode: this opens a replay of a real build."}
+            <p className={`mr-auto text-xs ${error ? "text-bad" : "text-muted"}`}>
+              {error || (liveEnabled ? "Nothing is built until you approve the plan." : "Demo mode: this opens a replay of a real build.")}
             </p>
             <button
-              disabled={!ready}
+              disabled={!ready || busy}
               onClick={start}
               className="flex items-center gap-2 rounded-xl bg-ink px-5 py-2.5 text-sm font-medium text-white transition-all duration-150 hover:-translate-y-px disabled:translate-y-0 disabled:opacity-35"
             >
-              Plan it <ArrowRight size={15} />
+              {busy ? "Starting…" : "Plan it"} <ArrowRight size={15} />
             </button>
           </div>
         </div>
@@ -124,6 +157,6 @@ export default function NewProject() {
           <ShieldCheck size={13} /> The engine never takes an agent&apos;s word for it.
         </p>
       </main>
-    </Shell>
+    </>
   );
 }

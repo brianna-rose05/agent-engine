@@ -3,7 +3,9 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Hash, KanbanSquare, ListTree, Plus, Sparkles } from "lucide-react";
-import { liveEnabled } from "@/lib/supabase";
+import { useQuery } from "convex/react";
+import { api, liveEnabled, useOwner } from "@/lib/convex";
+import { money } from "@/lib/reduce";
 
 type Nav = { href: string; label: string; Icon: typeof Hash; count?: number };
 
@@ -66,13 +68,15 @@ export function Shell({
 
         <div className="flex flex-col gap-0.5">
           <p className="px-2.5 pb-1 text-[11px] font-medium uppercase tracking-wider text-faint">Projects</p>
+          {liveEnabled && <LiveProjects path={path} />}
           <Link
             href="/p/demo/board"
             className={`flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm ${
               path.startsWith("/p/demo") ? "text-ink" : "text-muted hover:text-ink"
             }`}
           >
-            <span className="size-2 rounded-full bg-dev" /> Community garden
+            <span className="size-2 rounded-full bg-faint" /> Community garden
+            <span className="ml-auto text-[11px] text-faint">demo</span>
           </Link>
         </div>
 
@@ -91,7 +95,10 @@ export function Shell({
 
         <div className="mt-auto rounded-xl border border-line bg-surface p-3 text-xs leading-relaxed text-muted">
           {liveEnabled ? (
-            <>Connected. Projects run on your agents.</>
+            <>
+              <span className="font-medium text-ink">Live.</span> New projects run real agents in the cloud. The
+              community garden is a replay.
+            </>
           ) : (
             <>
               <span className="font-medium text-ink">Demo mode.</span> Replaying a real Haiku build. Connect Supabase to run
@@ -129,5 +136,34 @@ export function Shell({
         {children}
       </div>
     </div>
+  );
+}
+
+const DOT: Record<string, string> = {
+  done: "bg-dev", building: "bg-qa", planning: "bg-planner", starting: "bg-planner", queued: "bg-faint",
+  awaiting_approval: "bg-you", approved: "bg-qa", failed: "bg-bad", rejected: "bg-faint",
+};
+
+function LiveProjects({ path }: { path: string }) {
+  const { key } = useOwner();
+  const rows = useQuery(api.projects.list, key ? { key } : "skip") as
+    { id: string; name: string; status: string; costUsd: number }[] | undefined;
+  if (!rows?.length) return null;
+  return (
+    <>
+      {rows.map((p) => (
+        <Link
+          key={p.id}
+          href={`/p/${p.id}/board`}
+          className={`flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm ${
+            path.startsWith(`/p/${p.id}`) ? "text-ink" : "text-muted hover:text-ink"
+          }`}
+          title={`${p.status.replace("_", " ")} · ${money(p.costUsd)}`}
+        >
+          <span className={`size-2 shrink-0 rounded-full ${DOT[p.status] ?? "bg-faint"} ${p.status === "awaiting_approval" ? "breathe text-you" : ""}`} />
+          <span className="truncate">{p.name}</span>
+        </Link>
+      ))}
+    </>
   );
 }

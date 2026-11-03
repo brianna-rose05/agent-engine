@@ -1,12 +1,12 @@
 name: Worker
 
-# Started by the web app (POST /api/projects) with the project's id. Plans the project, waits for
-# the owner's approval in the app, then builds it, streaming progress to Supabase.
+# Started by the app (Convex projects.startWorker) with the project's id. Plans the project, waits
+# for the owner's approval in the app, then builds it in its own repo, streaming progress to Convex.
 on:
   workflow_dispatch:
     inputs:
       project_id:
-        description: "Project id (uuid) from Supabase"
+        description: "Project id from the app (Convex)"
         required: true
 
 permissions:
@@ -26,17 +26,16 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -q claude-agent-sdk daytona pytest
-      - name: Check the id looks like a uuid
+      - name: Check the id looks like a Convex id
         env:
           PROJECT_ID: ${{ inputs.project_id }}
-        run: echo "$PROJECT_ID" | grep -Eq '^[0-9a-f-]{36}$' || { echo "bad project id"; exit 1; }
+        run: echo "$PROJECT_ID" | grep -Eq '^[a-z0-9]{16,40}$' || { echo "bad project id"; exit 1; }
       - name: Plan, wait for approval, build
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
-          BENCH_GITHUB_TOKEN: ${{ secrets.BENCH_GITHUB_TOKEN }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          PROJECTS_GITHUB_TOKEN: ${{ secrets.PROJECTS_GITHUB_TOKEN }}
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
           PROJECT_ID: ${{ inputs.project_id }}
         run: |
           git config --global user.email "engine@agents.local"

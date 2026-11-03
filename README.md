@@ -137,8 +137,8 @@ channels (#all, #planning, #tests, #build). Without Supabase settings it runs in
 replaying a real Haiku build of the community garden (`scripts/make_demo.py`).
 
 The engine now streams every step as events (`engine/events.py`) and pauses after planning
-for approval. `engine/supabase_sink.py` writes events into the tables in
-`supabase/migrations/0001_projects.sql`; `worker.py` (workflow **Worker**) runs one project,
+for approval. `engine/convex_sink.py` writes them to the app's Convex backend (see below);
+`worker.py` (workflow **Worker**) runs one project,
 waiting for the owner's click in the app before building. The app turns the same events into
 the same screens in both modes (`web/src/lib/reduce.ts`).
 
@@ -146,19 +146,17 @@ the same screens in both modes (`web/src/lib/reduce.ts`).
 cd web && npm install && npm run dev        # http://localhost:3000, demo mode
 ```
 
-### Hooking up Supabase (Brianna, about 10 minutes)
-1. supabase.com -> New project (free tier). Wait for it to start.
-2. SQL Editor -> paste `supabase/migrations/0001_projects.sql` -> Run.
-3. Project Settings -> API: copy the **Project URL**, the **anon public** key and the
-   **service_role** key.
-4. GitHub -> agent-engine -> Settings -> Secrets and variables -> Actions -> add
-   `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` (service_role never goes in the web app).
-5. Optional, for a link you can open anywhere: vercel.com -> Add New Project -> import
-   agent-engine, Root Directory `web`, add env vars `NEXT_PUBLIC_SUPABASE_URL` and
-   `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
+### Live backend: Convex
+The app's backend is Convex (`web/convex`): a project row plus its event log; the app rebuilds every
+screen from the events. The **Convex backend** workflow deploys it and sets the engine's shared secret
+(derived from the deploy key). Creating a project in the app starts the **Worker** workflow, which creates
+a private repo for the project, plans it, waits for your approval in the app, then builds it.
 
-Still to build once Supabase exists: sign-in (magic link), creating a project from the form,
-and the API route that starts the Worker.
+Repo secrets: `CONVEX_DEPLOY_KEY` (Convex production deploy key) and `PROJECTS_GITHUB_TOKEN` (fine-grained:
+Administration, Contents and Workflows read/write; the worker creates and pushes each project's repo).
+Convex dashboard (production > Settings > Environment Variables): `OWNER_PASSPHRASE` (the app asks for it
+until sign-in exists) and `GITHUB_DISPATCH_TOKEN` (fine-grained, agent-engine only, Actions read/write;
+lets the app start the Worker). Vercel: project `studio`, root `web`, env `NEXT_PUBLIC_CONVEX_URL`.
 
 ## Next (milestone 4, remaining)
 

@@ -3,7 +3,9 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import demo from "@/demo/garden.json";
 import { initialState, reduce } from "./reduce";
-import { supabaseBrowser, liveEnabled } from "./supabase";
+import { useMutation, useQuery } from "convex/react";
+import { api, liveEnabled, useOwner } from "./convex";
+import { OwnerGate } from "@/components/OwnerGate";
 import type { EngineEvent, Project, ProjectState } from "./types";
 
 type Store = {
@@ -18,6 +20,8 @@ type Store = {
   restart: () => void;
   clock: number;
   duration: number;
+  liveStatus?: string;          // the project row's status (live mode): queued, starting, planning...
+  liveError?: string | null;    // e.g. the worker couldn't be started
 };
 
 const Ctx = createContext<Store | null>(null);
@@ -83,58 +87,48 @@ function useDemo(): Omit<Store, "project" | "mode"> {
   return { state, approve, sendBack, speed, setSpeed, restart, clock, duration: DEMO_END };
 }
 
-/** Live: read the project's events from Supabase and follow new ones as the engine writes them. */
-function useLive(projectId: string): Omit<Store, "project" | "mode"> & { project: Project | null } {
-  const [events, setEvents] = useState<EngineEvent[]>([]);
-  const [project, setProject] = useState<Project | null>(null);
-  const start = useRef<number | null>(null);
+type LiveData = {
+  project: Project & { status: string; error: string | null };
+  events: { kind: EngineEvent["kind"]; task_id: string | null; data: Record<string, unknown>; ts: number }[];
+} | null;
 
-  useEffect(() => {
-    if (!liveEnabled) return;
-    const sb = supabaseBrowser();
-    type Row = { id: number; kind: EngineEvent["kind"]; task_id: string | null; data: Record<string, unknown>; ts: string };
-    const toEvent = (r: Row): EngineEvent => {
-      const ms = Date.parse(r.ts);
-      start.current ??= ms;
-      return { t: (ms - start.current) / 1000, kind: r.kind, task_id: r.task_id, data: r.data };
-    };
-    let cancelled = false;
-    sb.from("projects").select("id,name,description,model,created_at").eq("id", projectId).single()
-      .then(({ data }) => !cancelled && data && setProject(data as Project));
-    sb.from("events").select("*").eq("project_id", projectId).order("id")
-      .then(({ data }) => !cancelled && data && setEvents((data as Row[]).map(toEvent)));
-    const channel = sb.channel(`events-${projectId}`)
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "events", filter: `project_id=eq.${projectId}` },
-          (payload) => setEvents((ev) => [...ev, toEvent(payload.new as Row)]))
-      .subscribe();
-    return () => {
-      cancelled = true;
-      sb.removeChannel(channel);
-    };
-  }, [projectId]);
-
-  const state = useMemo(() => events.reduce(reduce, initialState()), [events]);
-  const decide = (approved: boolean, note: string | null) => async () => {
-    const { error } = await supabaseBrowser().rpc("decide_plan", { project: projectId, approved, note });
-    if (error) throw error;
-  };
-  return {
-    project, state,
-    approve: decide(true, null),
-    sendBack: (note: string) => decide(false, note)(),
+/** Live: the project's events from Convex, which pushes new ones as the engine writes them. */
+function LiveProvider({ id, children }: { id: string; children: React.ReactNode }) {
+  const { key } = useOwner();
+  const data = useQuery(api.projects.get, key ? { key, id } : "skip") as LiveData | undefined;
+  const decide = useMutation(api.projects.decide);
+  const state = useMemo(() => {
+    if (!data) return initialState();
+    const t0 = data.events[0]?.ts ?? 0;
+    return data.events.reduce(
+      (s, e) => reduce(s, { t: e.ts - t0, kind: e.kind, task_id: e.task_id, data: e.data }),
+      initialState(),
+    );
+  }, [data]);
+  const project: Project = data?.project ?? { id, name: data === null ? "Project not found" : "Loading…",
+                                               description: "", model: "haiku", created_at: "" };
+  const value: Store = {
+    project, state, mode: "live",
+    approve: async () => { await decide({ key: key!, id, approved: true }); },
+    sendBack: async (note: string) => { await decide({ key: key!, id, approved: false, note }); },
     speed: 1, setSpeed: () => {}, restart: () => {}, clock: state.now, duration: state.now,
+    liveStatus: data?.project.status, liveError: data?.project.error ?? null,
   };
+  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+}
+
+function DemoProvider({ children }: { children: React.ReactNode }) {
+  const demoStore = useDemo();
+  return <Ctx.Provider value={{ ...demoStore, mode: "demo", project: demo.project as Project }}>{children}</Ctx.Provider>;
 }
 
 export function ProjectProvider({ id, children }: { id: string; children: React.ReactNode }) {
-  const isDemo = id === "demo" || !liveEnabled;
-  const demoStore = useDemo();
-  const liveStore = useLive(isDemo ? "" : id);
-  const value: Store = isDemo
-    ? { ...demoStore, mode: "demo", project: demo.project as Project }
-    : { ...liveStore, mode: "live",
-        project: liveStore.project ?? { id, name: "Loading…", description: "", model: "haiku", created_at: "" } };
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+  if (id === "demo" || !liveEnabled) return <DemoProvider>{children}</DemoProvider>;
+  return (
+    <OwnerGate>
+      <LiveProvider id={id}>{children}</LiveProvider>
+    </OwnerGate>
+  );
 }
 
 export const DEMO_SOURCE = demo.source;
