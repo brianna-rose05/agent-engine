@@ -1,0 +1,51 @@
+name: Worker
+
+# Started by the web app (POST /api/projects) with the project's id. Plans the project, waits for
+# the owner's approval in the app, then builds it, streaming progress to Supabase.
+on:
+  workflow_dispatch:
+    inputs:
+      project_id:
+        description: "Project id (uuid) from Supabase"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paid-run            # one build at a time while all projects share one scratch repo
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q claude-agent-sdk daytona pytest
+      - name: Check the id looks like a uuid
+        env:
+          PROJECT_ID: ${{ inputs.project_id }}
+        run: echo "$PROJECT_ID" | grep -Eq '^[0-9a-f-]{36}$' || { echo "bad project id"; exit 1; }
+      - name: Plan, wait for approval, build
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+          BENCH_GITHUB_TOKEN: ${{ secrets.BENCH_GITHUB_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          PROJECT_ID: ${{ inputs.project_id }}
+        run: |
+          git config --global user.email "engine@agents.local"
+          git config --global user.name "engine"
+          python worker.py --project-id "$PROJECT_ID" --budget 0.50
+      - name: Save the event log and built code
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: worker-results
+          path: results/
+          if-no-files-found: ignore

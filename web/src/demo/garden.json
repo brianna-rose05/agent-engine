@@ -1,0 +1,884 @@
+{
+ "project": {
+  "id": "demo",
+  "name": "Community garden",
+  "description": "# Community garden\n\nA Python library (no UI yet) that runs a neighborhood community garden.\n\n- The garden has numbered plots in three sizes: small, medium and large. Members rent one plot per\n  season (seasons are named like \"2027-spring\"). A member can rent at most one plot per season,\n  and a plot can only be rented by one member per season.\n- Season fees: small $40, medium $65, large $90. Members who rented any plot in the previous season\n  get 10% off (seasons go spring, summer, fall, then the next year's spring). Seniors get $15 off\n  after any other discount. Fees never go below $0. Money is in whole cents, rounded half up.\n- When a season is full, members can join a waitlist for a plot size. When a rental is cancelled,\n  the plot goes to the earliest waitlisted member for that size who doesn't already have a plot\n  that season.\n- Shared tools are watered on a rota: given the members renting in a season and the season's start\n  date, produce a weekly watering schedule (one member per week, in order of plot number, wrapping\n  around) for a given number of weeks.\n- Staff need a season summary: plots rented by size, total fees collected, and waitlist length per size.\n",
+  "model": "haiku",
+  "status": "queued",
+  "created_at": "2026-11-03T00:44:15Z"
+ },
+ "plan": {
+  "project": "community-garden",
+  "contracts": [
+   "models.py"
+  ],
+  "tasks": [
+   {
+    "id": "T1",
+    "title": "Season parsing and ordering",
+    "module": "seasons.py",
+    "spec": "Implement parse_season, format_season, previous_season and season_sort_key exactly as the docstrings in seasons.py. Season strings are 'YYYY-term' with term in spring, summer, fall; anything else raises InvalidSeasonError (message: 'Season must look like 2027-spring (spring, summer or fall).'). previous_season('2027-spring')=='2026-fall', ('2027-summer')->'2027-spring', ('2027-fall')->'2027-summer'; '0000-spring' raises. season_sort_key orders by (year, term index spring=0, summer=1, fall=2). Tests: round trips, leading zeros, whitespace/uppercase rejected, non-str rejected, year boundaries.",
+    "depends_on": []
+   },
+   {
+    "id": "T2",
+    "title": "Season fee calculation",
+    "module": "pricing.py",
+    "spec": "Implement base_fee_cents and calculate_fee_cents exactly as the docstrings in pricing.py. Base fees in cents: small 4000, medium 6500, large 9000. Order: 10% loyalty discount if rented_previous_season (discount = round half up of amount*10/100 to the cent), then 1500 cents senior discount if is_senior, then floor at 0. Examples: LARGE/prev/not senior=8100; SMALL/prev/senior=2100; SMALL/no prev/senior=2500; MEDIUM/no prev/no senior=6500. Unknown size raises ValueError('Unknown plot size'). Tests should cover every size x flag combination and rounding of half cents.",
+    "depends_on": []
+   },
+   {
+    "id": "T3",
+    "title": "Per-season waitlists",
+    "module": "waitlist.py",
+    "spec": "Implement class Waitlist exactly as the docstrings in waitlist.py: add, remove, remove_member, entries, length, pop_next_eligible. Entries per (season, size) are kept in join order using a joined_order counter starting at 1 per instance. Duplicate (season,size,member_id) add raises WaitlistError('Already on the waitlist for that size'); remove of a missing entry raises WaitlistError('Not on the waitlist for that size'); remove_member never raises and returns the count removed. pop_next_eligible removes and returns the earliest entry whose member_id is not in the ineligible ids, or returns None and removes nothing. This module does not validate season strings. Tests: ordering, isolation across seasons and sizes, skipping ineligible members.",
+    "depends_on": []
+   },
+   {
+    "id": "T4",
+    "title": "Garden rentals, cancellations and waitlist promotion",
+    "module": "garden.py",
+    "spec": "Implement class Garden exactly as the docstrings in garden.py: __init__ (validates plot numbers), plots, waitlist, free_plots, rentals, quote_fee_cents, rent_plot, cancel_rental, join_waitlist. Fees come from pricing.calculate_fee_cents with rented_previous_season = member has an active rental in seasons.previous_season(season). Seasons are validated with seasons.parse_season. Check order and error types as in the docstrings (UnknownPlotError, PlotTakenError, AlreadyRentedError, NotRentedError, WaitlistError, InvalidSeasonError). cancel_rental promotes the earliest eligible waitlisted member for that plot's size (Waitlist.pop_next_eligible) onto the freed plot and returns their Rental, or None. A member who holds a plot gets all their waitlist entries for that season removed. Tests: the full rent/cancel/promote flow, fee on promotion, join rejected while a plot of that size is free.",
+    "depends_on": [
+     "T1",
+     "T2",
+     "T3"
+    ]
+   },
+   {
+    "id": "T5",
+    "title": "Shared-tool watering rota",
+    "module": "watering.py",
+    "spec": "Implement watering_schedule exactly as the docstring in watering.py. Negative weeks raises ScheduleError('Number of weeks cannot be negative'); weeks == 0 returns []; no rentals with weeks > 0 raises ScheduleError('No members are renting plots this season'). Otherwise sort rentals by plot_number ascending and assign week k (1-based) to the rental at index (k-1) % n, with week_start = start + 7*(k-1) days. Tests: wrap-around, unsorted input, start date arithmetic across months and years, single renter.",
+    "depends_on": []
+   },
+   {
+    "id": "T6",
+    "title": "Season summary report",
+    "module": "reports.py",
+    "spec": "Implement season_summary exactly as the docstring in reports.py. Validate season with seasons.parse_season (InvalidSeasonError). Count only rentals whose season equals the given season. Return SeasonSummary with plots_rented_by_size, total_fees_cents, and waitlist_length_by_size, each keyed by all three PlotSize values in SMALL, MEDIUM, LARGE order and zero-filled. Pure function, no mutation. Tests: empty season, mixed seasons ignored, waitlist lengths per size.",
+    "depends_on": [
+     "T1",
+     "T3"
+    ]
+   }
+  ]
+ },
+ "events": [
+  {
+   "t": 0,
+   "kind": "task_queued",
+   "task_id": "PLAN",
+   "data": {
+    "title": "Plan the project",
+    "role": "planner",
+    "depends_on": []
+   }
+  },
+  {
+   "t": 0.0,
+   "kind": "task_status",
+   "task_id": "PLAN",
+   "data": {
+    "status": "working",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 84.6,
+   "kind": "task_status",
+   "task_id": "PLAN",
+   "data": {
+    "status": "checking",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 105.7,
+   "kind": "attempt_finished",
+   "task_id": "PLAN",
+   "data": {
+    "n": 1,
+    "passed": true,
+    "claim": "done",
+    "reason": "",
+    "cost_usd": 0.01585686,
+    "seconds": 105.7,
+    "turns": 9,
+    "files_changed": [
+     "garden.py",
+     "models.py",
+     "plan.json",
+     "pricing.py",
+     "reports.py",
+     "seasons.py",
+     "waitlist.py",
+     "watering.py"
+    ]
+   }
+  },
+  {
+   "t": 105.7,
+   "kind": "task_status",
+   "task_id": "PLAN",
+   "data": {
+    "status": "merged",
+    "cost_usd": 0.0159
+   }
+  },
+  {
+   "t": 105.7,
+   "kind": "plan_ready",
+   "task_id": null,
+   "data": {
+    "plan": {
+     "project": "community-garden",
+     "contracts": [
+      "models.py"
+     ],
+     "tasks": [
+      {
+       "id": "T1",
+       "title": "Season parsing and ordering",
+       "module": "seasons.py",
+       "spec": "Implement parse_season, format_season, previous_season and season_sort_key exactly as the docstrings in seasons.py. Season strings are 'YYYY-term' with term in spring, summer, fall; anything else raises InvalidSeasonError (message: 'Season must look like 2027-spring (spring, summer or fall).'). previous_season('2027-spring')=='2026-fall', ('2027-summer')->'2027-spring', ('2027-fall')->'2027-summer'; '0000-spring' raises. season_sort_key orders by (year, term index spring=0, summer=1, fall=2). Tests: round trips, leading zeros, whitespace/uppercase rejected, non-str rejected, year boundaries.",
+       "depends_on": []
+      },
+      {
+       "id": "T2",
+       "title": "Season fee calculation",
+       "module": "pricing.py",
+       "spec": "Implement base_fee_cents and calculate_fee_cents exactly as the docstrings in pricing.py. Base fees in cents: small 4000, medium 6500, large 9000. Order: 10% loyalty discount if rented_previous_season (discount = round half up of amount*10/100 to the cent), then 1500 cents senior discount if is_senior, then floor at 0. Examples: LARGE/prev/not senior=8100; SMALL/prev/senior=2100; SMALL/no prev/senior=2500; MEDIUM/no prev/no senior=6500. Unknown size raises ValueError('Unknown plot size'). Tests should cover every size x flag combination and rounding of half cents.",
+       "depends_on": []
+      },
+      {
+       "id": "T3",
+       "title": "Per-season waitlists",
+       "module": "waitlist.py",
+       "spec": "Implement class Waitlist exactly as the docstrings in waitlist.py: add, remove, remove_member, entries, length, pop_next_eligible. Entries per (season, size) are kept in join order using a joined_order counter starting at 1 per instance. Duplicate (season,size,member_id) add raises WaitlistError('Already on the waitlist for that size'); remove of a missing entry raises WaitlistError('Not on the waitlist for that size'); remove_member never raises and returns the count removed. pop_next_eligible removes and returns the earliest entry whose member_id is not in the ineligible ids, or returns None and removes nothing. This module does not validate season strings. Tests: ordering, isolation across seasons and sizes, skipping ineligible members.",
+       "depends_on": []
+      },
+      {
+       "id": "T4",
+       "title": "Garden rentals, cancellations and waitlist promotion",
+       "module": "garden.py",
+       "spec": "Implement class Garden exactly as the docstrings in garden.py: __init__ (validates plot numbers), plots, waitlist, free_plots, rentals, quote_fee_cents, rent_plot, cancel_rental, join_waitlist. Fees come from pricing.calculate_fee_cents with rented_previous_season = member has an active rental in seasons.previous_season(season). Seasons are validated with seasons.parse_season. Check order and error types as in the docstrings (UnknownPlotError, PlotTakenError, AlreadyRentedError, NotRentedError, WaitlistError, InvalidSeasonError). cancel_rental promotes the earliest eligible waitlisted member for that plot's size (Waitlist.pop_next_eligible) onto the freed plot and returns their Rental, or None. A member who holds a plot gets all their waitlist entries for that season removed. Tests: the full rent/cancel/promote flow, fee on promotion, join rejected while a plot of that size is free.",
+       "depends_on": [
+        "T1",
+        "T2",
+        "T3"
+       ]
+      },
+      {
+       "id": "T5",
+       "title": "Shared-tool watering rota",
+       "module": "watering.py",
+       "spec": "Implement watering_schedule exactly as the docstring in watering.py. Negative weeks raises ScheduleError('Number of weeks cannot be negative'); weeks == 0 returns []; no rentals with weeks > 0 raises ScheduleError('No members are renting plots this season'). Otherwise sort rentals by plot_number ascending and assign week k (1-based) to the rental at index (k-1) % n, with week_start = start + 7*(k-1) days. Tests: wrap-around, unsorted input, start date arithmetic across months and years, single renter.",
+       "depends_on": []
+      },
+      {
+       "id": "T6",
+       "title": "Season summary report",
+       "module": "reports.py",
+       "spec": "Implement season_summary exactly as the docstring in reports.py. Validate season with seasons.parse_season (InvalidSeasonError). Count only rentals whose season equals the given season. Return SeasonSummary with plots_rented_by_size, total_fees_cents, and waitlist_length_by_size, each keyed by all three PlotSize values in SMALL, MEDIUM, LARGE order and zero-filled. Pure function, no mutation. Tests: empty season, mixed seasons ignored, waitlist lengths per size.",
+       "depends_on": [
+        "T1",
+        "T3"
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "t": 111.7,
+   "kind": "plan_decision",
+   "task_id": null,
+   "data": {
+    "approved": true,
+    "note": ""
+   }
+  },
+  {
+   "t": 111.7,
+   "kind": "task_queued",
+   "task_id": "T1-qa",
+   "data": {
+    "title": "Acceptance tests for Season parsing and ordering",
+    "role": "qa",
+    "depends_on": []
+   }
+  },
+  {
+   "t": 111.7,
+   "kind": "task_queued",
+   "task_id": "T1",
+   "data": {
+    "title": "Season parsing and ordering",
+    "role": "dev",
+    "depends_on": [
+     "T1-qa"
+    ]
+   }
+  },
+  {
+   "t": 111.7,
+   "kind": "task_queued",
+   "task_id": "T2-qa",
+   "data": {
+    "title": "Acceptance tests for Season fee calculation",
+    "role": "qa",
+    "depends_on": []
+   }
+  },
+  {
+   "t": 111.7,
+   "kind": "task_queued",
+   "task_id": "T2",
+   "data": {
+    "title": "Season fee calculation",
+    "role": "dev",
+    "depends_on": [
+     "T2-qa"
+    ]
+   }
+  },
+  {
+   "t": 111.7,
+   "kind": "task_queued",
+   "task_id": "T3-qa",
+   "data": {
+    "title": "Acceptance tests for Per-season waitlists",
+    "role": "qa",
+    "depends_on": []
+   }
+  },
+  {
+   "t": 111.7,
+   "kind": "task_queued",
+   "task_id": "T3",
+   "data": {
+    "title": "Per-season waitlists",
+    "role": "dev",
+    "depends_on": [
+     "T3-qa"
+    ]
+   }
+  },
+  {
+   "t": 111.7,
+   "kind": "task_queued",
+   "task_id": "T4-qa",
+   "data": {
+    "title": "Acceptance tests for Garden rentals, cancellations and waitlist promotion",
+    "role": "qa",
+    "depends_on": []
+   }
+  },
+  {
+   "t": 111.7,
+   "kind": "task_queued",
+   "task_id": "T4",
+   "data": {
+    "title": "Garden rentals, cancellations and waitlist promotion",
+    "role": "dev",
+    "depends_on": [
+     "T1",
+     "T2",
+     "T3",
+     "T4-qa"
+    ]
+   }
+  },
+  {
+   "t": 111.7,
+   "kind": "task_queued",
+   "task_id": "T5-qa",
+   "data": {
+    "title": "Acceptance tests for Shared-tool watering rota",
+    "role": "qa",
+    "depends_on": []
+   }
+  },
+  {
+   "t": 111.7,
+   "kind": "task_queued",
+   "task_id": "T5",
+   "data": {
+    "title": "Shared-tool watering rota",
+    "role": "dev",
+    "depends_on": [
+     "T5-qa"
+    ]
+   }
+  },
+  {
+   "t": 111.7,
+   "kind": "task_queued",
+   "task_id": "T6-qa",
+   "data": {
+    "title": "Acceptance tests for Season summary report",
+    "role": "qa",
+    "depends_on": []
+   }
+  },
+  {
+   "t": 111.7,
+   "kind": "task_queued",
+   "task_id": "T6",
+   "data": {
+    "title": "Season summary report",
+    "role": "dev",
+    "depends_on": [
+     "T1",
+     "T3",
+     "T6-qa"
+    ]
+   }
+  },
+  {
+   "t": 111.7,
+   "kind": "task_status",
+   "task_id": "T1-qa",
+   "data": {
+    "status": "working",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 111.7,
+   "kind": "task_status",
+   "task_id": "T2-qa",
+   "data": {
+    "status": "working",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 111.7,
+   "kind": "task_status",
+   "task_id": "T3-qa",
+   "data": {
+    "status": "working",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 111.7,
+   "kind": "task_status",
+   "task_id": "T4-qa",
+   "data": {
+    "status": "working",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 137.4,
+   "kind": "task_status",
+   "task_id": "T2-qa",
+   "data": {
+    "status": "checking",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 137.9,
+   "kind": "task_status",
+   "task_id": "T1-qa",
+   "data": {
+    "status": "checking",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 143.8,
+   "kind": "attempt_finished",
+   "task_id": "T2-qa",
+   "data": {
+    "n": 1,
+    "passed": true,
+    "claim": "done",
+    "reason": "",
+    "cost_usd": 0.004081325,
+    "seconds": 32.1,
+    "turns": 5,
+    "files_changed": [
+     "acceptance/test_pricing.py"
+    ]
+   }
+  },
+  {
+   "t": 143.8,
+   "kind": "task_status",
+   "task_id": "T2-qa",
+   "data": {
+    "status": "passed",
+    "cost_usd": 0.0041
+   }
+  },
+  {
+   "t": 143.8,
+   "kind": "task_status",
+   "task_id": "T2",
+   "data": {
+    "status": "working",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 144.5,
+   "kind": "attempt_finished",
+   "task_id": "T1-qa",
+   "data": {
+    "n": 1,
+    "passed": true,
+    "claim": "done",
+    "reason": "",
+    "cost_usd": 0.004365585,
+    "seconds": 32.8,
+    "turns": 4,
+    "files_changed": [
+     "acceptance/test_seasons.py"
+    ]
+   }
+  },
+  {
+   "t": 144.5,
+   "kind": "task_status",
+   "task_id": "T1-qa",
+   "data": {
+    "status": "passed",
+    "cost_usd": 0.0044
+   }
+  },
+  {
+   "t": 144.5,
+   "kind": "task_status",
+   "task_id": "T1",
+   "data": {
+    "status": "working",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 147.8,
+   "kind": "task_status",
+   "task_id": "T3-qa",
+   "data": {
+    "status": "checking",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 156.8,
+   "kind": "attempt_finished",
+   "task_id": "T3-qa",
+   "data": {
+    "n": 1,
+    "passed": true,
+    "claim": "done",
+    "reason": "",
+    "cost_usd": 0.005752575,
+    "seconds": 45.1,
+    "turns": 6,
+    "files_changed": [
+     "acceptance/test_waitlist.py"
+    ]
+   }
+  },
+  {
+   "t": 156.8,
+   "kind": "task_status",
+   "task_id": "T3-qa",
+   "data": {
+    "status": "passed",
+    "cost_usd": 0.0058
+   }
+  },
+  {
+   "t": 156.8,
+   "kind": "task_status",
+   "task_id": "T3",
+   "data": {
+    "status": "working",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 164.6,
+   "kind": "task_status",
+   "task_id": "T1",
+   "data": {
+    "status": "checking",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 165.7,
+   "kind": "task_status",
+   "task_id": "T4-qa",
+   "data": {
+    "status": "checking",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 166.6,
+   "kind": "task_status",
+   "task_id": "T2",
+   "data": {
+    "status": "checking",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 169.6,
+   "kind": "attempt_finished",
+   "task_id": "T1",
+   "data": {
+    "n": 1,
+    "passed": true,
+    "claim": "done",
+    "reason": "",
+    "cost_usd": 0.0034563099999999998,
+    "seconds": 25.1,
+    "turns": 5,
+    "files_changed": [
+     "seasons.py",
+     "tests/test_seasons.py"
+    ]
+   }
+  },
+  {
+   "t": 169.6,
+   "kind": "task_status",
+   "task_id": "T1",
+   "data": {
+    "status": "merged",
+    "cost_usd": 0.0035
+   }
+  },
+  {
+   "t": 169.6,
+   "kind": "task_status",
+   "task_id": "T5-qa",
+   "data": {
+    "status": "working",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 172.3,
+   "kind": "attempt_finished",
+   "task_id": "T2",
+   "data": {
+    "n": 1,
+    "passed": true,
+    "claim": "done",
+    "reason": "",
+    "cost_usd": 0.0035582400000000003,
+    "seconds": 28.5,
+    "turns": 8,
+    "files_changed": [
+     "pricing.py",
+     "tests/test_pricing.py"
+    ]
+   }
+  },
+  {
+   "t": 172.3,
+   "kind": "task_status",
+   "task_id": "T2",
+   "data": {
+    "status": "merged",
+    "cost_usd": 0.0036
+   }
+  },
+  {
+   "t": 172.3,
+   "kind": "task_status",
+   "task_id": "T6-qa",
+   "data": {
+    "status": "working",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 173.9,
+   "kind": "task_status",
+   "task_id": "T3",
+   "data": {
+    "status": "checking",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 178.2,
+   "kind": "attempt_finished",
+   "task_id": "T3",
+   "data": {
+    "n": 1,
+    "passed": true,
+    "claim": "done",
+    "reason": "",
+    "cost_usd": 0.0030637750000000004,
+    "seconds": 21.4,
+    "turns": 3,
+    "files_changed": [
+     "tests/test_waitlist.py",
+     "waitlist.py"
+    ]
+   }
+  },
+  {
+   "t": 178.2,
+   "kind": "task_status",
+   "task_id": "T3",
+   "data": {
+    "status": "merged",
+    "cost_usd": 0.0031
+   }
+  },
+  {
+   "t": 179.2,
+   "kind": "attempt_finished",
+   "task_id": "T4-qa",
+   "data": {
+    "n": 1,
+    "passed": true,
+    "claim": "done",
+    "reason": "",
+    "cost_usd": 0.010829755,
+    "seconds": 67.5,
+    "turns": 5,
+    "files_changed": [
+     "acceptance/test_garden.py"
+    ]
+   }
+  },
+  {
+   "t": 179.2,
+   "kind": "task_status",
+   "task_id": "T4-qa",
+   "data": {
+    "status": "passed",
+    "cost_usd": 0.0108
+   }
+  },
+  {
+   "t": 179.2,
+   "kind": "task_status",
+   "task_id": "T4",
+   "data": {
+    "status": "working",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 193.9,
+   "kind": "task_status",
+   "task_id": "T6-qa",
+   "data": {
+    "status": "checking",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 198.5,
+   "kind": "task_status",
+   "task_id": "T5-qa",
+   "data": {
+    "status": "checking",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 199.3,
+   "kind": "attempt_finished",
+   "task_id": "T6-qa",
+   "data": {
+    "n": 1,
+    "passed": true,
+    "claim": "done",
+    "reason": "",
+    "cost_usd": 0.0038571900000000004,
+    "seconds": 27.0,
+    "turns": 5,
+    "files_changed": [
+     "acceptance/test_reports.py"
+    ]
+   }
+  },
+  {
+   "t": 199.3,
+   "kind": "task_status",
+   "task_id": "T6-qa",
+   "data": {
+    "status": "passed",
+    "cost_usd": 0.0039
+   }
+  },
+  {
+   "t": 199.3,
+   "kind": "task_status",
+   "task_id": "T6",
+   "data": {
+    "status": "working",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 205.7,
+   "kind": "attempt_finished",
+   "task_id": "T5-qa",
+   "data": {
+    "n": 1,
+    "passed": true,
+    "claim": "done",
+    "reason": "",
+    "cost_usd": 0.00392779,
+    "seconds": 36.1,
+    "turns": 6,
+    "files_changed": [
+     "acceptance/test_watering.py"
+    ]
+   }
+  },
+  {
+   "t": 205.7,
+   "kind": "task_status",
+   "task_id": "T5-qa",
+   "data": {
+    "status": "passed",
+    "cost_usd": 0.0039
+   }
+  },
+  {
+   "t": 205.7,
+   "kind": "task_status",
+   "task_id": "T5",
+   "data": {
+    "status": "working",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 216.0,
+   "kind": "task_status",
+   "task_id": "T6",
+   "data": {
+    "status": "checking",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 219.8,
+   "kind": "task_status",
+   "task_id": "T5",
+   "data": {
+    "status": "checking",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 220.2,
+   "kind": "attempt_finished",
+   "task_id": "T6",
+   "data": {
+    "n": 1,
+    "passed": true,
+    "claim": "done",
+    "reason": "",
+    "cost_usd": 0.0030176499999999993,
+    "seconds": 20.9,
+    "turns": 4,
+    "files_changed": [
+     "reports.py",
+     "tests/test_reports.py"
+    ]
+   }
+  },
+  {
+   "t": 220.2,
+   "kind": "task_status",
+   "task_id": "T6",
+   "data": {
+    "status": "merged",
+    "cost_usd": 0.003
+   }
+  },
+  {
+   "t": 223.3,
+   "kind": "attempt_finished",
+   "task_id": "T5",
+   "data": {
+    "n": 1,
+    "passed": true,
+    "claim": "done",
+    "reason": "",
+    "cost_usd": 0.001747105,
+    "seconds": 17.6,
+    "turns": 4,
+    "files_changed": [
+     "tests/test_watering.py",
+     "watering.py"
+    ]
+   }
+  },
+  {
+   "t": 223.3,
+   "kind": "task_status",
+   "task_id": "T5",
+   "data": {
+    "status": "merged",
+    "cost_usd": 0.0017
+   }
+  },
+  {
+   "t": 231.3,
+   "kind": "task_status",
+   "task_id": "T4",
+   "data": {
+    "status": "checking",
+    "attempt": 1
+   }
+  },
+  {
+   "t": 244.3,
+   "kind": "attempt_finished",
+   "task_id": "T4",
+   "data": {
+    "n": 1,
+    "passed": true,
+    "claim": "done",
+    "reason": "",
+    "cost_usd": 0.009499244999999998,
+    "seconds": 65.1,
+    "turns": 8,
+    "files_changed": [
+     "garden.py",
+     "tests/test_garden.py"
+    ]
+   }
+  },
+  {
+   "t": 244.3,
+   "kind": "task_status",
+   "task_id": "T4",
+   "data": {
+    "status": "merged",
+    "cost_usd": 0.0095
+   }
+  },
+  {
+   "t": 244.3,
+   "kind": "project_finished",
+   "task_id": null,
+   "data": {
+    "status": "done",
+    "cost_usd": 0.0732
+   }
+  }
+ ],
+ "source": "Replay of a real Haiku run (gha-proj-haiku); durations and costs as measured."
+}

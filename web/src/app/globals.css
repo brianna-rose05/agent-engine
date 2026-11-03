@@ -1,0 +1,52 @@
+@import "tailwindcss";
+
+/* Light and airy, soft color per agent role (spec: light mode only, multiple soft colors). */
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --color-canvas: #f7f7f5;
+  --color-surface: #ffffff;
+  --color-line: #ebeae6;
+  --color-ink: #1f1f1d;
+  --color-muted: #6f6e69;
+  --color-faint: #a3a29c;
+
+  --color-planner-bg: #f2eeff;
+  --color-planner: #6a4fd0;
+  --color-qa-bg: #e9f3ff;
+  --color-qa: #2d6cae;
+  --color-dev-bg: #e7f6ee;
+  --color-dev: #2a8556;
+  --color-engine-bg: #fff2e7;
+  --color-engine: #b4612a;
+  --color-you-bg: #ffeef3;
+  --color-you: #bf4468;
+  --color-check-bg: #fdf4de;
+  --color-check: #9c6f12;
+  --color-bad-bg: #ffecec;
+  --color-bad: #c03a3a;
+}
+
+html {
+  color-scheme: light;
+}
+
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Gentle "agent is working" pulse; off when the user prefers reduced motion. */
+@keyframes breathe {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 28%, transparent); }
+  50% { box-shadow: 0 0 0 5px color-mix(in srgb, currentColor 0%, transparent); }
+}
+.breathe { animation: breathe 1.8s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .breathe { animation: none; }
+}
+
+.scroll-thin { scrollbar-width: thin; scrollbar-color: #dcdbd6 transparent; }

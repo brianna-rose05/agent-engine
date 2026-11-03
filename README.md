@@ -129,7 +129,37 @@ gh api -X POST repos/brianna-rose05/agent-engine/actions/workflows/project.yml/d
   -f ref=main -f 'inputs[model]=haiku' -f 'inputs[budget]=0.50'
 ```
 
-## Next (milestone 4)
+## Milestone 4: the app (in progress)
 
-Put the UI on top: the plan screen shows `plan.json` for approval, the board shows these task
-statuses live, and escalations (failed or blocked tasks) become messages to the user.
+`web/` is the Next.js app: **New project**, **Plan** (dependency map, approve or send back),
+**Board** (one card per feature moving through tests, build, checking, done), and Slack-style
+channels (#all, #planning, #tests, #build). Without Supabase settings it runs in demo mode,
+replaying a real Haiku build of the community garden (`scripts/make_demo.py`).
+
+The engine now streams every step as events (`engine/events.py`) and pauses after planning
+for approval. `engine/supabase_sink.py` writes events into the tables in
+`supabase/migrations/0001_projects.sql`; `worker.py` (workflow **Worker**) runs one project,
+waiting for the owner's click in the app before building. The app turns the same events into
+the same screens in both modes (`web/src/lib/reduce.ts`).
+
+```bash
+cd web && npm install && npm run dev        # http://localhost:3000, demo mode
+```
+
+### Hooking up Supabase (Brianna, about 10 minutes)
+1. supabase.com -> New project (free tier). Wait for it to start.
+2. SQL Editor -> paste `supabase/migrations/0001_projects.sql` -> Run.
+3. Project Settings -> API: copy the **Project URL**, the **anon public** key and the
+   **service_role** key.
+4. GitHub -> agent-engine -> Settings -> Secrets and variables -> Actions -> add
+   `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` (service_role never goes in the web app).
+5. Optional, for a link you can open anywhere: vercel.com -> Add New Project -> import
+   agent-engine, Root Directory `web`, add env vars `NEXT_PUBLIC_SUPABASE_URL` and
+   `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
+
+Still to build once Supabase exists: sign-in (magic link), creating a project from the form,
+and the API route that starts the Worker.
+
+## Next (milestone 4, remaining)
+
+Sign-in, live project creation, and a revise loop when you send a plan back.

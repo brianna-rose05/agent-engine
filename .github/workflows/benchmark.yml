@@ -38,6 +38,23 @@ jobs:
       - run: pip install -q claude-agent-sdk daytona pytest
       - run: python -m pytest -q
 
+  web:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run build
+
   benchmark:
     if: github.event_name == 'workflow_dispatch'
     needs: test

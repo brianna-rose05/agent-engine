@@ -12,6 +12,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Callable
 
+from engine.events import Emitter
 from engine.interfaces import Agent, Sandbox, Task
 
 MAX_ATTEMPTS = 3
@@ -97,8 +98,9 @@ def git(args: list[str], repo: Path) -> subprocess.CompletedProcess:
 
 class Engine:
     def __init__(self, repo: Path, agent: Agent, make_sandbox: Callable[[Task, int], Sandbox],
-                 max_attempts: int = MAX_ATTEMPTS):
+                 max_attempts: int = MAX_ATTEMPTS, events: Emitter | None = None):
         self.repo = Path(repo)
+        self.events = events or Emitter()
         self.agent = agent
         self.make_sandbox = make_sandbox
         self.max_attempts = max_attempts
@@ -137,20 +139,32 @@ class Engine:
 
     # ------------------------------------------------------------------ task
     def run_task(self, task: Task) -> Result:
+        res = self._run_task(task)
+        self.events.emit("task_status", task.id, status=res.status, error=res.error, cost_usd=res.cost_usd)
+        return res
+
+    def _run_task(self, task: Task) -> Result:
         res = Result(task.id, task.title)
         feedback = None
+        emit = self.events.emit
         try:
             for n in range(1, self.max_attempts + 1):
                 t0 = time.time()
                 with self.make_sandbox(task, n) as box:
+                    emit("task_status", task.id, status="working", attempt=n)
                     rep = self.agent.run(task, box, attempt=n, feedback=feedback)
+                    emit("task_status", task.id, status="checking", attempt=n)
                     ok, reason, changed, out = self.verify(task, box)
-                    res.attempts.append(Attempt(n, rep.claim, ok, reason, changed, out,
-                                                round(time.time() - t0, 1), rep.cost_usd, rep.turns))
+                    a = Attempt(n, rep.claim, ok, reason, changed, out,
+                                round(time.time() - t0, 1), rep.cost_usd, rep.turns)
+                    res.attempts.append(a)
+                    emit("attempt_finished", task.id, n=n, passed=ok, claim=rep.claim, reason=reason,
+                         cost_usd=a.cost_usd, seconds=a.seconds, turns=a.turns, files_changed=changed)
                     if ok:
                         if not task.merge:
                             res.status = "passed"
                             return res
+                        emit("task_status", task.id, status="merging", attempt=n)
                         box.publish(f"{task.id}: {task.title}")
                         res.status = self.merge(box.branch, task.id)
                         return res
@@ -177,6 +191,8 @@ class Engine:
         merged into main, so its sandbox already contains that code. If a dependency doesn't merge,
         everything downstream is marked blocked (escalated) instead of being attempted."""
         check_graph(tasks)
+        for t in tasks:
+            self.events.emit("task_queued", t.id, title=t.title, role=t.role, depends_on=list(t.depends_on))
         pending = {t.id: t for t in tasks}
         results: dict[str, Result] = {}
         with ThreadPoolExecutor(parallel) as pool:
@@ -190,6 +206,7 @@ class Engine:
                         if bad:
                             results[tid] = Result(tid, t.title, status="blocked",
                                                   error=f"waiting on {', '.join(bad)}, which did not finish")
+                            self.events.emit("task_status", tid, status="blocked", error=results[tid].error)
                             del pending[tid]
                             blocked_any = True
                 for tid, t in list(pending.items()):

@@ -155,3 +155,64 @@ def test_qa_failure_blocks_only_its_dev_task_and_dependents(tmp_path):
 def test_summary_counts():
     assert summary_counts("....\n3 failed, 2 passed in 0.1s") == {"failed": 3, "passed": 2}
     assert summary_counts("1 failed, 1 error in 0.1s") == {"failed": 1, "error": 1}
+
+
+# ------------------------------------------------------------- milestone 4: live events + approval
+def go_with(tmp_path, agent, **kw):
+    from engine.events import Emitter, ListSink
+    sink = ListSink()
+    repo = build_project_repo(tmp_path / "r")
+    eng = Engine(repo, agent, lambda t, n: LocalWorktreeSandbox(repo, t.id, n), events=Emitter(sink))
+    plan, results = run_project(DESCRIPTION, repo, eng, python=sys.executable, **kw)
+    return sink.events, plan, {r.task: r for r in results}
+
+
+def test_events_trace_every_task_from_queued_to_finished(tmp_path):
+    events, _, res = go_with(tmp_path, ScriptedTeam(FIXTURE))
+    kinds = [e.kind for e in events]
+    assert kinds.index("plan_ready") < kinds.index("plan_decision") < kinds.index("attempt_finished", kinds.index("plan_decision"))
+    for tid, r in res.items():
+        statuses = [e.data["status"] for e in events if e.kind == "task_status" and e.task_id == tid]
+        assert statuses[0] == "working" and statuses[-1] == r.status, (tid, statuses)
+        assert any(e.kind == "task_queued" and e.task_id == tid for e in events)
+    t3 = next(e for e in events if e.kind == "task_queued" and e.task_id == "T3")
+    assert t3.data["depends_on"] == ["T1", "T2", "T3-qa"] and t3.data["role"] == "dev"
+
+
+def test_rejected_plan_builds_nothing(tmp_path):
+    calls = []
+
+    class Spy(ScriptedTeam):
+        def run(self, task, box, attempt, feedback):
+            calls.append(task.role)
+            return super().run(task, box, attempt, feedback)
+
+    events, plan, res = go_with(tmp_path, Spy(FIXTURE), approve=lambda p: (False, "too many tasks"))
+    assert plan is not None and list(res) == ["PLAN"] and calls == ["planner"]
+    decision = next(e for e in events if e.kind == "plan_decision")
+    assert decision.data == {"approved": False, "note": "too many tasks"}
+
+
+def test_blocked_tasks_emit_a_status(tmp_path):
+    class LazyQA(ScriptedTeam):
+        def run(self, task, box, attempt, feedback):
+            if task.id == "T2-qa":
+                return AgentReport("done")
+            return super().run(task, box, attempt, feedback)
+
+    events, _, _ = go_with(tmp_path, LazyQA(FIXTURE))
+    blocked = {e.task_id for e in events if e.kind == "task_status" and e.data["status"] == "blocked"}
+    assert blocked == {"T2", "T3"}
+
+
+def test_a_broken_sink_never_breaks_a_build(tmp_path):
+    from engine.events import Emitter
+
+    class Broken:
+        def write(self, event):
+            raise OSError("disk full")
+
+    repo = build_project_repo(tmp_path / "r")
+    eng = Engine(repo, ScriptedTeam(FIXTURE), lambda t, n: LocalWorktreeSandbox(repo, t.id, n), events=Emitter(Broken()))
+    _, results = run_project(DESCRIPTION, repo, eng, python=sys.executable)
+    assert all(r.status in ("merged", "passed") for r in results)

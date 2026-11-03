@@ -19,6 +19,7 @@ import re
 import shlex
 import subprocess
 from pathlib import Path
+from typing import Callable
 
 from engine.engine import Engine, GraphError, Result, SetupError, check_graph
 from engine.interfaces import Sandbox, Task
@@ -220,12 +221,28 @@ def tasks_from_plan(plan: dict, python: str = "python3") -> list[Task]:
 
 
 # -------------------------------------------------------------------- run
+Approver = Callable[[dict], "tuple[bool, str]"]
+
+
+def auto_approve(plan: dict) -> tuple[bool, str]:
+    return True, "approved automatically"
+
+
 def run_project(description: str, repo: Path, engine: Engine, python: str = "python3",
-                parallel: int = 4) -> tuple[dict | None, list[Result]]:
+                parallel: int = 4, approve: Approver = auto_approve) -> tuple[dict | None, list[Result]]:
+    """Plan, then pause for approval, then QA + build. `approve(plan)` returns (approved, note); in the
+    app it waits for the user's click, offline it approves automatically."""
+    emit = engine.events.emit
     planner = planning_task(description, python)
+    emit("task_queued", planner.id, title=planner.title, role="planner", depends_on=[])
     plan_result = engine.run_task(planner)
     if plan_result.status != "merged":
         return None, [plan_result]
     plan = json.loads((Path(repo) / "plan.json").read_text())
+    emit("plan_ready", plan=plan)
+    approved, note = approve(plan)
+    emit("plan_decision", approved=approved, note=note)
+    if not approved:
+        return plan, [plan_result]
     tasks = tasks_from_plan(plan, python)
     return plan, [plan_result, *engine.run_all(tasks, parallel=parallel)]
