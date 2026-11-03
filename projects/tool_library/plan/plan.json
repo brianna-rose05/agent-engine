@@ -1,0 +1,12 @@
+{
+  "project": "Neighborhood tool library",
+  "contracts": ["models.py"],
+  "tasks": [
+    {"id": "T1", "title": "Lend and return tools", "module": "lending.py", "depends_on": [],
+     "spec": "checkout_tool and return_tool, with the lending rules from the description."},
+    {"id": "T2", "title": "Late fees", "module": "fees.py", "depends_on": [],
+     "spec": "late_fee_cents for one loan, capped at 5000 cents."},
+    {"id": "T3", "title": "Overdue report", "module": "reports.py", "depends_on": ["T1", "T2"],
+     "spec": "overdue_report for staff, using fees.late_fee_cents."}
+  ]
+}

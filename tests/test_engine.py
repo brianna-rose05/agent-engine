@@ -36,7 +36,13 @@ def test_sloppy_agent_is_caught_and_main_stays_clean(tmp_path):
     assert sum(r.silent_failures for r in results.values()) == 3 + (len(attempted) - 1)
     assert "locked" in git(repo, "show", "main:store.py")                # cheat never reached main
     assert "NotImplementedError" in git(repo, "show", "main:payments.py")   # failed task never merged
-    assert subprocess.run(["python3", "-m", "pytest", "-q", "-p", "no:cacheprovider"], cwd=repo).returncode == 0
+    # Everything that did merge still passes its hidden tests on main (they're never committed there)
+    merged = [t for t in load_tasks() if results[t.id].status == "merged"]
+    for t in merged:
+        for path, body in t.hidden_tests.items():
+            (repo / path).write_text(body)
+    paths = [p for t in merged for p in t.hidden_tests]
+    assert subprocess.run(["python3", "-m", "pytest", "-q", "-p", "no:cacheprovider", *paths], cwd=repo).returncode == 0
 
 
 def test_slow_task_not_blamed_for_files_merged_by_others(tmp_path):
@@ -109,3 +115,14 @@ def test_infra_crash_is_reported_not_hidden(tmp_path):
 
     r = engine(repo, Boom()).run_task(load_tasks(["B1"])[0])
     assert r.status == "error" and "sandbox lost" in r.error
+
+
+def test_hidden_tests_never_reach_main(tmp_path):
+    """Regression (milestone 3): hidden tests were written into the sandbox for verification and
+    then committed with the agent's work, so later agents could read them on main."""
+    repo = build_repo(tmp_path / "r")
+    results = engine(repo, ReferenceAgent(HERE / "solutions")).run_all(load_tasks(["B1", "B6"]), parallel=2)
+    assert all(r.status == "merged" for r in results)
+    files = git(repo, "ls-tree", "-r", "--name-only", "main").split()
+    assert "tests/test_slots.py" not in files and "tests/test_payments.py" not in files
+    assert "slots.py" in files

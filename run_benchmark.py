@@ -87,25 +87,26 @@ def money(c: float) -> str:
     return f"${c:.4f}" if 0 < c < 0.01 else f"${c:.2f}"
 
 
-def report(results: list[Result], a, seconds: float, needs: dict[str, list[str]] | None = None) -> str:
+def report(results: list[Result], a, seconds: float, needs: dict[str, list[str]] | None = None,
+           title: str = "Benchmark report") -> str:
     needs = needs or {}
     n = len(results)
-    merged = [r for r in results if r.status == "merged"]
+    merged = [r for r in results if r.status in ("merged", "passed")]   # passed = verified QA tests
     first = sum(r.first_pass for r in results)
     silent = sum(r.silent_failures for r in results)
     retries = sum(max(0, len(r.attempts) - 1) for r in results)
     cost = sum(r.cost_usd for r in results)
     lines = [
-        f"# Benchmark report: {a.agent} on {a.sandbox}" + (f" ({a.model})" if a.agent.startswith("claude") else ""),
+        f"# {title}: {a.agent} on {a.sandbox}" + (f" ({a.model})" if a.agent.startswith("claude") else ""),
         "", f"{datetime.now():%Y-%m-%d %H:%M}, {n} tasks, {a.parallel} in parallel, wall time {seconds:.0f}s", "",
         "| Metric | Value |", "| --- | --- |",
-        f"| Merged | {len(merged)} of {n} |",
+        f"| Finished and verified | {len(merged)} of {n} |",
         f"| Blocked (a task it depends on didn't merge) | {sum(r.status == 'blocked' for r in results)} |",
         f"| First-try pass rate | {first}/{n} ({100 * first / n:.0f}%) |",
         f"| Silent failures caught (agent said done, checks said no) | {silent} |",
         f"| Retries used | {retries} |",
         f"| Total agent cost | {money(cost)} |",
-        f"| Avg cost per merged task | {money(cost / max(1, len(merged)))} |",
+        f"| Avg cost per finished task | {money(cost / max(1, len(merged)))} |",
         "", "| Task | Needs | Status | Tries | Silent fails | Time (s) | Cost | Why tries were rejected |",
         "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]

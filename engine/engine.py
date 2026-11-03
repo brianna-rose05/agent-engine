@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -14,6 +15,7 @@ from typing import Callable
 from engine.interfaces import Agent, Sandbox, Task
 
 MAX_ATTEMPTS = 3
+OK = ("merged", "passed")      # statuses that let dependent tasks start
 
 
 class SetupError(RuntimeError):
@@ -67,13 +69,13 @@ class Attempt:
 class Result:
     task: str
     title: str
-    status: str = "queued"      # merged | failed | merge_conflict | error | blocked
+    status: str = "queued"      # merged | passed (verified, not merged) | failed | merge_conflict | error | blocked
     attempts: list[Attempt] = field(default_factory=list)
     error: str = ""
 
     @property
     def first_pass(self) -> bool:
-        return self.status == "merged" and len(self.attempts) == 1
+        return self.status in OK and len(self.attempts) == 1
 
     @property
     def silent_failures(self) -> int:
@@ -115,9 +117,15 @@ class Engine:
         out_of_scope = [f for f in changed if not any(fnmatch(f, p) for p in task.can_edit)]
         if out_of_scope:
             return False, f"edited files outside its scope: {', '.join(out_of_scope)}", changed, ""
+        if task.check is not None:                       # planner / QA work has its own verifier
+            ok, reason, out = task.check(box)
+            return ok, reason, changed, out
         for path, body in task.hidden_tests.items():     # added only now, so they can't be gamed
             box.write_file(path, body)
         r = box.exec(task.test_cmd)
+        # Remove them again before anything is committed, or they'd merge into main where later
+        # agents could read them (regression: milestone 3 found this leak).
+        box.exec("rm -f " + " ".join(shlex.quote(p) for p in task.hidden_tests))
         tail = "\n".join(r.output.strip().splitlines()[-15:])
         if r.code in (126, 127) or "No module named pytest" in r.output:
             # The checks themselves couldn't run. That's a setup problem, not the agent's fault:
@@ -140,6 +148,9 @@ class Engine:
                     res.attempts.append(Attempt(n, rep.claim, ok, reason, changed, out,
                                                 round(time.time() - t0, 1), rep.cost_usd, rep.turns))
                     if ok:
+                        if not task.merge:
+                            res.status = "passed"
+                            return res
                         box.publish(f"{task.id}: {task.title}")
                         res.status = self.merge(box.branch, task.id)
                         return res
@@ -175,10 +186,10 @@ class Engine:
                 while blocked_any:                          # propagate failures down the graph
                     blocked_any = False
                     for tid, t in list(pending.items()):
-                        bad = [d for d in t.depends_on if d in results and results[d].status != "merged"]
+                        bad = [d for d in t.depends_on if d in results and results[d].status not in OK]
                         if bad:
                             results[tid] = Result(tid, t.title, status="blocked",
-                                                  error=f"waiting on {', '.join(bad)}, which did not merge")
+                                                  error=f"waiting on {', '.join(bad)}, which did not finish")
                             del pending[tid]
                             blocked_any = True
                 for tid, t in list(pending.items()):

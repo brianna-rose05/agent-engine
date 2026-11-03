@@ -104,7 +104,32 @@ tests/             35 tests for the engine, adapters, and benchmark
   *agents* wrote, not the reference solutions.
 - `--tasks D4` automatically brings in everything D4 depends on.
 
-## Next (milestone 3)
+## Milestone 3: from a description to built code, no human in the loop
 
-Let a planning agent produce the task graph and contracts from a project description, then run
-it with this engine.
+`engine/project.py`, `run_project.py`, workflow **Build project**.
+
+1. **Plan.** A planner agent writes `plan.json` (tasks, modules, dependencies), the shared contract,
+   and a stub per task whose docstrings are the spec. The engine checks the plan itself: format,
+   2-10 tasks, one owner per module, no cycles or unknown dependencies, files exist, everything
+   imports, task modules are real stubs. Problems go back to the planner as feedback (3 tries).
+2. **QA.** For each task, in parallel, a QA agent writes acceptance tests from the spec. The engine
+   accepts them only if they run cleanly, there are at least 3, and every one fails against the
+   stub *because* it's unimplemented (so tests that check nothing are rejected). These tests are
+   never merged: dev agents can't see them.
+3. **Build.** Dev agents implement the tasks in dependency order (milestone 2), each graded by its
+   hidden QA tests. A task waits for its dependencies and its own QA.
+
+Found and fixed along the way: hidden tests were being committed with the agent's work after
+verification, so later agents could read them on main. They're now removed before commit
+(regression test in `tests/test_engine.py`).
+
+```bash
+python3 run_project.py --agent scripted     # free, offline, tool-library fixture
+gh api -X POST repos/brianna-rose05/agent-engine/actions/workflows/project.yml/dispatches \
+  -f ref=main -f 'inputs[model]=haiku' -f 'inputs[budget]=0.50'
+```
+
+## Next (milestone 4)
+
+Put the UI on top: the plan screen shows `plan.json` for approval, the board shows these task
+statuses live, and escalations (failed or blocked tasks) become messages to the user.

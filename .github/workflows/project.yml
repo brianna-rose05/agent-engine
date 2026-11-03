@@ -1,0 +1,78 @@
+name: Build project
+
+# Plan -> QA tests -> build a whole project from a description, with no human in the loop.
+# Trigger: Actions tab -> Build project -> Run workflow, or the REST dispatch endpoint.
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model for every agent"
+        type: choice
+        options: [haiku, sonnet]
+        default: haiku
+      budget:
+        description: "Max USD per agent attempt (hard limit: 1.00)"
+        default: "0.50"
+      description:
+        description: "Project description file in this repo"
+        default: "projects/samples/community_garden.md"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paid-run            # shares the paws-bench repo with nothing else at the same time
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q claude-agent-sdk daytona pytest
+      - run: python -m pytest -q
+
+      - name: Spending guardrail
+        env:
+          BUDGET: ${{ inputs.budget }}
+        run: |
+          python - <<'PY'
+          import os, sys
+          b = float(os.environ["BUDGET"])
+          if not 0 < b <= 1.00:
+              sys.exit(f"Refusing to run: budget {b} is outside (0, 1.00].")
+          print(f"Budget OK: ${b:.2f} per attempt")
+          PY
+
+      - name: Build the project
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+          BENCH_GITHUB_TOKEN: ${{ secrets.BENCH_GITHUB_TOKEN }}
+          MODEL: ${{ inputs.model }}
+          BUDGET: ${{ inputs.budget }}
+          DESCRIPTION: ${{ inputs.description }}
+        run: |
+          git config --global user.email "engine@agents.local"
+          git config --global user.name "engine"
+          python run_project.py --agent claude-cli --sandbox daytona \
+            --repo-url https://github.com/brianna-rose05/paws-bench \
+            --description "$DESCRIPTION" --model "$MODEL" --budget "$BUDGET"
+
+      - name: Publish report
+        if: always()
+        run: |
+          f=$(ls -t results/*/report.md 2>/dev/null | head -1)
+          if [ -n "$f" ]; then cat "$f" >> "$GITHUB_STEP_SUMMARY"; else echo "No report was produced." >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Save results and the built code
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: project-results
+          path: results/
+          if-no-files-found: ignore

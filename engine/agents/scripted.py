@@ -34,3 +34,23 @@ class SloppyAgent(ReferenceAgent):
             box.write_file(module, "from store import *  # noqa\n\n# looks finished, isn't\n")
             return AgentReport("done")                                              # silent failure
         return super().run(task, box, attempt, feedback)
+
+
+class ScriptedTeam:
+    """Plays every role from a project fixture folder (plan/, acceptance/, solutions/), so the
+    whole plan -> QA -> build pipeline can be tested without an API key."""
+
+    def __init__(self, fixture: Path):
+        self.fixture = Path(fixture)
+
+    def run(self, task: Task, box: Sandbox, attempt: int, feedback: str | None) -> AgentReport:
+        if task.role == "planner":
+            for f in sorted((self.fixture / "plan").iterdir()):
+                box.write_file(f.name, f.read_text())
+        elif task.role == "qa":
+            path = task.can_edit[0]
+            box.write_file(path, (self.fixture / path).read_text())
+        else:
+            module = task.can_edit[0]
+            box.write_file(module, (self.fixture / "solutions" / module).read_text())
+        return AgentReport("done")

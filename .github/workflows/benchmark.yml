@@ -23,7 +23,7 @@ permissions:
 
 # Never run two paid benchmarks at once.
 concurrency:
-  group: benchmark-${{ github.event_name }}
+  group: ${{ github.event_name == 'workflow_dispatch' && 'paid-run' || format('tests-{0}', github.sha) }}
   cancel-in-progress: false
 
 jobs:

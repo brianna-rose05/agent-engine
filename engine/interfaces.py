@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Callable, Protocol
 
 
 @dataclass
@@ -13,7 +13,11 @@ class Task:
     can_edit: list[str]               # glob patterns the agent may change
     test_cmd: str                     # run by the ENGINE, never trusted from the agent
     hidden_tests: dict[str, str] = field(default_factory=dict)  # path -> contents, added only at verify time
-    depends_on: list[str] = field(default_factory=list)         # task ids that must merge before this starts
+    depends_on: list[str] = field(default_factory=list)         # task ids that must finish before this starts
+    role: str = "dev"                                           # dev | planner | qa (picks the agent's rules)
+    # Custom verification instead of hidden tests: check(box) -> (passed, reason, output). Run by the engine.
+    check: Callable[..., tuple[bool, str, str]] | None = field(default=None, repr=False)
+    merge: bool = True                                          # False: verified work is kept out of main
 
 
 @dataclass
