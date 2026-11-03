@@ -8,7 +8,7 @@ import pytest
 from engine.agents.claude_cli import ClaudeCLIAgent, parse_cli_json
 from engine.agents.claude_sdk import TOOLS, ClaudeSDKAgent
 from engine.agents.prompt import parse_claim
-from engine.interfaces import ExecResult, Task
+from engine.interfaces import ExecResult, SandboxUnavailable, Task
 from engine.sandboxes.daytona_sandbox import DaytonaSandbox
 
 TASK = Task("B6", "Deposit", "Implement deposit_cents.", ["payments.py", "tests/agent_test_payments*.py"],
@@ -219,7 +219,7 @@ def test_daytona_failed_start_is_found_by_name_and_deleted():
             deleted.append(box.name)
 
     c = Client()
-    with pytest.raises(RuntimeError, match="502"):
+    with pytest.raises(SandboxUnavailable, match="502"):
         with DaytonaSandbox("u", "T1", 1, github_token="t", client=c):
             pass
     assert deleted == [c.name] and c.name.startswith("engine-")

@@ -147,7 +147,10 @@ class NextSupabaseStack(PythonStack):
         return f"tests/acceptance/{self.slug(module)}.test.{self.ext(module)}"
 
     def dev_test_glob(self, module: str) -> str:
-        return f"tests/unit/{self.slug(module)}*.test.ts*"
+        # Any file under tests/unit/: agents name these their own way (src-lib-pricing, BookingForm...),
+        # and a strict per-module pattern rejected 3 of 10 good tasks in the fifth web run. Two tasks
+        # picking the same name would surface as a merge conflict, which the engine already handles.
+        return "tests/unit/*"
 
     def run_tests(self, path: str) -> str:
         return f"NO_COLOR=1 npx vitest run {path}"
@@ -213,8 +216,8 @@ AGENTS_MD = """# Team rules (Next.js + Supabase)
 - Tests: Vitest. Use `createTestDb()` / `createUser()` from src/test/db.ts for a real Postgres with the
   migrations applied. Component tests start with `// @vitest-environment jsdom` and use
   @testing-library/react.
-- Dev agents may add their own tests, but only at the exact path their task names
-  (tests/unit/<module path with dashes>.test.ts, e.g. src/server/booking.ts -> tests/unit/server-booking.test.ts).
+- Dev agents may add their own tests under tests/unit/, named after their module
+  (e.g. src/server/booking.ts -> tests/unit/server-booking.test.ts). Nothing else outside their module.
 - Before saying DONE run: npx tsc --noEmit && npx eslint <your file> && npx vitest run <your tests>
 - Always `vitest run`, never bare `vitest` (that watches for changes and never exits). No dev servers.
 """

@@ -13,7 +13,7 @@ from threading import Lock
 from typing import Callable
 
 from engine.events import Emitter
-from engine.interfaces import Agent, Sandbox, Task
+from engine.interfaces import Agent, Sandbox, SandboxUnavailable, Task
 
 MAX_ATTEMPTS = 3
 OK = ("merged", "passed")      # statuses that let dependent tasks start
@@ -40,7 +40,9 @@ def failure_excerpt(output: str, limit: int = 4000) -> str:
     return excerpt
 
 
-SANDBOX_RETRIES = (30, 60, 120, 240, 300)   # seconds to wait while the sandbox provider is at capacity
+# Seconds to wait while the sandbox provider is at capacity (~27 min in all): other tasks finish and
+# free memory. Regression: the fifth web run gave up on a retry after ~12 minutes.
+SANDBOX_RETRIES = (30, 60, 120, 240, 300, 300, 300, 300)
 
 
 class GraphError(ValueError):
@@ -205,11 +207,10 @@ class Engine:
                 box.__enter__()
                 return _Entered(box)
             except Exception as e:
-                # Our own setup commands failing (npm ci, git) won't fix themselves: fail fast. Anything
-                # else while creating a sandbox is the provider (capacity, 502s, timeouts): wait and retry.
-                # Regression: a Daytona 502 during start-up ended a whole project at the planning step.
-                ours = "sandbox setup failed on" in str(e).lower()
-                if wait_s is None or ours:
+                # Only the provider being unavailable (capacity, 502s, timeouts) is worth waiting for. Our own
+                # setup failing, or a local git error, fails fast. Regression: retrying every error turned a
+                # local git lock hiccup into a 27-minute wait.
+                if wait_s is None or not isinstance(e, SandboxUnavailable):
                     raise
                 self.events.emit("task_status", task.id, status="waiting_for_sandbox", attempt=n, error=str(e)[:200])
                 self.sleep(wait_s)

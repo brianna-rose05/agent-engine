@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from pathlib import Path
 
 from engine.interfaces import ExecResult
@@ -17,8 +18,14 @@ class LocalWorktreeSandbox:
 
     def __enter__(self):
         self.path.parent.mkdir(exist_ok=True)
-        r = subprocess.run(["git", "worktree", "add", "-q", "-b", self.branch, str(self.path), "main"],
-                           cwd=self.repo, capture_output=True, text=True)
+        for i in range(6):          # parallel tasks can collide on git's lock files; those clear in moments
+            r = subprocess.run(["git", "worktree", "add", "-q", "-b", self.branch, str(self.path), "main"],
+                               cwd=self.repo, capture_output=True, text=True)
+            if r.returncode == 0 or ".lock" not in r.stderr:
+                break
+            subprocess.run(["git", "worktree", "prune"], cwd=self.repo, capture_output=True)
+            subprocess.run(["git", "branch", "-D", self.branch], cwd=self.repo, capture_output=True)
+            time.sleep(0.3 * (i + 1))
         if r.returncode:
             raise RuntimeError(r.stderr)
         modules = self.repo / "node_modules"

@@ -20,6 +20,11 @@ class Task:
     merge: bool = True                                          # False: verified work is kept out of main
 
 
+class SandboxUnavailable(RuntimeError):
+    """The sandbox provider couldn't give us a sandbox right now (capacity, 5xx, timeouts).
+    The engine waits and retries these; every other sandbox error fails fast."""
+
+
 @dataclass
 class ExecResult:
     code: int

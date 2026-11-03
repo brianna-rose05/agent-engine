@@ -9,7 +9,7 @@ import os
 import shlex
 import uuid
 
-from engine.interfaces import ExecResult
+from engine.interfaces import ExecResult, SandboxUnavailable
 
 WORKDIR = "repo"
 # Installs what the agent and the checks need inside the sandbox: the Claude Code CLI and pytest.
@@ -72,9 +72,9 @@ class DaytonaSandbox:
             pass
         try:
             self.sb = self._client.create(params, timeout=900)   # a custom image is built once, then cached
-        except Exception:
+        except Exception as e:
             self._delete_by_name(name)
-            raise
+            raise SandboxUnavailable(f"{type(e).__name__}: {e}") from e
         try:
             self.sb.git.clone(self.repo_url, WORKDIR, username="x-access-token", password=self.token)
             for cmd in ("git config user.email engine@agents.local", "git config user.name engine",

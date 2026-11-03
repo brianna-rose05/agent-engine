@@ -4,7 +4,7 @@ import subprocess
 from benchmark.suite import HERE, build_repo, load_tasks
 from engine.agents.scripted import ReferenceAgent, SloppyAgent
 from engine.engine import Engine
-from engine.interfaces import AgentReport
+from engine.interfaces import AgentReport, SandboxUnavailable
 from engine.sandboxes.local_worktree import LocalWorktreeSandbox
 
 
@@ -149,7 +149,7 @@ def test_sandbox_capacity_errors_wait_and_retry(tmp_path):
         def __enter__(self):
             tries.append(1)
             if len(tries) < 3:
-                raise RuntimeError("Failed to create sandbox: Total memory limit exceeded. Maximum allowed: 10GiB.")
+                raise SandboxUnavailable("Failed to create sandbox: Total memory limit exceeded. Maximum allowed: 10GiB.")
             return super().__enter__()
 
     eng = Engine(repo, ReferenceAgent(HERE / "solutions"), lambda t, n: Flaky(repo, t.id, n))
@@ -167,7 +167,7 @@ def test_provider_gateway_errors_are_retried_too(tmp_path):
         def __enter__(self):
             tries.append(1)
             if len(tries) == 1:
-                raise RuntimeError("DaytonaBadGatewayError: Failed to create sandbox: Failure during waiting for sandbox to start")
+                raise SandboxUnavailable("DaytonaBadGatewayError: Failed to create sandbox: Failure during waiting for sandbox to start")
             return super().__enter__()
 
     eng = Engine(repo, ReferenceAgent(HERE / "solutions"), lambda t, n: Gateway(repo, t.id, n))
@@ -186,3 +186,16 @@ def test_non_capacity_setup_errors_fail_fast(tmp_path):
     eng.sleep = lambda s: (_ for _ in ()).throw(AssertionError("should not wait"))
     r = eng.run_task(load_tasks(["B6"])[0])
     assert r.status == "error" and "npm ci" in r.error
+
+
+def test_local_git_errors_are_not_treated_as_provider_outages(tmp_path):
+    """Regression: treating every sandbox error as an outage turned a local git error into a long wait."""
+    repo = build_repo(tmp_path / "r")
+
+    class GitBroken(LocalWorktreeSandbox):
+        def __enter__(self):
+            raise RuntimeError("fatal: could not create work tree dir")
+
+    eng = Engine(repo, ReferenceAgent(HERE / "solutions"), lambda t, n: GitBroken(repo, t.id, n))
+    eng.sleep = lambda s: (_ for _ in ()).throw(AssertionError("should not wait"))
+    assert eng.run_task(load_tasks(["B6"])[0]).status == "error"
