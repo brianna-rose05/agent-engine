@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { AnimatePresence, motion } from "motion/react";
+import { motion } from "motion/react";
 import {
   AlertTriangle, ArrowRight, Check, Database, Layers, Loader2, Lock, MessageSquareReply, Palette, Plus, Route, Shield,
   Trash2, Users,
@@ -99,8 +99,7 @@ export default function SetupPage() {
         })}
       </ol>
 
-      <AnimatePresence mode="wait">
-        <motion.div key={shown} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+      <motion.div key={shown} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
           {wizard?.error && shown === current && hasDraft(wizard, current) && <ErrorBox text={wizard.error} />}
           {shown === "describe" && <DescribeStep name={project.name} description={project.description} />}
           {shown === "questions" && <QuestionsStep w={wizard!} readOnly={current !== "questions"} />}
@@ -108,8 +107,7 @@ export default function SetupPage() {
           {shown === "stack" && <StackStep w={wizard!} readOnly={current !== "stack"} />}
           {shown === "design" && <DesignStep w={wizard!} readOnly={current !== "design"} />}
           {shown === "team" && <TeamStep />}
-        </motion.div>
-      </AnimatePresence>
+      </motion.div>
     </div>
   );
 }
