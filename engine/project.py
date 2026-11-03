@@ -23,7 +23,7 @@ from typing import Callable
 
 from engine.engine import Engine, GraphError, Result, SetupError, check_graph
 from engine.interfaces import Sandbox, Task
-from engine.stacks import PythonStack
+from engine.stacks import PythonStack, plain
 
 MAX_TASKS = 10
 MIN_QA_TESTS = 3
@@ -170,7 +170,7 @@ def qa_check(test_path: str, stack: PythonStack, bucket: dict[str, str]):
                            "check nothing; every test must exercise the behavior"), tail
         if n["failed"] < MIN_QA_TESTS:
             return False, f"write at least {MIN_QA_TESTS} tests", tail
-        if stack.unimplemented_marker not in r.output:
+        if stack.unimplemented_marker not in plain(r.output):
             return False, "the tests fail, but not because the code is unimplemented; check imports and setup", tail
         body = box.exec(f"cat {shlex.quote(test_path)}")
         bucket.clear()

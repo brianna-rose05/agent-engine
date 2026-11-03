@@ -295,3 +295,6 @@ def test_vitest_summary_parsing():
     st = NextSupabaseStack(link_node_modules=False)
     assert st.counts(" Test Files  1 failed (1)\n      Tests  3 failed | 1 passed (4)\n") == {"passed": 1, "failed": 3, "errors": 0}
     assert st.counts(" Test Files  1 failed (1)\n      Tests  no tests\n")["errors"] == 1
+    # Regression (first CI run): GitHub's runner turns colors on, and color codes broke the parsing.
+    colored = "\x1b[2m      Tests \x1b[22m \x1b[1m\x1b[31m3 failed\x1b[39m\x1b[22m\x1b[2m | \x1b[22m\x1b[1m\x1b[32m1 passed\x1b[39m (4)"
+    assert st.counts(colored) == {"passed": 1, "failed": 3, "errors": 0}

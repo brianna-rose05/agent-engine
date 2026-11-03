@@ -12,6 +12,12 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def plain(text: str) -> str:
+    """Test output without terminal color codes (CI turns colors on, which breaks parsing)."""
+    return ANSI.sub("", text)
 TEMPLATES = ROOT / "templates"
 
 
@@ -72,6 +78,7 @@ class PythonStack:
         return f"{self.python} -c {shlex.quote('import ' + ', '.join(m[:-3] for m in contracts + modules))}"
 
     def counts(self, output: str) -> dict[str, int]:
+        output = plain(output)
         tail = "\n".join(output.strip().splitlines()[-3:])
         n = {k: int(v) for v, k in re.findall(r"(\d+) (passed|failed|errors?)", tail)}
         return {"passed": n.get("passed", 0), "failed": n.get("failed", 0),
@@ -141,18 +148,19 @@ class NextSupabaseStack(PythonStack):
         return f"tests/unit/{self.slug(module)}*.test.ts*"
 
     def run_tests(self, path: str) -> str:
-        return f"npx vitest run {path}"
+        return f"NO_COLOR=1 npx vitest run {path}"
 
     def verify_cmd(self, module: str, test_path: str) -> str:
         # Types for the whole repo (hidden tests included), lint for the module, then its hidden tests.
         return (f"npx tsc --noEmit -p . && npx eslint --max-warnings=0 {module} && "
-                f"npx vitest run {test_path}")
+                f"NO_COLOR=1 npx vitest run {test_path}")
 
     def plan_check_cmd(self, contracts: list[str], modules: list[str]) -> str:
         # Everything type-checks, and every migration applies to a fresh Postgres.
-        return "npx tsc --noEmit -p . && npx vitest run tests/template.test.ts"
+        return "npx tsc --noEmit -p . && NO_COLOR=1 npx vitest run tests/template.test.ts"
 
     def counts(self, output: str) -> dict[str, int]:
+        output = plain(output)
         line = next((l for l in reversed(output.splitlines()) if re.match(r"\s*Tests\s", l)), "")
         n = {k: int(v) for v, k in re.findall(r"(\d+) (passed|failed|skipped)", line)}
         files = next((l for l in reversed(output.splitlines()) if re.match(r"\s*Test Files\s", l)), "")
