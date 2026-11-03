@@ -225,7 +225,7 @@ def auto_approve(plan: dict) -> tuple[bool, str]:
 
 def run_project(description: str, repo: Path, engine: Engine, python: str = "python3",
                 parallel: int = 4, approve: Approver = auto_approve,
-                stack: PythonStack | None = None) -> tuple[dict | None, list[Result]]:
+                stack: PythonStack | None = None, save_tests: Path | None = None) -> tuple[dict | None, list[Result]]:
     """Plan, then pause for approval, then QA + build. `approve(plan)` returns (approved, note); in the
     app it waits for the user's click, offline it approves automatically."""
     emit = engine.events.emit
@@ -242,4 +242,13 @@ def run_project(description: str, repo: Path, engine: Engine, python: str = "pyt
     if not approved:
         return plan, [plan_result]
     tasks = tasks_from_plan(plan, stack)
-    return plan, [plan_result, *engine.run_all(tasks, parallel=parallel)]
+    try:
+        results = engine.run_all(tasks, parallel=parallel)
+    finally:
+        if save_tests:              # keep the hidden tests for review (never merged, never shown to devs)
+            for t in tasks:
+                for path, body in t.hidden_tests.items():
+                    dest = Path(save_tests) / path
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_text(body)
+    return plan, [plan_result, *results]

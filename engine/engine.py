@@ -182,8 +182,11 @@ class Engine:
                     a = Attempt(n, rep.claim, ok, reason, changed, out,
                                 round(time.time() - t0, 1), rep.cost_usd, rep.turns)
                     res.attempts.append(a)
+                    # The failure itself travels with the event, so the app (and a person deciding what to
+                    # do with a failed task) can see why. Regression: the first live build lost this.
                     emit("attempt_finished", task.id, n=n, passed=ok, claim=rep.claim, reason=reason,
-                         cost_usd=a.cost_usd, seconds=a.seconds, turns=a.turns, files_changed=changed)
+                         cost_usd=a.cost_usd, seconds=a.seconds, turns=a.turns, files_changed=changed,
+                         output="" if ok else out[-3000:])
                     if ok:
                         if not task.merge:
                             res.status = "passed"

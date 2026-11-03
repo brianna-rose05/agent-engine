@@ -105,7 +105,8 @@ def main():
     status = "failed"
     try:
         plan, results = run_project(project["description"], repo, engine, "python3",
-                                    parallel=stack.parallel, approve=wait_for_decision(backend.project), stack=stack)
+                                    parallel=stack.parallel, approve=wait_for_decision(backend.project), stack=stack,
+                                    save_tests=out / "hidden_tests")
         if plan is None:
             status = "failed"
         elif len(results) == 1:

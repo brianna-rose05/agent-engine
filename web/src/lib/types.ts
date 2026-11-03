@@ -25,6 +25,7 @@ export type Attempt = {
   seconds: number;
   turns: number;
   files_changed: string[];
+  output?: string; // the failure (test diff, type error) for rejected tries
 };
 
 export type TaskState = {

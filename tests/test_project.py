@@ -316,3 +316,24 @@ def test_web_plan_listing_template_files_as_contracts_is_accepted(tmp_path):
     _, plan, res = go_web(tmp_path, ListsBase(WEB))
     assert res["PLAN"].status == "merged" and len(res["PLAN"].attempts) == 1
     assert "supabase/migrations/0000_base.sql" not in plan["contracts"]
+
+
+def test_failures_carry_their_output_and_hidden_tests_are_saved(tmp_path):
+    """Regression (first live build): two features failed 3 times and nobody could see why, because
+    attempt events had no test output and the hidden tests were gone after the run."""
+    from engine.events import Emitter, ListSink
+
+    class WrongFees(ScriptedTeam):
+        def run(self, task, box, attempt, feedback):
+            rep = super().run(task, box, attempt, feedback)
+            if task.id == "T2" and attempt == 1:
+                box.write_file("fees.py", "def late_fee_cents(loan, tool, today):\n    return 1\n")
+            return rep
+
+    sink = ListSink()
+    repo = build_project_repo(tmp_path / "r")
+    eng = Engine(repo, WrongFees(FIXTURE), lambda t, n: LocalWorktreeSandbox(repo, t.id, n), events=Emitter(sink))
+    run_project(DESCRIPTION, repo, eng, python=sys.executable, save_tests=tmp_path / "saved")
+    failed = [e for e in sink.events if e.kind == "attempt_finished" and not e.data["passed"]]
+    assert failed and "assert" in failed[0].data["output"]
+    assert (tmp_path / "saved" / "acceptance" / "test_fees.py").exists()

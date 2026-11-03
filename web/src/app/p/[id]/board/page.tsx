@@ -155,6 +155,14 @@ function Drawer({ f, onClose }: { f: Feature; onClose: () => void }) {
                   {a.seconds}s · {a.turns} turns · {money(a.cost_usd)}
                   {a.files_changed.length ? ` · ${a.files_changed.join(", ")}` : ""}
                 </span>
+                {!a.passed && a.output ? (
+                  <details className="mt-1">
+                    <summary className="cursor-pointer text-xs text-muted hover:text-ink">See what failed</summary>
+                    <pre className="mt-1 max-h-64 overflow-auto rounded-lg bg-canvas p-2 font-mono text-[11px] leading-snug whitespace-pre-wrap text-ink/80 scroll-thin">
+                      {a.output}
+                    </pre>
+                  </details>
+                ) : null}
               </span>
             </li>
           ))}
