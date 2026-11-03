@@ -97,6 +97,16 @@ def test_cli_agent_auth_failure_from_real_cli_output():
                          "network issue, please try again)")
 
 
+def test_cli_agent_hang_is_stopped_in_the_sandbox_and_reported():
+    """Regression (Pawfect rebuild): the planner hung, Daytona's connection timed out after 30 min and the
+    whole project errored. The CLI now runs under `timeout`, so a hang is an ordinary, retryable failure."""
+    agent = ClaudeCLIAgent(api_key="k", timeout_s=30 * 60)
+    box = FakeBox("partial log, no json", code=124)
+    rep = agent.run(TASK, box, 1, None)
+    assert box.calls[0][0].startswith("timeout -k 20 1740 claude ")
+    assert rep.claim == "error: agent ran out of time (29 min) and was stopped"
+
+
 def test_cli_agent_without_key_or_with_garbage_output():
     assert ClaudeCLIAgent(api_key="").run(TASK, FakeBox("{}"), 1, None).claim.startswith("error: ANTHROPIC")
     assert ClaudeCLIAgent(api_key="k").run(TASK, FakeBox("crash", code=1), 1, None).claim.startswith("error: could not read")

@@ -28,7 +28,10 @@ class ClaudeCLIAgent:
                 "--max-turns", str(self.max_turns),
                 "--max-budget-usd", f"{self.budget_usd:.2f}",
                 "--model", self.model]
-        return " ".join(shlex.quote(a) for a in args)
+        # Stop the agent inside the sandbox a minute before our exec timeout, so a hung run comes back as a
+        # failed attempt (and gets retried) instead of the sandbox connection timing out and killing the task.
+        limit = max(60, self.timeout_s - 60)
+        return f"timeout -k 20 {limit} " + " ".join(shlex.quote(a) for a in args)
 
     def run(self, task: Task, box: Sandbox, attempt: int, feedback: str | None) -> AgentReport:
         if not self.api_key:
@@ -37,6 +40,8 @@ class ClaudeCLIAgent:
                      # CI=1: test runners like Vitest exit instead of waiting for file changes
                      env={"ANTHROPIC_API_KEY": self.api_key, "CI": "1"})
         data = parse_cli_json(r.output)
+        if data is None and r.code in (124, 137):
+            return AgentReport(f"error: agent ran out of time ({max(60, self.timeout_s - 60) // 60} min) and was stopped")
         if data is None:
             return AgentReport(f"error: could not read agent output (exit {r.code})", summary=r.output[-500:])
         failed = r.code != 0 or bool(data.get("is_error")) or data.get("subtype", "success") != "success"
