@@ -25,6 +25,7 @@ export function Avatar({ who, size = 28, active = false }: { who: Who; size?: nu
 }
 
 const PILL: Record<string, string> = {
+  draft: "bg-planner-bg text-planner",
   queued: "bg-canvas text-muted",
   planning: "bg-planner-bg text-planner",
   awaiting_approval: "bg-you-bg text-you",
@@ -34,6 +35,7 @@ const PILL: Record<string, string> = {
   failed: "bg-bad-bg text-bad",
 };
 const PILL_TEXT: Record<string, string> = {
+  draft: "Setting up",
   queued: "Queued",
   planning: "Planning",
   awaiting_approval: "Needs your approval",

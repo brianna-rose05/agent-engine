@@ -1,6 +1,6 @@
 "use client";
 
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowRight, Check, FileCode2, Loader2, MessageSquareReply, ShieldCheck } from "lucide-react";
@@ -16,6 +16,7 @@ export default function PlanPage() {
   const [replying, setReplying] = useState(false);
   const [busy, setBusy] = useState(false);
   const plan = state.plan;
+  useEffect(() => { if (liveStatus === "draft") router.replace(`/p/${project.id}/setup`); }, [liveStatus, project.id, router]);
 
   if (!plan && liveError) {
     return (

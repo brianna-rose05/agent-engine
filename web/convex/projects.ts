@@ -2,16 +2,7 @@ import { internalActionGeneric, internalMutationGeneric, mutationGeneric, queryG
 import { ConvexError, v } from "convex/values";
 import { anyApi } from "convex/server";
 
-/*
- * What the app calls. Every call carries the owner passphrase until real sign-in exists: creating a
- * project starts paid agent runs, so nobody else who finds the URL can do that or read projects.
- * The passphrase lives only in this deployment's environment (OWNER_PASSPHRASE), set by Brianna.
- */
-function checkOwner(key: string) {
-  const expected = process.env.OWNER_PASSPHRASE;
-  if (!expected) throw new ConvexError("The app isn't set up yet: OWNER_PASSPHRASE is missing in Convex.");
-  if (key !== expected) throw new ConvexError("Wrong passphrase.");
-}
+import { checkOwner } from "./owner";
 
 const owner = { key: v.string() };
 
@@ -50,20 +41,28 @@ export const get = queryGeneric({
       .collect();
     return {
       project: { id: p._id, name: p.name, description: p.description, model: p.model, status: p.status,
-                 createdAt: p._creationTime, error: p.error ?? null },
+                 createdAt: p._creationTime, error: p.error ?? null, wizard: p.wizard ?? null },
       events: events.map((e) => ({ kind: e.kind, task_id: e.taskId, data: e.data, ts: e.ts })),
     };
   },
 });
 
 export const create = mutationGeneric({
-  args: { ...owner, name: v.string(), description: v.string(), model: v.union(v.literal("haiku"), v.literal("sonnet")) },
-  handler: async (ctx, { key, name, description, model }) => {
+  args: { ...owner, name: v.string(), description: v.string(), model: v.union(v.literal("haiku"), v.literal("sonnet")),
+          setup: v.optional(v.boolean()) },
+  handler: async (ctx, { key, name, description, model, setup }) => {
     checkOwner(key);
     const n = name.trim();
     const d = description.trim();
     if (n.length < 1 || n.length > 120) throw new ConvexError("Give the project a name (up to 120 characters).");
     if (d.length < 20 || d.length > 20000) throw new ConvexError("Describe the project in at least a sentence or two.");
+    if (setup) {
+      // Setup wizard first (Questions -> Requirements -> Stack -> Design); the team starts when Design is locked.
+      const id = await ctx.db.insert("projects", { name: n, description: d, model, status: "draft", costUsd: 0,
+                                                    wizard: { step: "questions", busy: "questions" } });
+      await ctx.scheduler.runAfter(0, anyApi.wizard.generateQuestions, { key, id });
+      return id;
+    }
     const id = await ctx.db.insert("projects", { name: n, description: d, model, status: "queued", costUsd: 0 });
     await ctx.scheduler.runAfter(0, anyApi.projects.startWorker, { projectId: id });
     return id;

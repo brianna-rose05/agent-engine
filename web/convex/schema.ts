@@ -10,11 +10,12 @@ export default defineSchema({
     name: v.string(),
     description: v.string(),
     model: v.union(v.literal("haiku"), v.literal("sonnet")),
-    status: v.string(), // queued | starting | planning | awaiting_approval | approved | rejected | building | done | failed
+    status: v.string(), // draft (setup wizard) | queued | starting | planning | awaiting_approval | approved | rejected | building | done | failed
     plan: v.optional(v.any()),
     planNote: v.optional(v.string()),
     costUsd: v.number(),
     error: v.optional(v.string()),
+    wizard: v.optional(v.any()), // setup wizard state, see convex/wizard.ts
   }),
   events: defineTable({
     projectId: v.id("projects"),

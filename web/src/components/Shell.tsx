@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Hash, KanbanSquare, ListTree, Plus, Sparkles } from "lucide-react";
+import { Hash, KanbanSquare, ListChecks, ListTree, Plus, Sparkles } from "lucide-react";
 import { useQuery } from "convex/react";
 import { api, liveEnabled, useOwner } from "@/lib/convex";
 import { money } from "@/lib/reduce";
@@ -22,6 +22,7 @@ export function Shell({
   const base = projectNav ? `/p/${projectNav.id}` : "";
   const views: Nav[] = projectNav
     ? [
+        ...(projectNav.id !== "demo" ? [{ href: `${base}/setup`, label: "Setup", Icon: ListChecks }] : []),
         { href: `${base}/plan`, label: "Plan", Icon: ListTree },
         { href: `${base}/board`, label: "Board", Icon: KanbanSquare },
       ]
@@ -101,7 +102,7 @@ export function Shell({
             </>
           ) : (
             <>
-              <span className="font-medium text-ink">Demo mode.</span> Replaying a real Haiku build. Connect Supabase to run
+              <span className="font-medium text-ink">Demo mode.</span> Replaying a real Haiku build. Connect Convex to run
               your own.
             </>
           )}
@@ -140,6 +141,7 @@ export function Shell({
 }
 
 const DOT: Record<string, string> = {
+  draft: "bg-you",
   done: "bg-dev", building: "bg-qa", planning: "bg-planner", starting: "bg-planner", queued: "bg-faint",
   awaiting_approval: "bg-you", approved: "bg-qa", failed: "bg-bad", rejected: "bg-faint",
 };
@@ -154,7 +156,7 @@ function LiveProjects({ path }: { path: string }) {
       {rows.map((p) => (
         <Link
           key={p.id}
-          href={`/p/${p.id}/board`}
+          href={`/p/${p.id}/${p.status === "draft" ? "setup" : "board"}`}
           className={`flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm ${
             path.startsWith(`/p/${p.id}`) ? "text-ink" : "text-muted hover:text-ink"
           }`}

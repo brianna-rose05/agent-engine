@@ -29,7 +29,7 @@ function LiveForm() {
   return (
     <NewProject
       create={async (name, description, model) =>
-        (await create({ key: key!, name, description, model })) as string}
+        (await create({ key: key!, name, description, model, setup: true })) as string}
     />
   );
 }
@@ -56,7 +56,7 @@ function NewProject({ create }: { create: Create }) {
     setError("");
     try {
       const id = await create(name, description, model as "haiku" | "sonnet");
-      router.push(`/p/${id}/plan`);
+      router.push(`/p/${id}/setup`);
     } catch (e) {
       setError(e instanceof Error ? e.message.replace(/^.*ConvexError: /, "").split("\n")[0] : "Couldn't start the project.");
       setBusy(false);
@@ -70,8 +70,8 @@ function NewProject({ create }: { create: Create }) {
           <p className="mb-2 text-sm text-muted">New project</p>
           <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">What should the team build?</h1>
           <p className="mt-3 max-w-xl text-muted">
-            Describe it like you would to a developer. A planner splits it into features, you approve the plan, then QA and
-            dev agents build it in parallel. Every feature is checked by tests the builder never sees.
+            Describe it like you would to a developer. The planner asks a few questions, drafts requirements, a stack and a
+            design for you to approve, then QA and dev agents build it in parallel. Every feature is checked by tests the builder never sees.
           </p>
         </motion.div>
 
@@ -124,21 +124,21 @@ function NewProject({ create }: { create: Create }) {
 
           <div className="flex flex-wrap items-center gap-3 border-t border-line pt-5">
             <p className={`mr-auto text-xs ${error ? "text-bad" : "text-muted"}`}>
-              {error || (liveEnabled ? "Nothing is built until you approve the plan." : "Demo mode: this opens a replay of a real build.")}
+              {error || (liveEnabled ? "Next: a few questions, then you approve requirements, stack and design." : "Demo mode: this opens a replay of a real build.")}
             </p>
             <button
               disabled={!ready || busy}
               onClick={start}
               className="flex items-center gap-2 rounded-xl bg-ink px-5 py-2.5 text-sm font-medium text-white transition-all duration-150 hover:-translate-y-px disabled:translate-y-0 disabled:opacity-35"
             >
-              {busy ? "Starting…" : "Plan it"} <ArrowRight size={15} />
+              {busy ? "Starting…" : "Continue"} <ArrowRight size={15} />
             </button>
           </div>
         </div>
 
         <ol className="mt-10 grid gap-3 sm:grid-cols-3">
           {[
-            { Icon: Sparkles, c: "bg-planner-bg text-planner", t: "1. You approve a plan", d: "Features, how they connect, and the shared contract." },
+            { Icon: Sparkles, c: "bg-planner-bg text-planner", t: "1. You approve the plan", d: "Questions, requirements, stack and design, step by step." },
             { Icon: ClipboardCheck, c: "bg-qa-bg text-qa", t: "2. Tests come first", d: "QA agents write hidden tests for each feature." },
             { Icon: Code2, c: "bg-dev-bg text-dev", t: "3. Agents build in parallel", d: "Each feature merges only when its tests pass." },
           ].map((s) => (

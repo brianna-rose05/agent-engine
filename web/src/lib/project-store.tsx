@@ -7,6 +7,7 @@ import { useMutation, useQuery } from "convex/react";
 import { api, liveEnabled, useOwner } from "./convex";
 import { OwnerGate } from "@/components/OwnerGate";
 import type { EngineEvent, Project, ProjectState } from "./types";
+import type { Wizard } from "../../convex/wizard";
 
 type Store = {
   project: Project;
@@ -22,6 +23,7 @@ type Store = {
   duration: number;
   liveStatus?: string;          // the project row's status (live mode): queued, starting, planning...
   liveError?: string | null;    // e.g. the worker couldn't be started
+  wizard?: Wizard | null;       // setup wizard state (live mode)
 };
 
 const Ctx = createContext<Store | null>(null);
@@ -88,7 +90,7 @@ function useDemo(): Omit<Store, "project" | "mode"> {
 }
 
 type LiveData = {
-  project: Project & { status: string; error: string | null };
+  project: Project & { status: string; error: string | null; wizard: Wizard | null };
   events: { kind: EngineEvent["kind"]; task_id: string | null; data: Record<string, unknown>; ts: number }[];
 } | null;
 
@@ -112,7 +114,7 @@ function LiveProvider({ id, children }: { id: string; children: React.ReactNode 
     approve: async () => { await decide({ key: key!, id, approved: true }); },
     sendBack: async (note: string) => { await decide({ key: key!, id, approved: false, note }); },
     speed: 1, setSpeed: () => {}, restart: () => {}, clock: state.now, duration: state.now,
-    liveStatus: data?.project.status, liveError: data?.project.error ?? null,
+    liveStatus: data?.project.status, liveError: data?.project.error ?? null, wizard: data?.project.wizard ?? null,
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

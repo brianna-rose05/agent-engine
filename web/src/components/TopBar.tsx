@@ -9,7 +9,7 @@ import { StatusPill } from "./ui";
 const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
 export function TopBar() {
-  const { project, state, mode, speed, setSpeed, restart, clock: t, duration } = useProject();
+  const { project, state, mode, speed, setSpeed, restart, clock: t, duration, liveStatus } = useProject();
   const fs = features(state);
   const done = fs.filter((f) => f.column === "done").length;
   const pct = fs.length ? done / fs.length : 0;
@@ -19,7 +19,7 @@ export function TopBar() {
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-3 md:px-6">
         <div className="flex min-w-0 items-center gap-3">
           <h1 className="truncate text-[17px] font-semibold tracking-tight">{project.name}</h1>
-          <StatusPill status={state.status} />
+          <StatusPill status={liveStatus === "draft" ? "draft" : state.status} />
         </div>
 
         <div className="ml-auto flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-muted">

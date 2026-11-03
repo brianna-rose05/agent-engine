@@ -1,5 +1,6 @@
 import { mutationGeneric, queryGeneric } from "convex/server";
 import { ConvexError, v } from "convex/values";
+import { composeSpec } from "./wizard";
 
 /*
  * What the engine (worker.py in GitHub Actions) calls. Authenticated with ENGINE_SECRET, which both sides
@@ -16,7 +17,7 @@ export const projectForWorker = queryGeneric({
     checkEngine(secret);
     const p = await ctx.db.get(projectId);
     if (!p) return null;
-    return { name: p.name, description: p.description, model: p.model, status: p.status, planNote: p.planNote ?? "" };
+    return { name: p.name, description: composeSpec(p.name, p.description, p.wizard), model: p.model, status: p.status, planNote: p.planNote ?? "" };
   },
 });
 
