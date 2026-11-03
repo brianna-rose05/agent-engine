@@ -356,9 +356,10 @@ def test_failures_carry_their_output_and_hidden_tests_are_saved(tmp_path):
     sink = ListSink()
     repo = build_project_repo(tmp_path / "r")
     eng = Engine(repo, WrongFees(FIXTURE), lambda t, n: LocalWorktreeSandbox(repo, t.id, n), events=Emitter(sink))
-    run_project(DESCRIPTION, repo, eng, python=sys.executable, save_tests=tmp_path / "saved")
+    _, results = run_project(DESCRIPTION, repo, eng, python=sys.executable, save_tests=tmp_path / "saved")
     failed = [e for e in sink.events if e.kind == "attempt_finished" and not e.data["passed"]]
-    assert failed and "assert" in failed[0].data["output"]
+    assert failed, [(r.task, r.status, r.error, [a.reason for a in r.attempts]) for r in results]   # flaked once in CI
+    assert "assert" in failed[0].data["output"]
     assert (tmp_path / "saved" / "acceptance" / "test_fees.py").exists()
 
 
