@@ -90,9 +90,12 @@ export function reduce(s: ProjectState, e: EngineEvent): ProjectState {
     }
     case "dispute_resolved": {
       if (!task) break;
-      const fixed = Boolean((e.data as { test_fixed: boolean }).test_fixed);
-      say({ who: "engine", channel: "tests", task_id: task.id, tone: fixed ? "good" : undefined,
-            text: fixed
+      const d = e.data as { test_fixed: boolean; referee_error?: boolean };
+      const fixed = Boolean(d.test_fixed);
+      say({ who: "engine", channel: "tests", task_id: task.id, tone: fixed ? "good" : d.referee_error ? "bad" : undefined,
+            text: d.referee_error
+              ? `The referee couldn't run for ${name(task)} (the agent hit an error), so nobody has checked whether its tests match the spec.`
+              : fixed
               ? `The referee found tests for ${name(task)} that contradicted the spec and corrected them. The dev agent gets another try.`
               : `The referee confirmed the tests for ${name(task)} match the spec, so the code needs fixing.` });
       break;

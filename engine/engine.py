@@ -183,6 +183,8 @@ class Engine:
                     rep = agent.run(task, box, attempt=n, feedback=feedback)
                     emit("task_status", task.id, status="checking", attempt=n)
                     ok, reason, changed, out = self.verify(task, box)
+                    if not ok and reason == "made no changes" and rep.claim.startswith("error"):
+                        reason = rep.claim.removeprefix("error: ")   # say why: the agent itself failed
                     a = Attempt(n, rep.claim, ok, reason, changed, out,
                                 round(time.time() - t0, 1), rep.cost_usd, rep.turns)
                     res.attempts.append(a)
@@ -207,9 +209,13 @@ class Engine:
                     # lost to QA tests that contradicted the spec while the dev's code was right.
                     disputed = True
                     emit("task_status", task.id, status="disputing", attempt=n)
-                    fixed = bool(task.dispute(out))
-                    emit("dispute_resolved", task.id, test_fixed=fixed)
-                    if fixed:
+                    verdict = task.dispute(out)      # True: tests fixed, False: tests confirmed, None: referee failed
+                    fixed = bool(verdict)
+                    emit("dispute_resolved", task.id, test_fixed=fixed,
+                         **({"referee_error": True} if verdict is None else {}))
+                    if verdict is None:
+                        pass                         # say nothing about the tests: nobody checked them
+                    elif fixed:
                         feedback = ("A reviewer found that some hidden acceptance tests contradicted the spec, and "
                                     "they have been corrected. Implement the task exactly as the doc comments say.")
                     else:

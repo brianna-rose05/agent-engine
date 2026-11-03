@@ -43,6 +43,10 @@ class ClaudeCLIAgent:
         claim = parse_claim(data.get("result"), failed)
         if data.get("subtype") == "error_max_budget_usd":
             claim = "error: hit the per-task budget cap"
+        elif failed:
+            # keep the CLI's own reason (e.g. an API error) so a failure can be diagnosed from the board
+            detail = " ".join(str(data.get("result") or data.get("subtype") or f"exit {r.code}").split())[:300]
+            claim = f"{claim} ({detail})"
         return AgentReport(claim, cost_usd=float(data.get("total_cost_usd") or 0.0),
                            turns=int(data.get("num_turns") or 0), summary=str(data.get("result") or "")[-500:])
 

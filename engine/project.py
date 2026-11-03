@@ -227,7 +227,12 @@ def make_dispute(t: dict, test_path: str, stack: PythonStack, bucket: dict[str, 
                       [test_path], "", role="qa", merge=False, max_attempts=1, agent=referee,
                       setup_files={test_path: bucket[test_path]},
                       check=referee_check(test_path, stack, bucket[test_path], bucket))
-        return engine.run_task(review).status == "passed"
+        r = engine.run_task(review)
+        if r.status == "passed":
+            return True
+        if r.status == "error" or (r.attempts and all(a.claim.startswith("error") for a in r.attempts)):
+            return None                                  # the referee itself failed; it confirmed nothing
+        return False
     return dispute
 
 

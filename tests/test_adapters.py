@@ -92,7 +92,9 @@ def test_cli_agent_auth_failure_from_real_cli_output():
             '"result":"Authentication error · This may be a temporary network issue, please try again",'
             '"type":"result","terminal_reason":"api_error"}')
     rep = ClaudeCLIAgent(api_key="bad").run(TASK, FakeBox(real, code=1), 1, None)
-    assert rep.claim == "error: agent run did not finish"
+    # a failure, with the CLI's reason kept so it can be diagnosed from the board
+    assert rep.claim == ("error: agent run did not finish (Authentication error · This may be a temporary "
+                         "network issue, please try again)")
 
 
 def test_cli_agent_without_key_or_with_garbage_output():

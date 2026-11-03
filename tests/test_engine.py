@@ -71,6 +71,19 @@ def test_agent_that_changes_nothing_is_rejected(tmp_path):
     assert r.status == "failed" and r.attempts[0].reason == "made no changes"
 
 
+def test_agent_error_is_the_reason_not_made_no_changes(tmp_path):
+    """Regression (Pawfect build): API errors showed up as "made no changes", hiding the real cause."""
+    repo = build_repo(tmp_path / "r")
+
+    class Broken:
+        def run(self, task, box, attempt, feedback):
+            return AgentReport("error: agent run did not finish (API Error: 529 overloaded)")
+
+    r = engine(repo, Broken()).run_task(load_tasks(["B1"])[0])
+    assert r.status == "failed"
+    assert r.attempts[0].reason == "agent run did not finish (API Error: 529 overloaded)"
+
+
 def test_feedback_from_failure_reaches_next_attempt(tmp_path):
     repo = build_repo(tmp_path / "r")
     seen = []

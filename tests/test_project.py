@@ -377,6 +377,17 @@ def test_referee_that_confirms_the_tests_changes_nothing(tmp_path):
     assert res["T3"].status == "blocked"
 
 
+def test_referee_that_crashes_is_not_reported_as_confirming(tmp_path):
+    """Regression (Pawfect build): the referee hit an API error and the feed said it confirmed the tests."""
+    class Crashes:
+        def run(self, task, box, attempt, feedback):
+            return AgentReport("error: agent run did not finish (API Error: 529 overloaded)")
+
+    res, events = go_ref(tmp_path, WrongFeeTest(FIXTURE), referee=Crashes())
+    assert [e.data for e in events if e.kind == "dispute_resolved"] == [{"test_fixed": False, "referee_error": True}]
+    assert res["T2"].status == "failed"
+
+
 def test_referee_edits_that_break_qa_rules_are_rejected(tmp_path):
     class Gutter:
         def run(self, task, box, attempt, feedback):
