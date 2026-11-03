@@ -196,3 +196,30 @@ def test_daytona_web_sandbox_uses_bigger_node_image_and_installs_packages():
     assert params.image == "node:22-bookworm" and timeout >= 600
     assert params.resources.memory * NextSupabaseStack.parallel <= 10   # fits the 10 GB account limit
     assert any(e[0] == "exec" and "npm ci" in e[1] for e in fake.log) and fake.deleted
+
+
+def test_daytona_failed_start_is_found_by_name_and_deleted():
+    """Regression (fourth web run): when Daytona failed to start a sandbox (502), create() raised before
+    returning it, and the half-started sandbox kept its memory until the account's limit was full."""
+    deleted = []
+
+    class Ghost:
+        def __init__(self, name):
+            self.name = name
+
+    class Client:
+        def create(self, params=None, timeout=60):
+            self.name = params.name
+            raise RuntimeError("Failed to create sandbox: 502 Bad Gateway")
+
+        def list(self, query=None):
+            return [Ghost(self.name), Ghost("someone-else")]
+
+        def delete(self, box, timeout=60):
+            deleted.append(box.name)
+
+    c = Client()
+    with pytest.raises(RuntimeError, match="502"):
+        with DaytonaSandbox("u", "T1", 1, github_token="t", client=c):
+            pass
+    assert deleted == [c.name] and c.name.startswith("engine-")

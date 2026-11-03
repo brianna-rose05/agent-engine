@@ -298,3 +298,21 @@ def test_vitest_summary_parsing():
     # Regression (first CI run): GitHub's runner turns colors on, and color codes broke the parsing.
     colored = "\x1b[2m      Tests \x1b[22m \x1b[1m\x1b[31m3 failed\x1b[39m\x1b[22m\x1b[2m | \x1b[22m\x1b[1m\x1b[32m1 passed\x1b[39m (4)"
     assert st.counts(colored) == {"passed": 1, "failed": 3, "errors": 0}
+
+
+@web
+def test_web_plan_listing_template_files_as_contracts_is_accepted(tmp_path):
+    """Regression (fourth web run): the planner listed the template's 0000_base.sql as a contract and a
+    good plan was rejected. Template files are dropped from the list instead."""
+    class ListsBase(ScriptedTeam):
+        def run(self, task, box, attempt, feedback):
+            rep = super().run(task, box, attempt, feedback)
+            if task.role == "planner":
+                plan = json.loads((WEB / "plan" / "plan.json").read_text())
+                plan["contracts"].insert(0, "supabase/migrations/0000_base.sql")
+                box.write_file("plan.json", json.dumps(plan))
+            return rep
+
+    _, plan, res = go_web(tmp_path, ListsBase(WEB))
+    assert res["PLAN"].status == "merged" and len(res["PLAN"].attempts) == 1
+    assert "supabase/migrations/0000_base.sql" not in plan["contracts"]

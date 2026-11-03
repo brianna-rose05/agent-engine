@@ -118,6 +118,11 @@ def plan_check(stack: PythonStack):
             plan = json.loads(r.output)
         except json.JSONDecodeError as e:
             return False, f"plan.json is not valid JSON ({e})", ""
+        # Template files the planner lists as contracts (e.g. the base migration) are already locked;
+        # drop them instead of rejecting a good plan. Regression: the fourth web run lost its plan to this.
+        if isinstance(plan, dict) and isinstance(plan.get("contracts"), list):
+            plan["contracts"] = [c for c in plan["contracts"] if c not in stack.reserved]
+            box.write_file("plan.json", json.dumps(plan, indent=2))
         if problems := plan_problems(plan, stack):
             return False, "the plan has problems: " + "; ".join(problems), ""
         changed = box.exec("git diff --name-only $(git merge-base HEAD main); "

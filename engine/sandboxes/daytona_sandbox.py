@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import uuid
 
 from engine.interfaces import ExecResult
 
@@ -61,7 +62,19 @@ class DaytonaSandbox:
             from daytona import Daytona          # imported lazily so local runs don't need it
             self._client = Daytona()
         params = self.create_params if self.create_params is not None else default_params()
-        self.sb = self._client.create(params, timeout=900)   # a custom image is built once, then cached
+        # A unique name lets us find and delete a sandbox whose start failed: create() raises before we get
+        # it back, and the half-started sandbox still holds its memory. Regression: three failed starts
+        # (Daytona 502s) filled the account's 10 GB limit and stalled the fourth web run.
+        name = f"engine-{uuid.uuid4().hex[:16]}"
+        try:
+            params.name = name
+        except Exception:
+            pass
+        try:
+            self.sb = self._client.create(params, timeout=900)   # a custom image is built once, then cached
+        except Exception:
+            self._delete_by_name(name)
+            raise
         try:
             self.sb.git.clone(self.repo_url, WORKDIR, username="x-access-token", password=self.token)
             for cmd in ("git config user.email engine@agents.local", "git config user.name engine",
@@ -73,6 +86,19 @@ class DaytonaSandbox:
             self.__exit__()
             raise
         return self
+
+    def _delete_by_name(self, name: str) -> None:
+        try:
+            from daytona import ListSandboxesQuery
+            query = ListSandboxesQuery(name=name)
+        except Exception:
+            query = None
+        try:
+            for box in self._client.list(query):
+                if getattr(box, "name", None) == name:
+                    self._client.delete(box, timeout=120)
+        except Exception:
+            pass                                 # best effort; the end-of-job cleanup catches the rest
 
     def __exit__(self, *exc):
         if self.sb is not None:
