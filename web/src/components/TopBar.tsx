@@ -1,6 +1,10 @@
 "use client";
 
-import { RotateCcw } from "lucide-react";
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { useMutation } from "convex/react";
+import { RefreshCw, RotateCcw } from "lucide-react";
+import { api, useOwner } from "@/lib/convex";
 import { motion } from "motion/react";
 import { useProject } from "@/lib/project-store";
 import { features, money } from "@/lib/reduce";
@@ -40,6 +44,7 @@ export function TopBar() {
             {clock(state.now)}
           </span>
           <span className="rounded-md bg-surface px-2 py-0.5 text-xs ring-1 ring-line">{project.model}</span>
+          {mode === "live" && ["failed", "done", "rejected"].includes(liveStatus ?? "") && <Rebuild id={project.id} />}
 
           {mode === "demo" && (
             <div className="flex items-center gap-1 rounded-lg bg-surface p-0.5 ring-1 ring-line" title="Replay speed">
@@ -67,5 +72,20 @@ export function TopBar() {
         </div>
       )}
     </header>
+  );
+}
+
+/** Start a fresh build of a stopped project from the same approved setup (new repo, same requirements). */
+function Rebuild({ id }: { id: string }) {
+  const { key } = useOwner();
+  const router = useRouter();
+  const rebuild = useMutation(api.projects.rebuild);
+  const [busy, setBusy] = useState(false);
+  return (
+    <button disabled={busy} title="Same requirements and design, a fresh team and repo"
+      onClick={async () => { setBusy(true); try { router.push(`/p/${await rebuild({ key: key!, id })}/plan`); } finally { setBusy(false); } }}
+      className="flex items-center gap-1.5 rounded-lg bg-ink px-3 py-1 text-xs font-medium text-white disabled:opacity-40">
+      <RefreshCw size={12} /> {busy ? "Starting…" : "Build again"}
+    </button>
   );
 }

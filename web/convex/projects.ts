@@ -69,6 +69,23 @@ export const create = mutationGeneric({
   },
 });
 
+/** Build a stopped project again from the same approved setup: a fresh project (and repo), same wizard. */
+export const rebuild = mutationGeneric({
+  args: { ...owner, id: v.id("projects") },
+  handler: async (ctx, { key, id }) => {
+    checkOwner(key);
+    const p = await ctx.db.get(id);
+    if (!p || !["failed", "done", "rejected"].includes(p.status)) throw new ConvexError("Only a stopped project can be built again.");
+    const copies = (await ctx.db.query("projects").collect()).filter((x) => x.name.startsWith(p.name.replace(/ \(\d+\)$/, ""))).length;
+    const nid = await ctx.db.insert("projects", {
+      name: `${p.name.replace(/ \(\d+\)$/, "")} (${copies + 1})`, description: p.description, model: p.model,
+      status: "queued", costUsd: 0, ...(p.wizard ? { wizard: p.wizard } : {}),
+    });
+    await ctx.scheduler.runAfter(0, anyApi.projects.startWorker, { projectId: nid });
+    return nid;
+  },
+});
+
 export const decide = mutationGeneric({
   args: { ...owner, id: v.id("projects"), approved: v.boolean(), note: v.optional(v.string()) },
   handler: async (ctx, { key, id, approved, note }) => {
