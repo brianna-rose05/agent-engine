@@ -7,6 +7,7 @@ The pipeline in engine/project.py is the same for every stack; it asks the stack
 from __future__ import annotations
 
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -102,6 +103,10 @@ class PythonStack:
 
 Use Python 3.11+ standard library only. Every file must import cleanly."""
 
+    def missing_imports(self, box, test_body: str) -> list[str]:
+        """Project files a test imports that don't exist (and that no task will build). Python: not checked."""
+        return []
+
 
 class NextSupabaseStack(PythonStack):
     parallel = 3            # sandboxes are bigger; 3 x 3 GB fits Daytona's default 10 GB account limit
@@ -118,6 +123,21 @@ class NextSupabaseStack(PythonStack):
     reserved = {"supabase/migrations/0000_base.sql", "src/lib/db.ts", "src/lib/errors.ts", "src/lib/db-postgres.ts",
                 "src/test/db.ts", "src/app/layout.tsx"}
     template = TEMPLATES / "next-supabase"
+
+    IMPORT_RE = re.compile(r"""(?:from\s+|import\s*\(\s*|require\(\s*)["']@/([^"']+)["']""")
+
+    def missing_imports(self, box, test_body: str) -> list[str]:
+        """Regression (Pawfect build): a QA test did `await import("@/app/api/cron/emails/route")` inside one
+        test. No task owned that file, so the feature failed 3 times and blocked 4 others."""
+        missing = []
+        for spec in sorted(set(self.IMPORT_RE.findall(test_body))):
+            base = f"src/{spec}"
+            options = [base] if re.search(r"\.(ts|tsx|js|json)$", base) else \
+                [base + e for e in (".ts", ".tsx", "/index.ts", "/index.tsx")]
+            test = " || ".join(f"test -f {shlex.quote(o)}" for o in options)
+            if box.exec(f"{test} && echo yes || echo no").output.strip() != "yes":
+                missing.append(base)
+        return missing
 
     def __init__(self, link_node_modules: bool = True):
         super().__init__("python3")

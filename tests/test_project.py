@@ -341,6 +341,28 @@ def test_web_plan_that_touches_template_files_is_accepted(tmp_path):
                                                capture_output=True, text=True).stdout
 
 
+@web
+def test_web_qa_tests_importing_a_file_no_task_builds_are_rejected(tmp_path):
+    """Regression (Pawfect build): a QA test dynamically imported an API route that no task owned. Every other
+    test failed on the stub as it should, so it was accepted, and the feature could never pass."""
+    class ImportsRoute(ScriptedTeam):
+        def run(self, task, box, attempt, feedback):
+            rep = super().run(task, box, attempt, feedback)
+            if task.id == "T3-qa" and attempt == 1:
+                path = task.can_edit[0]
+                body = (WEB / path).read_text() + (
+                    '\nit("cron route", async () => {\n'
+                    '  const m = await import("@/app/api/cron/emails/route");\n'
+                    '  expect(m).toBeTruthy();\n});\n')
+                box.write_file(path, body)
+            return rep
+
+    _, _, res = go_web(tmp_path, ImportsRoute(WEB))
+    first = res["T3-qa"].attempts[0]
+    assert "src/app/api/cron/emails/route" in first.reason and "no task builds" in first.reason
+    assert res["T3"].status == "merged"
+
+
 def test_failures_carry_their_output_and_hidden_tests_are_saved(tmp_path):
     """Regression (first live build): two features failed 3 times and nobody could see why, because
     attempt events had no test output and the hidden tests were gone after the run."""

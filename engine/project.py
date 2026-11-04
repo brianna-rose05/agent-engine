@@ -174,6 +174,10 @@ def qa_check(test_path: str, stack: PythonStack, bucket: dict[str, str]):
         tail = "\n".join(r.output.strip().splitlines()[-25:])
         if stack.runner_missing(r.code, r.output):
             raise SetupError(f"test command could not run (exit {r.code}): {tail[-300:]}")
+        body = box.exec(f"cat {shlex.quote(test_path)}")
+        if missing := stack.missing_imports(box, body.output):
+            return False, (f"the tests import {', '.join(missing)}, which no task builds, so they could never "
+                           "pass; test only the task's module, the contracts and existing files"), tail
         n = stack.counts(r.output)
         if stack.collection_failed(r.code, r.output) or n["errors"]:
             return False, "the tests don't run cleanly (import, syntax or setup errors)", tail
@@ -184,7 +188,6 @@ def qa_check(test_path: str, stack: PythonStack, bucket: dict[str, str]):
             return False, f"write at least {MIN_QA_TESTS} tests", tail
         if stack.unimplemented_marker not in plain(r.output):
             return False, "the tests fail, but not because the code is unimplemented; check imports and setup", tail
-        body = box.exec(f"cat {shlex.quote(test_path)}")
         bucket.clear()
         bucket[test_path] = body.output
         return True, "", tail
@@ -203,6 +206,7 @@ Failing test output:
 
 - If a failing test contradicts the spec or the doc comments (wrong arithmetic, wrong expected value, or an
   expectation the spec rules out), fix only that test so it matches the spec. Keep every other test as it is.
+- A test that needs a file other than {module} that doesn't exist yet can never pass: remove that test.
 - If the failing tests are right, change nothing.
 End with DONE if you corrected tests, or BLOCKED: tests are correct."""
 
