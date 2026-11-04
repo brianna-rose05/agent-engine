@@ -9,6 +9,7 @@ export type EngineEvent = {
     | "plan_ready"
     | "plan_decision"
     | "dispute_resolved"
+    | "build_resumed"
     | "project_finished";
   task_id: string | null;
   data: Record<string, unknown>;

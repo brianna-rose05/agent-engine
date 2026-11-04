@@ -20,13 +20,15 @@ from pathlib import Path
 from engine.convex_sink import ConvexBackend
 from engine.engine import Engine
 from engine.events import Emitter, JsonlSink
-from engine.project import run_project
+from engine.project import resume_project, run_project
 from engine.stacks import NextSupabaseStack
 from run_benchmark import load_env
 
 ROOT = Path(__file__).parent
 APPROVAL_TIMEOUT_S = 60 * 60
 OWNER = "brianna-rose05"
+# git reads the token from the environment, so it is never written into a URL, a file or a command line
+CREDENTIALS = '!f() { echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f'
 
 
 def wait_for_decision(get_project, poll_s: float = 5, timeout_s: float = APPROVAL_TIMEOUT_S, sleep=time.sleep):
@@ -88,12 +90,20 @@ def main():
 
     out = ROOT / "results" / f"{datetime.now():%Y%m%d-%H%M%S}-worker-{a.project_id[-8:]}"
     stack = NextSupabaseStack(link_node_modules=False)
-    repo = stack.build_repo(out / "repo")
-    repo_url = create_repo(repo_name(project["name"], a.project_id), token, project["name"])
-    subprocess.run(["git", "remote", "add", "origin", repo_url], cwd=repo, check=True)
-    subprocess.run(["git", "config", "credential.helper",
-                    '!f() { echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f'], cwd=repo, check=True)
-    subprocess.run(["git", "push", "-q", "-u", "origin", "main"], cwd=repo, check=True)
+    resume = bool(project.get("resume"))
+    if resume:                                  # retry what failed: continue in the project's own repo
+        if not project.get("repo"):
+            raise SystemExit("nothing to retry: this project has no repo yet")
+        repo_url, repo = project["repo"], out / "repo"
+        out.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "-c", f"credential.helper={CREDENTIALS}", "clone", "-q", repo_url, str(repo)], check=True)
+        subprocess.run(["git", "config", "credential.helper", CREDENTIALS], cwd=repo, check=True)
+    else:
+        repo = stack.build_repo(out / "repo")
+        repo_url = create_repo(repo_name(project["name"], a.project_id), token, project["name"])
+        subprocess.run(["git", "remote", "add", "origin", repo_url], cwd=repo, check=True)
+        subprocess.run(["git", "config", "credential.helper", CREDENTIALS], cwd=repo, check=True)
+        subprocess.run(["git", "push", "-q", "-u", "origin", "main"], cwd=repo, check=True)
 
     from engine.agents.claude_cli import ClaudeCLIAgent
     from engine.sandboxes.daytona_sandbox import DaytonaSandbox
@@ -102,16 +112,22 @@ def main():
     engine = Engine(repo, ClaudeCLIAgent(model=project["model"], budget_usd=a.budget),
                     lambda t, n: DaytonaSandbox(repo_url, t.id, n, github_token=token, run_id=out.name, **opts),
                     events=events)
+    referee = ClaudeCLIAgent(model="sonnet", budget_usd=a.budget)       # spec: never graded only by its author
+    # wiring every page is one big task: more turns, time and budget (cap $1.00)
+    integrator = ClaudeCLIAgent(model=project["model"], max_turns=90, budget_usd=min(1.00, a.budget * 2),
+                                timeout_s=45 * 60)
     status = "failed"
     try:
+        if resume:
+            plan = json.loads((repo / "plan.json").read_text())
+            results = resume_project(plan, project["description"], repo, engine, set(project.get("merged") or []),
+                                     stack=stack, parallel=stack.parallel, save_tests=out / "hidden_tests",
+                                     referee=referee, integrator=integrator)
+            status = "done" if all(r.status in ("merged", "passed") for r in results) else "failed"
+            return
         plan, results = run_project(project["description"], repo, engine, "python3",
                                     parallel=stack.parallel, approve=wait_for_decision(backend.project), stack=stack,
-                                    save_tests=out / "hidden_tests",
-                                    # spec: work is never graded only by the model that wrote it
-                                    referee=ClaudeCLIAgent(model="sonnet", budget_usd=a.budget),
-                                    # wiring every page is one big task: more turns, time and budget (cap $1.00)
-                                    integrator=ClaudeCLIAgent(model=project["model"], max_turns=90,
-                                                              budget_usd=min(1.00, a.budget * 2), timeout_s=45 * 60))
+                                    save_tests=out / "hidden_tests", referee=referee, integrator=integrator)
         if plan is None:
             status = "failed"
         elif len(results) == 1:
@@ -120,8 +136,9 @@ def main():
             status = "done" if all(r.status in ("merged", "passed") for r in results) else "failed"
     finally:
         events.emit("project_finished", status=status, repo=repo_url)
-    print(f"project {a.project_id}: {status} ({repo_url})")
-    sys.exit(0 if status in ("done", "rejected") else 1)
+        print(f"project {a.project_id}: {status} ({repo_url})")
+        if status not in ("done", "rejected"):
+            sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -373,6 +373,10 @@ def run_project(description: str, repo: Path, engine: Engine, python: str = "pyt
     tasks = tasks_from_plan(plan, stack, engine=engine, referee=referee)
     if stack.integration:
         tasks.append(integration_task(plan, description, stack, agent=integrator))
+    return plan, [plan_result, *build(tasks, engine, parallel, save_tests)]
+
+
+def build(tasks: list[Task], engine: Engine, parallel: int, save_tests: Path | None) -> list[Result]:
     try:
         results = engine.run_all(tasks, parallel=parallel)
     finally:
@@ -382,4 +386,29 @@ def run_project(description: str, repo: Path, engine: Engine, python: str = "pyt
                     dest = Path(save_tests) / path
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     dest.write_text(body)
-    return plan, [plan_result, *results]
+    return results
+
+
+def resume_tasks(plan: dict, description: str, stack: PythonStack, merged: set[str], engine: Engine | None = None,
+                 referee=None, integrator=None) -> list[Task]:
+    """The tasks still to do after a stopped build: every feature (its QA and dev task) and the integration
+    that hadn't merged. Merged work stays as it is in the repo; nothing depends on it any more."""
+    tasks = tasks_from_plan(plan, stack, engine=engine, referee=referee)
+    if stack.integration:
+        tasks.append(integration_task(plan, description, stack, agent=integrator))
+    feature = lambda tid: tid.removesuffix("-qa")                      # noqa: E731
+    todo = [t for t in tasks if feature(t.id) not in merged]
+    for t in todo:
+        t.depends_on = [d for d in t.depends_on if feature(d) not in merged]
+    return todo
+
+
+def resume_project(plan: dict, description: str, repo: Path, engine: Engine, merged: set[str],
+                   stack: PythonStack | None = None, parallel: int = 4, save_tests: Path | None = None,
+                   referee=None, integrator=None) -> list[Result]:
+    """Retry only what didn't finish, in the same repo, without planning or approval again."""
+    stack = stack or default_stack()
+    todo = resume_tasks(plan, description, stack, merged, engine=engine, referee=referee, integrator=integrator)
+    engine.events.emit("build_resumed", merged=sorted(merged),
+                       retrying=sorted({t.id.removesuffix("-qa") for t in todo}))
+    return build(todo, engine, parallel, save_tests)

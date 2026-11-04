@@ -16,6 +16,8 @@ export default defineSchema({
     costUsd: v.number(),
     error: v.optional(v.string()),
     wizard: v.optional(v.any()), // setup wizard state, see convex/wizard.ts
+    repo: v.optional(v.string()), // the project's GitHub repo, once the worker has made it
+    resume: v.optional(v.boolean()), // the next worker run retries only what didn't merge
   }),
   events: defineTable({
     projectId: v.id("projects"),

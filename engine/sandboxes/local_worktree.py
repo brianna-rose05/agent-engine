@@ -18,6 +18,10 @@ class LocalWorktreeSandbox:
 
     def __enter__(self):
         self.path.parent.mkdir(exist_ok=True)
+        # A branch left by an earlier build of this repo (a retry reuses task ids): its work is already on
+        # main or was rejected, so start clean.
+        subprocess.run(["git", "worktree", "remove", "--force", str(self.path)], cwd=self.repo, capture_output=True)
+        subprocess.run(["git", "branch", "-D", self.branch], cwd=self.repo, capture_output=True)
         for i in range(6):          # parallel tasks can collide on git's lock files; those clear in moments
             r = subprocess.run(["git", "worktree", "add", "-q", "-b", self.branch, str(self.path), "main"],
                                cwd=self.repo, capture_output=True, text=True)

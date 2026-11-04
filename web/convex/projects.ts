@@ -41,6 +41,7 @@ export const get = queryGeneric({
       .collect();
     return {
       project: { id: p._id, name: p.name, description: p.description, model: p.model, status: p.status,
+                 canRetry: p.status === "failed" && Boolean(p.plan),
                  createdAt: p._creationTime, error: p.error ?? null, wizard: p.wizard ?? null },
       events: events.map((e) => ({ kind: e.kind, task_id: e.taskId, data: e.data, ts: e.ts })),
     };
@@ -66,6 +67,18 @@ export const create = mutationGeneric({
     const id = await ctx.db.insert("projects", { name: n, description: d, model, status: "queued", costUsd: 0 });
     await ctx.scheduler.runAfter(0, anyApi.projects.startWorker, { projectId: id });
     return id;
+  },
+});
+
+/** Retry only what didn't finish, in the same repo: merged features stay, no new plan or approval. */
+export const retryFailed = mutationGeneric({
+  args: { ...owner, id: v.id("projects") },
+  handler: async (ctx, { key, id }) => {
+    checkOwner(key);
+    const p = await ctx.db.get(id);
+    if (!p || p.status !== "failed" || !p.plan) throw new ConvexError("Only a build that stopped after planning can be retried.");
+    await ctx.db.patch(id, { status: "queued", resume: true, error: undefined });
+    await ctx.scheduler.runAfter(0, anyApi.projects.startWorker, { projectId: id });
   },
 });
 

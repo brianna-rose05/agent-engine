@@ -17,7 +17,19 @@ export const projectForWorker = queryGeneric({
     checkEngine(secret);
     const p = await ctx.db.get(projectId);
     if (!p) return null;
-    return { name: p.name, description: composeSpec(p.name, p.description, p.wizard), model: p.model, status: p.status, planNote: p.planNote ?? "" };
+    let merged: string[] = [];
+    let repo = p.repo ?? null;
+    if (p.resume) {
+      // what a retry can keep: every task whose latest status is merged
+      const events = await ctx.db.query("events").withIndex("by_project_ts", (q) => q.eq("projectId", projectId)).collect();
+      const last: Record<string, string> = {};
+      for (const e of events) {
+        if (e.kind === "task_status" && e.taskId) last[e.taskId] = e.data?.status;
+        if (e.kind === "project_finished" && e.data?.repo) repo ??= e.data.repo;
+      }
+      merged = Object.keys(last).filter((k) => last[k] === "merged").sort();
+    }
+    return { resume: Boolean(p.resume), repo, merged, plan: p.resume ? p.plan ?? null : null, name: p.name, description: composeSpec(p.name, p.description, p.wizard), model: p.model, status: p.status, planNote: p.planNote ?? "" };
   },
 });
 
@@ -46,7 +58,14 @@ export const record = mutationGeneric({
     }
     if (kind === "plan_decision") patch.status = data.approved ? "building" : "rejected";
     if (kind === "attempt_finished") patch.costUsd = Math.round((p.costUsd + Number(data.cost_usd ?? 0)) * 10000) / 10000;
-    if (kind === "project_finished") patch.status = data.status;
+    if (kind === "project_finished") {
+      patch.status = data.status;
+      if (data.repo) patch.repo = data.repo;
+    }
+    if (kind === "build_resumed") {
+      patch.status = "building";
+      patch.resume = false;
+    }
     if (Object.keys(patch).length) await ctx.db.patch(projectId, patch);
   },
 });

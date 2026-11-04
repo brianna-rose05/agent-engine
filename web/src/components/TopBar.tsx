@@ -13,7 +13,7 @@ import { StatusPill } from "./ui";
 const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
 export function TopBar() {
-  const { project, state, mode, speed, setSpeed, restart, clock: t, duration, liveStatus } = useProject();
+  const { project, state, mode, speed, setSpeed, restart, clock: t, duration, liveStatus, canRetry } = useProject();
   const fs = features(state);
   const done = fs.filter((f) => f.column === "done").length;
   const pct = fs.length ? done / fs.length : 0;
@@ -44,7 +44,8 @@ export function TopBar() {
             {clock(state.now)}
           </span>
           <span className="rounded-md bg-surface px-2 py-0.5 text-xs ring-1 ring-line">{project.model}</span>
-          {mode === "live" && ["failed", "done", "rejected"].includes(liveStatus ?? "") && <Rebuild id={project.id} />}
+          {mode === "live" && canRetry && <RetryFailed id={project.id} />}
+          {mode === "live" && ["failed", "done", "rejected"].includes(liveStatus ?? "") && <Rebuild id={project.id} quiet={canRetry} />}
 
           {mode === "demo" && (
             <div className="flex items-center gap-1 rounded-lg bg-surface p-0.5 ring-1 ring-line" title="Replay speed">
@@ -76,7 +77,21 @@ export function TopBar() {
 }
 
 /** Start a fresh build of a stopped project from the same approved setup (new repo, same requirements). */
-function Rebuild({ id }: { id: string }) {
+/** Rerun only the features (and integration) that didn't merge, in the same repo. */
+function RetryFailed({ id }: { id: string }) {
+  const { key } = useOwner();
+  const retry = useMutation(api.projects.retryFailed);
+  const [busy, setBusy] = useState(false);
+  return (
+    <button disabled={busy} title="Keeps every merged feature and redoes only what didn't finish"
+      onClick={async () => { setBusy(true); try { await retry({ key: key!, id }); } finally { setBusy(false); } }}
+      className="flex items-center gap-1.5 rounded-lg bg-ink px-3 py-1 text-xs font-medium text-white disabled:opacity-40">
+      <RotateCcw size={12} /> {busy ? "Starting…" : "Retry what failed"}
+    </button>
+  );
+}
+
+function Rebuild({ id, quiet = false }: { id: string; quiet?: boolean }) {
   const { key } = useOwner();
   const router = useRouter();
   const rebuild = useMutation(api.projects.rebuild);
@@ -84,7 +99,8 @@ function Rebuild({ id }: { id: string }) {
   return (
     <button disabled={busy} title="Same requirements and design, a fresh team and repo"
       onClick={async () => { setBusy(true); try { router.push(`/p/${await rebuild({ key: key!, id })}/plan`); } finally { setBusy(false); } }}
-      className="flex items-center gap-1.5 rounded-lg bg-ink px-3 py-1 text-xs font-medium text-white disabled:opacity-40">
+      className={`flex items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-medium disabled:opacity-40 ${
+        quiet ? "text-muted ring-1 ring-line hover:text-ink" : "bg-ink text-white"}`}>
       <RefreshCw size={12} /> {busy ? "Starting…" : "Build again"}
     </button>
   );

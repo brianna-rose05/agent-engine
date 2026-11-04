@@ -513,3 +513,50 @@ def test_referee_edits_that_break_qa_rules_are_rejected(tmp_path):
     res, events = go_ref(tmp_path, WrongFeeTest(FIXTURE), referee=Gutter())
     assert [e.data for e in events if e.kind == "dispute_resolved"] == [{"test_fixed": False}]
     assert res["T2"].status == "failed"
+
+
+# --------------------------------------------------------------------------- retry what failed
+def test_retry_reruns_only_what_did_not_merge(tmp_path):
+    """Regression (Pawfect builds 3, 6, 7): one feature failing cost the whole build, because the only way
+    on was to plan and build all of it again. A retry keeps merged work and redoes the rest in the same repo."""
+    from engine.events import Emitter, ListSink
+    from engine.project import resume_project
+
+    class NeverFixesFees(ScriptedTeam):
+        def run(self, task, box, attempt, feedback):
+            rep = super().run(task, box, attempt, feedback)
+            if task.id == "T2":
+                box.write_file("fees.py", "def late_fee_cents(loan, tool, today):\n    return 1\n")
+            return rep
+
+    repo = build_project_repo(tmp_path / "r")
+    eng = Engine(repo, NeverFixesFees(FIXTURE), lambda t, n: LocalWorktreeSandbox(repo, t.id, n))
+    plan, results = run_project(DESCRIPTION, repo, eng, python=sys.executable)
+    first = {r.task: r.status for r in results}
+    assert first["T1"] == "merged" and first["T2"] == "failed" and first["T3"] == "blocked"
+    merged = {t for t, s in first.items() if s == "merged" and not t.endswith("-qa")}
+
+    calls = []
+
+    class Fixed(ScriptedTeam):
+        def run(self, task, box, attempt, feedback):
+            calls.append(task.id)
+            return super().run(task, box, attempt, feedback)
+
+    sink = ListSink()
+    eng2 = Engine(repo, Fixed(FIXTURE), lambda t, n: LocalWorktreeSandbox(repo, t.id, n), events=Emitter(sink))
+    again = {r.task: r.status for r in resume_project(plan, DESCRIPTION, repo, eng2, merged)}
+    assert again == {"T2-qa": "passed", "T2": "merged", "T3-qa": "passed", "T3": "merged"}
+    assert not [c for c in calls if c.startswith("T1")] and "PLAN" not in calls      # merged work untouched
+    resumed = [e.data for e in sink.events if e.kind == "build_resumed"]
+    assert resumed == [{"merged": ["PLAN", "T1"], "retrying": ["T2", "T3"]}]
+
+
+def test_retry_includes_the_integration_for_web_apps():
+    from engine.project import resume_tasks
+    from engine.stacks import NextSupabaseStack
+    plan = json.loads((WEB / "plan" / "plan.json").read_text())
+    todo = resume_tasks(plan, "x", NextSupabaseStack(link_node_modules=False), {"T1", "T3"})
+    assert [t.id for t in todo] == ["T2-qa", "T2", "INT"]
+    assert next(t for t in todo if t.id == "T2").depends_on == ["T2-qa"]     # T1 is merged: nothing to wait for
+    assert next(t for t in todo if t.id == "INT").depends_on == ["T2"]

@@ -28,3 +28,19 @@ describe("integration card", () => {
     expect(features(s).map((f) => f.id)).toEqual(["T1", "T2"]);
   });
 });
+
+describe("retry what failed", () => {
+  it("puts a stopped project back to building and resets the retried tasks", () => {
+    const plan = { project: "x", contracts: [], tasks: [{ id: "T1", title: "A", module: "a.ts", spec: "", depends_on: [] }] };
+    let s = reduce(initialState(), ev(0, "plan_ready", null, { plan }));
+    s = reduce(s, ev(1, "task_queued", "T1", { title: "A", role: "dev", depends_on: [] }));
+    s = reduce(s, ev(2, "task_status", "T1", { status: "failed" }));
+    s = reduce(s, ev(3, "project_finished", null, { status: "failed" }));
+    expect(features(s)[0].column).toBe("attention");
+    s = reduce(s, ev(4, "build_resumed", null, { merged: ["PLAN"], retrying: ["T1"] }));
+    s = reduce(s, ev(5, "task_queued", "T1", { title: "A", role: "dev", depends_on: [] }));
+    expect(s.status).toBe("building");
+    expect(features(s)[0].column).toBe("queued");
+    expect(s.feed.at(-1)!.text).toContain("Retrying 1 unfinished task");
+  });
+});

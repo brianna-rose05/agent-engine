@@ -117,6 +117,15 @@ export function reduce(s: ProjectState, e: EngineEvent): ProjectState {
             text: d.approved ? "Approved the plan. Building started." : `Sent the plan back${d.note ? `: ${d.note}` : "."}` });
       break;
     }
+    case "build_resumed": {
+      const d = e.data as { merged: string[]; retrying: string[] };
+      status = "building";
+      const kept = d.merged.filter((id) => id !== "PLAN").length;
+      say({ who: "engine", channel: "build",
+            text: `Retrying ${d.retrying.length} unfinished task${d.retrying.length === 1 ? "" : "s"} in the same repo. ` +
+                  `The ${kept} feature${kept === 1 ? "" : "s"} that merged stay as they are.` });
+      break;
+    }
     case "project_finished": {
       const d = e.data as { status: "done" | "failed" };
       status = d.status;
