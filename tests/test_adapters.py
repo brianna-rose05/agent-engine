@@ -268,3 +268,95 @@ def test_daytona_failed_start_is_found_by_name_and_deleted():
         with DaytonaSandbox("u", "T1", 1, github_token="t", client=c):
             pass
     assert deleted == [c.name] and c.name.startswith("engine-")
+
+
+# ------------------------------------------------------------- Daytona: lost sandboxes and cleanup
+def test_daytona_connection_failures_become_sandbox_lost():
+    """Regression (Daytona build): "DaytonaError: Remote end closed connection without response" mid-attempt
+    ended the task as "error". Connection-level failures are now SandboxLost, which the engine retries in a
+    fresh sandbox; errors about our own request stay as they are, so they still stop the task."""
+    from daytona import (DaytonaConnectionError, DaytonaError, DaytonaFileNotFoundError,
+                         DaytonaProcessExecutionTimeoutError)
+    from engine.interfaces import SandboxLost
+    from engine.sandboxes.daytona_sandbox import is_lost
+
+    assert is_lost(DaytonaError("Remote end closed connection without response"))
+    assert is_lost(DaytonaConnectionError("connection reset by peer"))
+    assert is_lost(ConnectionResetError("reset")) and is_lost(TimeoutError("read"))
+    assert not is_lost(DaytonaError("Invalid Content-Disposition filename* parameter"))
+    assert not is_lost(DaytonaFileNotFoundError("no such file"))
+    assert not is_lost(DaytonaProcessExecutionTimeoutError("timed out"))   # our command, not the sandbox
+    assert not is_lost(KeyError("bug")) and not is_lost(RuntimeError("sandbox setup failed on `npm ci`"))
+
+    fake = FakeDaytonaSandbox()
+    box = DaytonaSandbox("u", "T1", 1, github_token="t", client=FakeClient(fake))
+    box.__enter__()
+
+    def dropped(*a, **k):
+        raise DaytonaError("Remote end closed connection without response")
+    fake.process = SimpleNamespace(exec=dropped)
+    fake.fs = SimpleNamespace(upload_file=dropped)
+    with pytest.raises(SandboxLost, match="Remote end closed"):
+        box.exec("pytest")
+    with pytest.raises(SandboxLost):
+        box.write_file("a.py", "x")
+    with pytest.raises(SandboxLost):
+        box.publish("T1")
+
+    def bug(*a, **k):
+        raise DaytonaFileNotFoundError("no such dir")
+    fake.fs = SimpleNamespace(upload_file=bug)
+    with pytest.raises(DaytonaFileNotFoundError):
+        box.write_file("a.py", "x")
+
+
+def test_daytona_command_that_outruns_its_timeout_is_exit_124_not_a_lost_sandbox():
+    from daytona import DaytonaConnectionTimeoutError
+    fake = FakeDaytonaSandbox()
+    box = DaytonaSandbox("u", "T1", 1, github_token="t", client=FakeClient(fake))
+    box.__enter__()
+
+    def slow(*a, **k):
+        raise DaytonaConnectionTimeoutError("Read timed out")
+    fake.process = SimpleNamespace(exec=slow)
+    r = box.exec("sleep 5", timeout=0)
+    assert r.code == 124 and "timed out" in r.output
+
+
+def test_daytona_delete_waits_out_a_state_change():
+    """Regression (worker logs): "DaytonaConflictError: Failed to remove sandbox: Sandbox state change in
+    progress" left sandboxes running until their idle timer. Delete retries with backoff while the state
+    changes; a sandbox that's already gone counts as deleted; other errors still surface."""
+    from daytona import DaytonaConflictError, DaytonaForbiddenError, DaytonaNotFoundError
+    from engine.sandboxes.daytona_sandbox import delete_with_retry
+
+    fake = FakeDaytonaSandbox()
+    tries, naps = [], []
+
+    def delete():
+        tries.append(1)
+        if len(tries) < 3:
+            raise DaytonaConflictError("Failed to remove sandbox: Sandbox state change in progress")
+        fake.deleted = True
+    fake.delete = delete
+    box = DaytonaSandbox("u", "T1", 1, github_token="t", client=FakeClient(fake))
+    box.sleep = naps.append
+    with box:
+        pass
+    assert fake.deleted and len(tries) == 3 and naps == [2, 5]
+
+    def gone():
+        raise DaytonaNotFoundError("Sandbox not found")
+    delete_with_retry(gone, sleep=lambda s: None)                           # nothing to delete: fine
+
+    def forbidden():
+        raise DaytonaForbiddenError("no")
+    with pytest.raises(DaytonaForbiddenError):
+        delete_with_retry(forbidden, sleep=lambda s: pytest.fail("should not wait"))
+
+    def stuck():
+        raise DaytonaConflictError("Sandbox state change in progress")
+    naps.clear()
+    with pytest.raises(DaytonaConflictError):
+        delete_with_retry(stuck, sleep=naps.append)
+    assert naps == [2, 5, 10, 20]

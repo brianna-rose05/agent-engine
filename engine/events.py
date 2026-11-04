@@ -3,6 +3,9 @@
 Event kinds and their data:
     task_queued      {title, role, depends_on}
     task_status      {status}   working | checking | merging | merged | passed | failed | blocked | error
+                                waiting_for_sandbox {error}: the provider is at capacity; waiting to retry
+                                sandbox_lost {attempt, retry, error}: the sandbox dropped mid-attempt;
+                                    the attempt is redone in a fresh one (not one of the agent's tries)
     attempt_finished {n, passed, claim, reason, cost_usd, seconds, turns, files_changed}
     plan_ready       {plan}
     plan_decision    {approved, note}

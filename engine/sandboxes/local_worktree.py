@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
 
+from engine.gitlock import repo_lock
 from engine.interfaces import ExecResult
 
 
@@ -18,27 +20,38 @@ class LocalWorktreeSandbox:
 
     def __enter__(self):
         self.path.parent.mkdir(exist_ok=True)
-        # A branch left by an earlier build of this repo (a retry reuses task ids): its work is already on
-        # main or was rejected, so start clean.
-        subprocess.run(["git", "worktree", "remove", "--force", str(self.path)], cwd=self.repo, capture_output=True)
-        subprocess.run(["git", "branch", "-D", self.branch], cwd=self.repo, capture_output=True)
-        for i in range(6):          # parallel tasks can collide on git's lock files; those clear in moments
-            r = subprocess.run(["git", "worktree", "add", "-q", "-b", self.branch, str(self.path), "main"],
-                               cwd=self.repo, capture_output=True, text=True)
-            if r.returncode == 0 or ".lock" not in r.stderr:
-                break
-            subprocess.run(["git", "worktree", "prune"], cwd=self.repo, capture_output=True)
+        # Every change to the shared repo's worktree list and branches goes through repo_lock: parallel
+        # `worktree add`/`remove` race on .git/worktrees/ itself (see engine/gitlock.py).
+        with repo_lock(self.repo):
+            # A branch left by an earlier build of this repo (a retry reuses task ids): its work is already on
+            # main or was rejected, so start clean.
+            self._remove()
             subprocess.run(["git", "branch", "-D", self.branch], cwd=self.repo, capture_output=True)
-            time.sleep(0.3 * (i + 1))
-        if r.returncode:
-            raise RuntimeError(r.stderr)
+            for i in range(6):      # another process (an editor, a cleanup script) may hold a git .lock briefly
+                r = subprocess.run(["git", "worktree", "add", "-q", "-b", self.branch, str(self.path), "main"],
+                                   cwd=self.repo, capture_output=True, text=True)
+                if r.returncode == 0 or ".lock" not in r.stderr:
+                    break
+                self._remove()
+                subprocess.run(["git", "branch", "-D", self.branch], cwd=self.repo, capture_output=True)
+                time.sleep(0.3 * (i + 1))
+            if r.returncode:
+                raise RuntimeError(r.stderr)
         modules = self.repo / "node_modules"
         if modules.exists():                     # web projects: share installed packages, never commit them
             (self.path / "node_modules").symlink_to(modules.resolve())
         return self
 
-    def __exit__(self, *exc):
+    def _remove(self) -> None:
+        """Remove this sandbox's worktree, even if git has lost track of it (a half-made worktree)."""
         subprocess.run(["git", "worktree", "remove", "--force", str(self.path)], cwd=self.repo, capture_output=True)
+        if self.path.exists():
+            shutil.rmtree(self.path, ignore_errors=True)
+            subprocess.run(["git", "worktree", "prune"], cwd=self.repo, capture_output=True)
+
+    def __exit__(self, *exc):
+        with repo_lock(self.repo):
+            self._remove()
 
     def exec(self, cmd: str, timeout: int = 600, env: dict[str, str] | None = None) -> ExecResult:
         try:
@@ -54,5 +67,12 @@ class LocalWorktreeSandbox:
         p.write_text(content)
 
     def publish(self, message: str) -> None:
-        self.exec(f"git add -A && git commit -qm {message!r}")
+        # The commit moves a branch of the shared repo, so it takes the same lock as worktree changes.
+        # A failed commit must not pass silently: merging the unchanged branch would report "merged"
+        # with none of the work on main.
+        with repo_lock(self.repo):
+            # (an agent that committed its own work leaves nothing to commit, which is fine)
+            r = self.exec(f"git add -A && (git diff --cached --quiet || git commit -qm {message!r})")
+        if r.code != 0:
+            raise RuntimeError(f"commit failed: {r.output[-300:]}")
         # branch already lives in the shared repo; a cloud sandbox would `git push` here

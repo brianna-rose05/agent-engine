@@ -31,6 +31,12 @@ class SandboxUnavailable(RuntimeError):
     The engine waits and retries these; every other sandbox error fails fast."""
 
 
+class SandboxLost(SandboxUnavailable):
+    """A sandbox we already had stopped answering (connection dropped, timed out, sandbox gone).
+    Raised by a sandbox's exec/write_file/publish. During an attempt the engine opens a fresh sandbox
+    and redoes the attempt (a couple of times per task) instead of failing the task."""
+
+
 @dataclass
 class ExecResult:
     code: int
