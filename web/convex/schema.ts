@@ -19,6 +19,10 @@ export default defineSchema({
     repo: v.optional(v.string()), // the project's GitHub repo, once the worker has made it
     resume: v.optional(v.boolean()), // the next worker run retries only what didn't merge
     previewUrl: v.optional(v.string()), // live Vercel preview of the finished app (worker.py publish_preview)
+    mode: v.optional(v.string()), // the next/current worker run: "change" (docs/change-requests.md), else a build or retry
+    changes: v.optional(v.array(v.any())), // change requests, oldest first: {n, text, at} (convex/changes.ts)
+    pendingChange: v.optional(v.any()), // the latest planned change (changes/{n}.json) from change_plan_ready
+    changeFrom: v.optional(v.string()), // status before the running change, restored if the change is sent back
   }),
   events: defineTable({
     projectId: v.id("projects"),

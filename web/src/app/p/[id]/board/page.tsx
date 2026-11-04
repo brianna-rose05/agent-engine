@@ -9,6 +9,7 @@ import { COLUMNS, INTEGRATION, features, money, type Column, type Feature } from
 import type { TaskState } from "@/lib/types";
 import { Avatar, Mono } from "@/components/ui";
 import { Feed } from "@/components/Feed";
+import { ChangeRequestBox } from "@/components/ChangeRequest";
 
 const COL_TINT: Record<Column, string> = {
   queued: "bg-faint",
@@ -20,26 +21,33 @@ const COL_TINT: Record<Column, string> = {
 };
 
 export default function BoardPage() {
-  const { state, project } = useProject();
+  const { state, project, canChange } = useProject();
   const [open, setOpen] = useState<string | null>(null);
   const fs = features(state);
   const selected = fs.find((f) => f.id === open) ?? null;
 
   if (!state.plan || state.status === "awaiting_approval" || state.status === "planning") {
     const waiting = state.status === "awaiting_approval";
+    const change = state.plan && state.change && ["planning", "pending"].includes(state.change.decision) ? state.change : null;
     return (
       <div className="mx-auto flex max-w-xl flex-col items-center gap-4 px-6 py-24 text-center">
         <Avatar who={waiting ? "you" : "planner"} size={48} active={!waiting} />
         <h2 className="text-xl font-semibold tracking-tight">
-          {waiting ? "The plan is ready for you" : "Planning comes first"}
+          {change
+            ? waiting ? `Change ${change.n} is ready for you` : `The planner is planning change ${change.n}`
+            : waiting ? "The plan is ready for you" : "Planning comes first"}
         </h2>
         <p className="text-muted">
-          {waiting
+          {change
+            ? waiting
+              ? "Review what will change. The team builds it in the same repo when you approve, and merged work stays."
+              : "It reads the code and plans only what has to change. Its cards join the board once you approve them."
+            : waiting
             ? "Review the features and how they depend on each other. Building starts when you approve."
             : "The board fills up once the planner has split the project into features and you've approved them."}
         </p>
         <Link href={`/p/${project.id}/plan`} className="flex items-center gap-2 rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white">
-          {waiting ? "Review the plan" : "See the plan"} <ArrowRight size={14} />
+          {change ? (waiting ? "Review the change" : "Watch the planner") : waiting ? "Review the plan" : "See the plan"} <ArrowRight size={14} />
         </Link>
       </div>
     );
@@ -48,6 +56,11 @@ export default function BoardPage() {
   return (
     <div className="flex min-h-[calc(100dvh-57px)]">
       <div className="min-w-0 flex-1 overflow-x-auto scroll-thin px-4 py-5 md:px-6">
+        {canChange && (
+          <div className="sticky left-0 mb-4 max-w-3xl">
+            <ChangeRequestBox compact />
+          </div>
+        )}
         <LayoutGroup>
           <div className="grid min-w-[900px] grid-cols-6 gap-3">
             {COLUMNS.map((c) => {
