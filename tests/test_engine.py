@@ -212,3 +212,44 @@ def test_local_git_errors_are_not_treated_as_provider_outages(tmp_path):
     eng = Engine(repo, ReferenceAgent(HERE / "solutions"), lambda t, n: GitBroken(repo, t.id, n))
     eng.sleep = lambda s: (_ for _ in ()).throw(AssertionError("should not wait"))
     assert eng.run_task(load_tasks(["B6"])[0]).status == "error"
+
+
+def test_agent_activity_is_throttled_and_keeps_the_latest_notes(tmp_path):
+    """Live activity: a planner makes hundreds of tool calls; the app gets at most one event per ~10 s per
+    task, carrying the latest few notes, plus the final notes when the run ends."""
+    from engine.engine import ACTIVITY_EVERY_S
+    from engine.events import Emitter, ListSink
+    repo = build_repo(tmp_path / "r")
+    clock = {"t": 0.0}
+
+    class Chatty(ReferenceAgent):
+        def run(self, task, box, attempt, feedback, progress=None):
+            for t, notes in [(0, ["Reading a.py"]), (3, ["Reading b.py", "Ran ls"]), (6, ["Wrote c.py"]),
+                             (ACTIVITY_EVERY_S, ["Ran pytest", "Ran pytest -x", "Edited c.py", "Ran pytest"]),
+                             (ACTIVITY_EVERY_S + 2, ["Ran git status"])]:
+                clock["t"] = t
+                progress(notes)
+            return super().run(task, box, attempt, feedback)
+
+    sink = ListSink()
+    eng = Engine(repo, Chatty(HERE / "solutions"), lambda t, n: LocalWorktreeSandbox(repo, t.id, n), events=Emitter(sink))
+    eng.clock = lambda: clock["t"]
+    assert eng.run_task(load_tasks(["B1"])[0]).status == "merged"
+    acts = [e for e in sink.events if e.kind == "agent_activity"]
+    assert [e.data["notes"] for e in acts] == [["Reading a.py"], ["Ran pytest -x", "Edited c.py", "Ran pytest"],
+                                              ["Ran git status"]]
+    assert all(e.task_id == "B1" and e.data["attempt"] == 1 and e.data["note"] == e.data["notes"][-1] for e in acts)
+    kinds = [e.kind for e in sink.events]
+    assert kinds.index("agent_activity") > kinds.index("task_status")      # after "working"...
+    assert max(i for i, k in enumerate(kinds) if k == "agent_activity") < kinds.index("attempt_finished")
+
+
+def test_agents_without_a_progress_argument_still_run(tmp_path):
+    """Scripted, referee and test agents take no `progress`; the engine must not pass it to them."""
+    from engine.events import Emitter, ListSink
+    repo = build_repo(tmp_path / "r")
+    sink = ListSink()
+    eng = Engine(repo, ReferenceAgent(HERE / "solutions"), lambda t, n: LocalWorktreeSandbox(repo, t.id, n),
+                 events=Emitter(sink))
+    assert eng.run_task(load_tasks(["B1"])[0]).status == "merged"
+    assert not [e for e in sink.events if e.kind == "agent_activity"]

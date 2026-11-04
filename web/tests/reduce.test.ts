@@ -85,3 +85,31 @@ describe("preview link", () => {
     expect(s.preview_url).toBe("https://a.vercel.app");
   });
 });
+
+describe("live agent activity", () => {
+  const queued = () => reduce(initialState(), ev(0, "task_queued", "PLAN", { title: "Plan", role: "planner", depends_on: [] }));
+
+  it("keeps the latest notes per task without adding them to the feed", () => {
+    let s = reduce(queued(), ev(5, "task_status", "PLAN", { status: "working", attempt: 1 }));
+    const feed = s.feed.length;
+    for (let i = 1; i <= 4; i++) {
+      s = reduce(s, ev(5 + i * 10, "agent_activity", "PLAN", { attempt: 1, note: `n${i * 2}`, notes: [`n${i * 2 - 1}`, `n${i * 2}`] }));
+    }
+    expect(s.tasks.PLAN.notes).toEqual(["n4", "n5", "n6", "n7", "n8"]);
+    expect(s.feed.length).toBe(feed);
+    expect(s.status).toBe("planning");
+    expect(s.now).toBe(45); // activity moves the clock too
+    expect(s.tasks.PLAN.started).toBe(5);
+  });
+
+  it("accepts a single note, ignores unknown tasks, and starts a new try clean", () => {
+    let s = reduce(queued(), ev(1, "task_status", "PLAN", { status: "working", attempt: 1 }));
+    s = reduce(s, ev(2, "agent_activity", "PLAN", { attempt: 1, note: "Wrote plan/plan.json" }));
+    s = reduce(s, ev(3, "agent_activity", "NOPE", { attempt: 1, note: "x" }));
+    expect(s.tasks.PLAN.notes).toEqual(["Wrote plan/plan.json"]);
+    expect(s.tasks.NOPE).toBeUndefined();
+    s = reduce(s, ev(9, "task_status", "PLAN", { status: "working", attempt: 2 }));
+    expect(s.tasks.PLAN.notes).toEqual([]);
+    expect(s.tasks.PLAN.started).toBe(1); // the timer counts from the first try
+  });
+});

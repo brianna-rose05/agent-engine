@@ -18,6 +18,9 @@ export const INTEGRATION = "INT";
 /** Plan task id behind a QA task id ("T3-qa" -> "T3"). */
 export const featureId = (taskId: string) => taskId.replace(/-qa$/, "");
 
+/** Activity notes kept per task: the planning screen shows this many, a board card the latest. */
+export const NOTES_KEPT = 5;
+
 const round = (x: number) => Math.round(x * 10000) / 10000;
 
 function channelFor(role: Role): FeedItem["channel"] {
@@ -53,6 +56,10 @@ export function reduce(s: ProjectState, e: EngineEvent): ProjectState {
       const d = e.data as { status: string; attempt?: number; error?: string };
       const next: TaskState = { ...task, status: d.status, since: e.t, attempt: d.attempt ?? task.attempt };
       if (d.error) next.error = d.error;
+      if (d.status === "working") {
+        next.started ??= e.t;
+        next.notes = []; // a new try starts with a clean slate
+      }
       tasks[task.id] = next;
       const ch = channelFor(task.role);
       if (d.status === "working" && task.role !== "planner") {
@@ -90,6 +97,14 @@ export function reduce(s: ProjectState, e: EngineEvent): ProjectState {
                 ? `The agent on ${name(task)} said it was done, but the checks disagree (${a.reason}). Sent it back with the details.`
                 : `Try ${a.n} on ${name(task)} was rejected: ${a.reason}.` });
       }
+      break;
+    }
+    case "agent_activity": {
+      // Frequent (one every ~10 s per running agent): kept on the task, never added to the feed.
+      if (!task) break;
+      const d = e.data as { note?: string; notes?: string[] };
+      const incoming = d.notes?.length ? d.notes : d.note ? [d.note] : [];
+      if (incoming.length) tasks[task.id] = { ...task, notes: [...(task.notes ?? []), ...incoming].slice(-NOTES_KEPT) };
       break;
     }
     case "dispute_resolved": {

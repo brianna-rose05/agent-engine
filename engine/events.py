@@ -9,6 +9,8 @@ Event kinds and their data:
     preview_ready    {url}      the finished app on Vercel (worker.py, engine/deploy.py)
     preview_failed   {reason}
     preview_skipped  {reason}   e.g. no VERCEL_TOKEN
+    agent_activity   {attempt, note, notes}   what a running agent is doing ("Wrote src/x.ts"),
+                     at most one every ~10 s per task; note is the latest of notes
 A sink must never break a run: errors inside a sink are swallowed by `emit`.
 """
 from __future__ import annotations

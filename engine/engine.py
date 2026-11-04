@@ -1,6 +1,7 @@
 """The core loop: isolate -> agent works -> engine verifies -> merge or retry -> escalate."""
 from __future__ import annotations
 
+import inspect
 import json
 import shlex
 import subprocess
@@ -125,6 +126,7 @@ class Engine:
         self.events = events or Emitter()
         self.sandbox_retries = SANDBOX_RETRIES
         self.sleep = time.sleep
+        self.clock = time.monotonic             # paces agent_activity events
         self.agent = agent
         self.make_sandbox = make_sandbox
         self.max_attempts = max_attempts
@@ -180,7 +182,7 @@ class Engine:
                     for path, body in task.setup_files.items():
                         box.write_file(path, body)
                     emit("task_status", task.id, status="working", attempt=n)
-                    rep = agent.run(task, box, attempt=n, feedback=feedback)
+                    rep = self._run_agent(agent, task, box, n, feedback)
                     emit("task_status", task.id, status="checking", attempt=n)
                     ok, reason, changed, out = self.verify(task, box)
                     if not ok and reason == "made no changes" and rep.claim.startswith("error"):
@@ -230,6 +232,19 @@ class Engine:
         except Exception as e:                                  # infra problems are reported, not hidden
             res.status, res.error = "error", f"{type(e).__name__}: {e}"
         return res
+
+    def _run_agent(self, agent: Agent, task: Task, box: Sandbox, n: int, feedback: str | None):
+        """Run the agent, streaming what it is doing as throttled `agent_activity` events when it can report
+        progress (the CLI agent can; scripted and test agents don't take the argument). Without this a
+        20-minute planner run showed one static line and the user thought it was stuck."""
+        if not _takes(agent.run, "progress"):
+            return agent.run(task, box, attempt=n, feedback=feedback)
+        activity = _Activity(lambda notes: self.events.emit("agent_activity", task.id, attempt=n,
+                                                             note=notes[-1], notes=notes), self.clock)
+        try:
+            return agent.run(task, box, attempt=n, feedback=feedback, progress=activity.add)
+        finally:
+            activity.flush()
 
     def _open_sandbox(self, task: Task, n: int):
         """Create and enter a sandbox, waiting and retrying while the provider is at capacity
@@ -293,6 +308,44 @@ class Engine:
                 for f in done:
                     results[running.pop(f)] = f.result()
         return [results[t.id] for t in tasks]
+
+
+ACTIVITY_EVERY_S = 10          # at most one agent_activity event per task this often
+ACTIVITY_KEEP = 3              # notes carried by one event (the latest; older ones are dropped)
+
+
+class _Activity:
+    """Collects an agent's activity notes and emits them at most once every ACTIVITY_EVERY_S, keeping only
+    the latest few. A planner makes hundreds of tool calls; an event for each would flood the app."""
+
+    def __init__(self, emit: Callable[[list[str]], None], clock: Callable[[], float],
+                 every: float = ACTIVITY_EVERY_S, keep: int = ACTIVITY_KEEP):
+        self.emit, self.clock, self.every, self.keep = emit, clock, every, keep
+        self.pending: list[str] = []
+        self.last: float | None = None
+
+    def add(self, notes: list[str]) -> None:
+        self.pending = (self.pending + list(notes))[-self.keep:]
+        now = self.clock()
+        if self.pending and (self.last is None or now - self.last >= self.every):
+            self._send(now)
+
+    def flush(self) -> None:
+        """The last notes of a run, so the app doesn't keep showing an older step."""
+        if self.pending:
+            self._send(self.clock())
+
+    def _send(self, now: float) -> None:
+        notes, self.pending, self.last = self.pending, [], now
+        self.emit(notes)
+
+
+def _takes(fn, name: str) -> bool:
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 class _Entered:
