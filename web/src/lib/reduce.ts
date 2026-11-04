@@ -11,6 +11,9 @@ export const initialState = (): ProjectState => ({
 
 export const money = (c: number) => (c > 0 && c < 0.01 ? `$${c.toFixed(4)}` : `$${c.toFixed(2)}`);
 
+/** The engine's last task: an integrator wires every merged feature into pages (web apps). */
+export const INTEGRATION = "INT";
+
 /** Plan task id behind a QA task id ("T3-qa" -> "T3"). */
 export const featureId = (taskId: string) => taskId.replace(/-qa$/, "");
 
@@ -29,7 +32,7 @@ export function reduce(s: ProjectState, e: EngineEvent): ProjectState {
   const say = (item: Omit<FeedItem, "t">) => feed.push({ t: e.t, ...item });
   const lookup = (t: TaskState) => plan?.tasks.find((p) => p.id === featureId(t.id));
   const name = (t: TaskState) => lookup(t)?.title ?? t.title.replace(/^Acceptance tests for /, "");
-  const mod = (t: TaskState) => lookup(t)?.module ?? "its module";
+  const mod = (t: TaskState) => (t.id === INTEGRATION ? "the pages, sign-in and server actions" : lookup(t)?.module ?? "its module");
 
   switch (e.kind) {
     case "task_queued": {
@@ -156,10 +159,16 @@ export type Feature = {
 
 const BAD = new Set(["failed", "blocked", "error", "merge_conflict"]);
 
-/** One card per planned feature, combining its QA task and its dev task. */
+/** One card per planned feature, combining its QA task and its dev task, plus the integration card. */
 export function features(s: ProjectState): Feature[] {
   if (!s.plan) return [];
-  return s.plan.tasks.map((p) => {
+  const integ = s.tasks[INTEGRATION];
+  const cards = integ
+    ? [...s.plan.tasks, { id: INTEGRATION, title: "Put it together: pages, sign-in and data", module: "src/app",
+                          spec: "Wires every merged feature into a working website. Checked with a production build " +
+                                "and by opening every page.", depends_on: integ.depends_on }]
+    : s.plan.tasks;
+  return cards.map((p) => {
     const qa = s.tasks[`${p.id}-qa`];
     const dev = s.tasks[p.id];
     let column: Column = "queued";

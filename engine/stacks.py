@@ -103,6 +103,8 @@ class PythonStack:
 
 Use Python 3.11+ standard library only. Every file must import cleanly."""
 
+    integration = False      # web apps get a final integrator task that wires pages (NextSupabaseStack)
+
     def missing_imports(self, box, test_body: str) -> list[str]:
         """Project files a test imports that don't exist (and that no task will build). Python: not checked."""
         return []
@@ -123,6 +125,19 @@ class NextSupabaseStack(PythonStack):
     reserved = {"supabase/migrations/0000_base.sql", "src/lib/db.ts", "src/lib/errors.ts", "src/lib/db-postgres.ts",
                 "src/test/db.ts", "src/app/layout.tsx"}
     template = TEMPLATES / "next-supabase"
+    reserved |= {"src/lib/pglite.ts", "src/lib/runtime.ts", "src/lib/auth.ts", "src/lib/session.ts"}
+
+    # ---------------------------------------------------------------- integration
+    integration = True
+    # Pages, server actions, layout and small client wrappers, plus the integrator's own tests.
+    integration_scope = ["src/app/*", "src/middleware.ts", "tests/unit/*"]
+
+    def integration_check_cmd(self, pages: list[str]) -> str:
+        """The whole app: types, lint, every test, a production build, and every page answering without a
+        server error in local mode (scripts/check-app.mjs), including each page the design requires."""
+        routes = " ".join(shlex.quote(r) for r in pages)
+        return ("npx tsc --noEmit -p . && npx eslint --max-warnings=0 src/app && NO_COLOR=1 npx vitest run && "
+                f"NEXT_TELEMETRY_DISABLED=1 npx next build && node scripts/check-app.mjs {routes}").strip()
 
     IMPORT_RE = re.compile(r"""(?:from\s+|import\s*\(\s*|require\(\s*)["']@/([^"']+)["']""")
 
@@ -140,7 +155,7 @@ class NextSupabaseStack(PythonStack):
         return missing
 
     def __init__(self, link_node_modules: bool = True):
-        super().__init__("python3")
+        super().__init__("python3")  # noqa: integration settings are class attributes above
         self.link_node_modules = link_node_modules
 
     def daytona_options(self) -> dict:
@@ -208,6 +223,9 @@ Write these files:
 1. plan.json (format below). Contracts and modules are paths, for example
    "contracts": ["supabase/migrations/0001_bookings.sql", "src/contracts/types.ts"],
    modules like "src/server/bookings.ts" (server logic) or "src/components/SlotPicker.tsx" (UI).
+   Also add "pages": every page route the app needs, like ["/", "/sign-in", "/book", "/staff/schedule"]
+   (no dynamic [segments]). Tasks build server modules and components only; after they all merge, an
+   integrator writes these pages, the sign-in screens and the server actions that connect everything.
 2. The contracts, in full:
    - SQL migrations (supabase/migrations/0001_<name>.sql, 0002_...): every table, column, constraint and
      index. Plain Postgres; ids are `uuid primary key default gen_random_uuid()`; users are
@@ -222,10 +240,10 @@ Write these files:
      user is involved). They never read cookies or env; pages pass those in. All SQL is parameterized.
    - UI modules export React components that take everything through props (data and callbacks), so they
      can be tested without a server. No data fetching inside components.
-   - Pages (src/app/**/page.tsx) are thin: fetch with server functions, render components.
-   - Template files (src/lib/db.ts, src/lib/errors.ts, src/lib/db-postgres.ts, src/test/db.ts,
-     src/app/layout.tsx, supabase/migrations/0000_base.sql) are fixed: never edit or list them. The home
-     page src/app/page.tsx may be a task module; if it is, list it in plan.json, otherwise leave it alone.
+   - Pages (src/app/**/page.tsx) are written by the integrator at the end, not by tasks. Sign-in, sign-up
+     and sessions come from the template (src/lib/session.ts); server functions take the user id in Actor.
+   - Template files (everything already in src/lib/, src/test/db.ts, src/app/, scripts/ and
+     supabase/migrations/0000_base.sql) are fixed: never edit or list them.
 Everything must type-check (`npx tsc --noEmit`) and every migration must apply to a fresh database."""
 
 
@@ -244,6 +262,11 @@ AGENTS_MD = """# Team rules (Next.js + Supabase)
   (e.g. src/server/booking.ts -> tests/unit/server-booking.test.ts). Nothing else outside their module.
 - Before saying DONE run: npx tsc --noEmit && npx eslint <your file> && npx vitest run <your tests>
 - Always `vitest run`, never bare `vitest` (that watches for changes and never exits). No dev servers.
+- Sign-in is the template's: src/lib/session.ts (getAuth, getActor, requireActor) and src/lib/runtime.ts
+  (getDb). Server functions never handle passwords or cookies; pages and server actions do.
+- The app runs without any accounts in local mode (no DATABASE_URL): an in-process Postgres with the
+  migrations applied, and local logins. `node scripts/check-app.mjs /route ...` (after `npx next build`)
+  starts it and checks every page answers without a server error.
 """
 
 STACKS = {"python": PythonStack, "next-supabase": NextSupabaseStack}

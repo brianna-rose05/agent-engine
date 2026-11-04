@@ -48,6 +48,10 @@ class ScriptedTeam:
             plan_dir = self.fixture / "plan"
             for f in sorted(x for x in plan_dir.rglob("*") if x.is_file()):
                 box.write_file(str(f.relative_to(plan_dir)), f.read_text())
+        elif task.id == "INT":                     # the integrator: pages and server actions
+            src = self.fixture / "integration"
+            for f in sorted(x for x in src.rglob("*") if x.is_file()):
+                box.write_file(str(f.relative_to(src)), f.read_text())
         elif task.role == "qa":
             path = task.can_edit[0]
             box.write_file(path, (self.fixture / path).read_text())

@@ -108,7 +108,10 @@ def main():
                                     parallel=stack.parallel, approve=wait_for_decision(backend.project), stack=stack,
                                     save_tests=out / "hidden_tests",
                                     # spec: work is never graded only by the model that wrote it
-                                    referee=ClaudeCLIAgent(model="sonnet", budget_usd=a.budget))
+                                    referee=ClaudeCLIAgent(model="sonnet", budget_usd=a.budget),
+                                    # wiring every page is one big task: more turns, time and budget (cap $1.00)
+                                    integrator=ClaudeCLIAgent(model=project["model"], max_turns=90,
+                                                              budget_usd=min(1.00, a.budget * 2), timeout_s=45 * 60))
         if plan is None:
             status = "failed"
         elif len(results) == 1:

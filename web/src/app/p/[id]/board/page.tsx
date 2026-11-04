@@ -5,7 +5,7 @@ import { useState } from "react";
 import { AnimatePresence, LayoutGroup, motion } from "motion/react";
 import { ArrowRight, CircleCheck, Clock3, RefreshCw, X } from "lucide-react";
 import { useProject } from "@/lib/project-store";
-import { COLUMNS, features, money, type Column, type Feature } from "@/lib/reduce";
+import { COLUMNS, INTEGRATION, features, money, type Column, type Feature } from "@/lib/reduce";
 import type { TaskState } from "@/lib/types";
 import { Avatar, Mono } from "@/components/ui";
 import { Feed } from "@/components/Feed";
@@ -90,15 +90,17 @@ const titles = (fs: Feature[]) => Object.fromEntries(fs.map((f) => [f.id, f.titl
 const since = (now: number, t?: TaskState) => (t ? Math.max(0, Math.round(now - t.since)) : 0);
 
 function Card({ f, now, onOpen, titles }: { f: Feature; now: number; onOpen: () => void; titles: Record<string, string> }) {
-  const testsDone = f.qa?.status === "passed";
+  const integ = f.id === INTEGRATION;               // no QA step: checked by building the app and opening every page
+  const testsDone = integ || f.qa?.status === "passed";
   const built = f.dev?.status === "merged";
   const doing =
     f.column === "tests" ? `Writing tests · ${since(now, f.qa)}s`
     : f.column === "building" ? `Building · ${since(now, f.dev)}s`
-    : f.column === "checking" ? "Running hidden tests"
+    : f.column === "checking" ? (integ ? "Building the app and opening every page" : "Running hidden tests")
     : f.column === "done" ? `Verified · ${money(f.cost_usd)}`
     : f.column === "attention" ? (f.dev?.error || f.qa?.error || "Stopped after 3 tries")
-    : f.waitingOn.length ? `Waiting on ${f.waitingOn.map((d) => titles[d] ?? d).join(", ")}`
+    : f.waitingOn.length ? (integ ? `Waiting for ${f.waitingOn.length} feature${f.waitingOn.length > 1 ? "s" : ""} to merge`
+                                  : `Waiting on ${f.waitingOn.map((d) => titles[d] ?? d).join(", ")}`)
     : testsDone ? "Tests ready, waiting for a dev agent" : "Waiting for a QA agent";
 
   return (

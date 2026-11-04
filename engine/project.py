@@ -21,7 +21,7 @@ import subprocess
 from pathlib import Path
 from typing import Callable
 
-from engine.engine import Engine, GraphError, Result, SetupError, check_graph
+from engine.engine import Engine, GraphError, Result, SetupError, check_graph, failure_excerpt
 from engine.interfaces import Sandbox, Task
 from engine.stacks import PythonStack, plain
 
@@ -97,6 +97,9 @@ def plan_problems(plan, stack: PythonStack | None = None) -> list[str]:
         deps = t.get("depends_on", [])
         if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
             p.append(f"{tid}: depends_on must be a list of task ids")
+    pages = plan.get("pages", [])
+    if not isinstance(pages, list) or not all(isinstance(r, str) and re.match(r"^/[A-Za-z0-9_\-/]*$", r) for r in pages):
+        p.append('"pages" must be a list of routes like "/book" (no dynamic segments)')
     if p:
         return p
     slugs = [stack.slug(t["module"]) for t in tasks]
@@ -280,6 +283,59 @@ def tasks_from_plan(plan: dict, python_or_stack: "str | PythonStack" = "python3"
     return out
 
 
+# ------------------------------------------------------------- integration
+INTEGRATION_SPEC = """Every feature of this project is built, tested and merged. Turn them into a working website.
+
+Project brief and design:
+{description}
+
+Built and tested modules (read their doc comments; you cannot edit them):
+{modules}
+
+Pages the app must have: {pages}
+
+How to wire it (read AGENTS.md first):
+- Each page is src/app/<route>/page.tsx. Server components load data with
+  `const actor = await requireActor()` (src/lib/session.ts) and `const db = await getDb()` (src/lib/runtime.ts),
+  call the server functions and render the components. Pages for signed-out people (sign-in, sign-up,
+  the home page) must not require a session.
+- Changes go through server actions ("use server", for example src/app/book/actions.ts): get db and actor the
+  same way, call the server function, catch AppError and return its message for the form to show, then
+  revalidatePath or redirect. Never let an AppError crash a page.
+- Sign-up, sign-in, sign-out and password changes use getAuth() from src/lib/session.ts inside server actions;
+  after sign-up, call the project's own account functions (for example, create the profile).
+- Components that need callbacks: pass server actions, or write a small "use client" wrapper in src/app/.
+- Send people to the right page for their role and keep others out, using the project's server functions.
+- A simple header with links to the main pages in src/app/layout.tsx, styled with the look in the brief.
+- You may only edit files under src/app/, src/middleware.ts, and your own tests under tests/unit/.
+
+Before saying DONE, run all of this and fix anything that fails:
+{check}"""
+
+
+def integration_check(stack: PythonStack, pages: list[str]):
+    cmd = stack.integration_check_cmd(pages)
+
+    def check(box: Sandbox) -> tuple[bool, str, str]:
+        r = box.exec(cmd, timeout=1500)
+        tail = failure_excerpt(r.output)
+        if r.code != 0:
+            return False, "the app doesn't build, or a page is missing or fails (see the output)", tail
+        return True, "", tail
+    return check
+
+
+def integration_task(plan: dict, description: str, stack: PythonStack, agent=None) -> Task:
+    """The last task: pages, sign-in and server actions that connect every merged feature."""
+    pages = [r for r in plan.get("pages", []) if isinstance(r, str)] or ["/"]
+    modules = "\n".join(f"- {t['module']}: {t['title']}" for t in plan["tasks"])
+    return Task("INT", "Integrate: pages, sign-in and data",
+                INTEGRATION_SPEC.format(description=description.strip(), modules=modules, pages=", ".join(pages),
+                                        check=stack.integration_check_cmd(pages)),
+                list(stack.integration_scope), "", role="dev", agent=agent,
+                depends_on=[t["id"] for t in plan["tasks"]], check=integration_check(stack, pages))
+
+
 # -------------------------------------------------------------------- run
 Approver = Callable[[dict], "tuple[bool, str]"]
 
@@ -291,7 +347,7 @@ def auto_approve(plan: dict) -> tuple[bool, str]:
 def run_project(description: str, repo: Path, engine: Engine, python: str = "python3",
                 parallel: int = 4, approve: Approver = auto_approve,
                 stack: PythonStack | None = None, save_tests: Path | None = None,
-                referee=None) -> tuple[dict | None, list[Result]]:
+                referee=None, integrator=None) -> tuple[dict | None, list[Result]]:
     """Plan, then pause for approval, then QA + build. `approve(plan)` returns (approved, note); in the
     app it waits for the user's click, offline it approves automatically. `referee` is the agent that settles
     test disputes; a different model from QA's, so work is never graded only by the model that wrote it."""
@@ -309,6 +365,8 @@ def run_project(description: str, repo: Path, engine: Engine, python: str = "pyt
     if not approved:
         return plan, [plan_result]
     tasks = tasks_from_plan(plan, stack, engine=engine, referee=referee)
+    if stack.integration:
+        tasks.append(integration_task(plan, description, stack, agent=integrator))
     try:
         results = engine.run_all(tasks, parallel=parallel)
     finally:

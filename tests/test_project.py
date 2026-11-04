@@ -10,7 +10,7 @@ import pytest
 from engine.agents.scripted import ScriptedTeam
 from engine.engine import Engine
 from engine.interfaces import AgentReport
-from engine.project import build_project_repo, plan_problems, run_project, summary_counts, tasks_from_plan
+from engine.project import build_project_repo, default_stack, plan_problems, run_project, summary_counts, tasks_from_plan
 from engine.sandboxes.local_worktree import LocalWorktreeSandbox
 
 FIXTURE = Path(__file__).parent.parent / "projects" / "tool_library"
@@ -225,9 +225,10 @@ TEMPLATE_READY = (Path(__file__).parent.parent / "templates" / "next-supabase" /
 web = pytest.mark.skipif(not TEMPLATE_READY, reason="run `npm ci` in templates/next-supabase first")
 
 
-def go_web(tmp_path, agent):
+def go_web(tmp_path, agent, integrate=False):
     from engine.stacks import NextSupabaseStack
     stack = NextSupabaseStack()
+    stack.integration = integrate          # a production build per run; only the integration tests pay for it
     repo = build_project_repo(tmp_path / "r", stack)
     eng = Engine(repo, agent, lambda t, n: LocalWorktreeSandbox(repo, t.id, n))
     plan, results = run_project((WEB / "description.md").read_text(), repo, eng, stack=stack, parallel=3)
@@ -236,13 +237,51 @@ def go_web(tmp_path, agent):
 
 @web
 def test_web_project_plans_tests_and_builds(tmp_path):
-    repo, plan, res = go_web(tmp_path, ScriptedTeam(WEB))
+    repo, plan, res = go_web(tmp_path, ScriptedTeam(WEB), integrate=True)
     assert {k: r.status for k, r in res.items()} == {
         "PLAN": "merged", "T1-qa": "passed", "T2-qa": "passed", "T3-qa": "passed",
-        "T1": "merged", "T2": "merged", "T3": "merged"}, {k: [a.reason for a in r.attempts] for k, r in res.items()}
+        "T1": "merged", "T2": "merged", "T3": "merged", "INT": "merged"}, \
+        {k: [a.reason for a in r.attempts] for k, r in res.items()}
     tracked = git(repo, "ls-tree", "-r", "--name-only", "main").split()
     assert "src/server/bookings.ts" in tracked and "node_modules" not in tracked
+    # the integrator ran last and wired the design's pages; its check built the app and requested each page
+    assert {"src/app/book/page.tsx", "src/app/sign-up/page.tsx"} <= set(tracked)
+    assert "INT" == list(res)[-1] and plan["pages"] == ["/", "/sign-up", "/book"]
     assert not [f for f in tracked if f.startswith("tests/acceptance/")]          # hidden tests never merged
+
+
+@web
+def test_web_integration_that_crashes_a_page_or_skips_one_is_sent_back(tmp_path):
+    """The integrator's work counts only if the whole app builds and every page the design needs answers
+    without a server error. Try 1 throws on /book; try 2 forgets /book; try 3 is right."""
+    class Integrator(ScriptedTeam):
+        def run(self, task, box, attempt, feedback):
+            rep = super().run(task, box, attempt, feedback)
+            if task.id == "INT" and attempt == 1:
+                box.write_file("src/app/book/page.tsx", 'export const dynamic = "force-dynamic";\n'
+                               'export default function Book(): never { throw new Error("db is down"); }\n')
+            if task.id == "INT" and attempt == 2:
+                box.exec("rm -rf src/app/book")
+            return rep
+
+    _, _, res = go_web(tmp_path, Integrator(WEB), integrate=True)
+    tries = res["INT"].attempts
+    assert res["INT"].status == "merged" and len(tries) == 3
+    assert "FAIL /book -> 500" in tries[0].test_output
+    assert "FAIL /book -> 404 (required page is missing)" in tries[1].test_output
+
+
+def test_integration_task_only_for_web_and_scoped_to_pages():
+    from engine.project import integration_task
+    from engine.stacks import NextSupabaseStack
+    plan = json.loads((WEB / "plan" / "plan.json").read_text())
+    t = integration_task(plan, "A booking site", NextSupabaseStack(link_node_modules=False))
+    assert t.depends_on == ["T1", "T2", "T3"] and t.check and not t.hidden_tests
+    assert t.can_edit == ["src/app/*", "src/middleware.ts", "tests/unit/*"]
+    assert "/sign-up" in t.spec and "src/server/bookings.ts" in t.spec and "next build" in t.spec
+    assert not default_stack().integration
+    bad = dict(plan, pages=["/p/[id]"])
+    assert any('"pages"' in m for m in plan_problems(bad, NextSupabaseStack(link_node_modules=False)))
 
 
 @web
