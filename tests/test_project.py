@@ -451,6 +451,37 @@ def test_referee_fixes_a_wrong_qa_test_and_the_feature_merges(tmp_path):
     assert res["T3"].status == "merged"                      # downstream no longer blocked
 
 
+def test_referee_gets_a_second_look_when_its_first_fix_was_real(tmp_path):
+    """Regression (Pawfect build 6): the referee fixed one batch of bad tests, the dev then failed on two more
+    and the feature was lost. A referee that fixed something gets one more review, and sees the dev's message."""
+    class TwoBadTests(ScriptedTeam):
+        def run(self, task, box, attempt, feedback):
+            rep = super().run(task, box, attempt, feedback)
+            if task.id == "T2-qa":
+                body = (FIXTURE / task.can_edit[0]).read_text().replace("== 600", "== 700").replace("== 900", "== 901")
+                box.write_file(task.can_edit[0], body)
+            if task.id == "T2" and attempt == 2:
+                return AgentReport("blocked: the 901 test is wrong, 3 days at 300 is 900")
+            return rep
+
+    seen = []
+
+    class FixesOneAtATime:
+        def run(self, task, box, attempt, feedback):
+            seen.append(task.spec)
+            path = task.can_edit[0]
+            body = box.exec(f"cat {path}").output
+            box.write_file(path, body.replace("== 700", "== 600") if "== 700" in body else body.replace("== 901", "== 900"))
+            return AgentReport("done")
+
+    res, events = go_ref(tmp_path, TwoBadTests(FIXTURE), referee=FixesOneAtATime())
+    assert res["T2"].status == "merged" and len(res["T2"].attempts) == 3, \
+        ([(a.claim, a.reason, a.test_output[-300:]) for a in res["T2"].attempts],
+         [e.data for e in events if e.kind == "dispute_resolved"])
+    assert [e.data for e in events if e.kind == "dispute_resolved"] == [{"test_fixed": True}, {"test_fixed": True}]
+    assert "3 days at 300 is 900" in seen[1]                 # the dev's own explanation reached the referee
+
+
 def test_referee_that_confirms_the_tests_changes_nothing(tmp_path):
     class Confirms:
         def run(self, task, box, attempt, feedback):

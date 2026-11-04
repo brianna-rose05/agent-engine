@@ -210,6 +210,8 @@ Failing test output:
 - If a failing test contradicts the spec or the doc comments (wrong arithmetic, wrong expected value, or an
   expectation the spec rules out), fix only that test so it matches the spec. Keep every other test as it is.
 - A test that needs a file other than {module} that doesn't exist yet can never pass: remove that test.
+- A test whose own setup fails (it inserts rows the schema, a constraint or a trigger refuses, before the code
+  under test even runs) is wrong: fix the setup so it creates valid data the way the app would.
 - If the failing tests are right, change nothing.
 End with DONE if you corrected tests, or BLOCKED: tests are correct."""
 
@@ -232,10 +234,14 @@ def referee_check(test_path: str, stack: PythonStack, original: str, bucket: dic
 
 
 def make_dispute(t: dict, test_path: str, stack: PythonStack, bucket: dict[str, str], engine: Engine, referee):
-    def dispute(output: str) -> bool:
+    reviews = [0]
+
+    def dispute(output: str) -> bool | None:
         if not bucket.get(test_path):
             return False
-        review = Task(f"{t['id']}-review", f"Review tests for {t['title']}",
+        reviews[0] += 1                                   # each review needs its own sandbox branch name
+        rid = f"{t['id']}-review" + (str(reviews[0]) if reviews[0] > 1 else "")
+        review = Task(rid, f"Review tests for {t['title']}",
                       REFEREE_SPEC.format(module=t["module"], tid=t["id"], title=t["title"], test_path=test_path,
                                           spec=t["spec"], output=output[-3000:]),
                       [test_path], "", role="qa", merge=False, max_attempts=1, agent=referee,

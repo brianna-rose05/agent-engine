@@ -172,7 +172,7 @@ class Engine:
         feedback = None
         emit = self.events.emit
         agent = task.agent or self.agent
-        disputed = False
+        disputes, last_fixed = 0, False
         try:
             for n in range(1, (task.max_attempts or self.max_attempts) + 1):
                 t0 = time.time()
@@ -202,15 +202,21 @@ class Engine:
                         res.status = self.merge(box.branch, task.id)
                         return res
                     feedback = f"Your previous attempt was rejected: {reason}." + (f"\nTest output:\n{out}" if out else "")
-                if (not ok and reason == "acceptance tests failed" and task.dispute and not disputed
+                # One review per task, plus a second when the first found and fixed bad tests (they often come in
+                # batches). Regression: Pawfect build 6, the referee fixed one batch and the dev then lost the
+                # feature to two more tests whose setup the schema refused.
+                may_dispute = disputes == 0 or (disputes == 1 and last_fixed)
+                if (not ok and reason == "acceptance tests failed" and task.dispute and may_dispute
                         and n < (task.max_attempts or self.max_attempts)):
                     # A referee (a different model from the one that wrote the tests) checks the failing tests
                     # against the spec before the next try. Regression: in both live builds, features were
                     # lost to QA tests that contradicted the spec while the dev's code was right.
-                    disputed = True
+                    disputes += 1
                     emit("task_status", task.id, status="disputing", attempt=n)
-                    verdict = task.dispute(out)      # True: tests fixed, False: tests confirmed, None: referee failed
-                    fixed = bool(verdict)
+                    # The dev's own account is evidence too ("the test inserts a booking the schema refuses").
+                    said = f"\n\nThe dev agent's final message: {rep.claim}" if rep.claim.startswith("blocked") else ""
+                    verdict = task.dispute(out + said)   # True: tests fixed, False: confirmed, None: referee failed
+                    fixed = last_fixed = bool(verdict)
                     emit("dispute_resolved", task.id, test_fixed=fixed,
                          **({"referee_error": True} if verdict is None else {}))
                     if verdict is None:
