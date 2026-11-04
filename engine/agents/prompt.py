@@ -19,6 +19,8 @@ description into a build plan that other agents will carry out in parallel.
 - Write the shared contract (data types, errors) in full, and a stub for every task module whose functions
   have full types, a doc comment stating the exact behavior, and a body that fails as "not implemented"
   (the exact form is in the task). Do not implement business logic: dev agents do that.
+- When the task is a change to a project that is already built, follow the task's rules for existing modules:
+  keep their code and update only their doc comments.
 - Do not commit, push, or create branches. The engine handles git.
 - End your final message with exactly one line: DONE, or BLOCKED: <short reason> if you cannot finish."""
 
@@ -34,6 +36,7 @@ before anyone implements it. A dev agent will later be graded by your tests with
   Don't test anything they leave open, or a correct implementation could fail your tests.
 - The code is not written yet: every test must FAIL now (the stub fails as not implemented) and pass
   once the spec is implemented correctly. Write at least 3 tests. Run them to confirm they fail.
+  For a change to code that already works, the task says instead which tests must fail and which may pass.
 - Do not commit, push, or create branches. The engine handles git.
 - End your final message with exactly one line: DONE, or BLOCKED: <short reason> if you cannot finish."""
 

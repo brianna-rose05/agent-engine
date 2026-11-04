@@ -14,14 +14,18 @@ Nobody's "done" is trusted: each stage is checked by the engine, not by the agen
 """
 from __future__ import annotations
 
+import ast
+import copy
 import json
 import re
 import shlex
 import subprocess
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Callable
 
-from engine.engine import Engine, GraphError, Result, SetupError, check_graph, failure_excerpt
+from engine.engine import Engine, GraphError, Result, SetupError, check_graph, failure_excerpt, git
+from engine.gitlock import repo_lock
 from engine.interfaces import Sandbox, Task
 from engine.stacks import PythonStack, plain
 
@@ -170,8 +174,11 @@ def summary_counts(output: str) -> dict[str, int]:
     return {k: int(n) for n, k in re.findall(r"(\d+) (passed|failed|errors?)", tail)}
 
 
-def qa_check(test_path: str, stack: PythonStack, bucket: dict[str, str]):
-    """Tests are useful only if they run, and fail now because the code isn't written yet."""
+def qa_check(test_path: str, stack: PythonStack, bucket: dict[str, str], mode: str = "new"):
+    """Tests are useful only if they run, and fail now because the code isn't written yet. For a change to
+    working code (mode "change") tests of behavior that stays may pass, but at least one must fail: the change
+    isn't made yet, so a suite that passes in full checks nothing new. The unimplemented-marker rule is for
+    stubs only; a changed module is real code."""
     def check(box: Sandbox) -> tuple[bool, str, str]:
         r = box.exec(stack.run_tests(shlex.quote(test_path)), timeout=900)
         tail = "\n".join(r.output.strip().splitlines()[-25:])
@@ -184,13 +191,20 @@ def qa_check(test_path: str, stack: PythonStack, bucket: dict[str, str]):
         n = stack.counts(r.output)
         if stack.collection_failed(r.code, r.output) or n["errors"]:
             return False, "the tests don't run cleanly (import, syntax or setup errors)", tail
-        if n["passed"]:
-            return False, (f"{n['passed']} test(s) already pass against the unimplemented stub, so they "
-                           "check nothing; every test must exercise the behavior"), tail
-        if n["failed"] < MIN_QA_TESTS:
-            return False, f"write at least {MIN_QA_TESTS} tests", tail
-        if stack.unimplemented_marker not in plain(r.output):
-            return False, "the tests fail, but not because the code is unimplemented; check imports and setup", tail
+        if mode == "change":
+            if not n["failed"]:
+                return False, ("every test passes on the current code, so none of them checks the change; at least "
+                               "one test must exercise the changed behavior and fail until it is made"), tail
+            if n["passed"] + n["failed"] < MIN_QA_TESTS:
+                return False, f"write at least {MIN_QA_TESTS} tests", tail
+        else:
+            if n["passed"]:
+                return False, (f"{n['passed']} test(s) already pass against the unimplemented stub, so they "
+                               "check nothing; every test must exercise the behavior"), tail
+            if n["failed"] < MIN_QA_TESTS:
+                return False, f"write at least {MIN_QA_TESTS} tests", tail
+            if stack.unimplemented_marker not in plain(r.output):
+                return False, "the tests fail, but not because the code is unimplemented; check imports and setup", tail
         bucket.clear()
         bucket[test_path] = body.output
         return True, "", tail
@@ -216,10 +230,10 @@ Failing test output:
 End with DONE if you corrected tests, or BLOCKED: tests are correct."""
 
 
-def referee_check(test_path: str, stack: PythonStack, original: str, bucket: dict[str, str]):
+def referee_check(test_path: str, stack: PythonStack, original: str, bucket: dict[str, str], mode: str = "new"):
     """A review counts only if it changed the tests and they still pass QA's rules (run cleanly, >= 3,
-    every test fails on the stub because it's unimplemented)."""
-    inner = qa_check(test_path, stack, {})
+    every test fails on the stub because it's unimplemented; for a change, >= 1 fails on the current code)."""
+    inner = qa_check(test_path, stack, {}, mode)
 
     def check(box: Sandbox) -> tuple[bool, str, str]:
         now = box.exec(f"cat {shlex.quote(test_path)}").output
@@ -233,7 +247,8 @@ def referee_check(test_path: str, stack: PythonStack, original: str, bucket: dic
     return check
 
 
-def make_dispute(t: dict, test_path: str, stack: PythonStack, bucket: dict[str, str], engine: Engine, referee):
+def make_dispute(t: dict, test_path: str, stack: PythonStack, bucket: dict[str, str], engine: Engine, referee,
+                 mode: str = "new"):
     reviews = [0]
 
     def dispute(output: str) -> bool | None:
@@ -246,7 +261,7 @@ def make_dispute(t: dict, test_path: str, stack: PythonStack, bucket: dict[str, 
                                           spec=t["spec"], output=output[-3000:]),
                       [test_path], "", role="qa", merge=False, max_attempts=1, agent=referee,
                       setup_files={test_path: bucket[test_path]},
-                      check=referee_check(test_path, stack, bucket[test_path], bucket))
+                      check=referee_check(test_path, stack, bucket[test_path], bucket, mode))
         r = engine.run_task(review)
         if r.status == "passed":
             return True
@@ -262,31 +277,50 @@ def tasks_from_plan(plan: dict, python_or_stack: "str | PythonStack" = "python3"
     stack = python_or_stack if isinstance(python_or_stack, PythonStack) else default_stack(python_or_stack)
     by_id = {t["id"]: t for t in plan["tasks"]}
     contracts = ", ".join(plan["contracts"]) or "none"
-    out = []
-    for t in plan["tasks"]:
-        test_path = stack.qa_test_path(t["module"])
-        hidden: dict[str, str] = {}                      # filled by the QA check, read by the dev's verify
-        deps = t.get("depends_on", [])
-        out.append(Task(
-            f"{t['id']}-qa", f"Acceptance tests for {t['title']}",
-            f"Write acceptance tests for task {t['id']} ({t['title']}), module {t['module']}, in {test_path}.\n\n"
-            f"Task spec: {t['spec']}\n\nThe stub {t['module']} has the signatures and doc comments; those "
-            f"are the exact behavior to test. Shared contracts: {contracts}.",
-            [test_path], "", role="qa", check=qa_check(test_path, stack, hidden), merge=False))
-        builds_on = "".join(f"\n- {d}: {by_id[d]['module']} ({by_id[d]['title']})" for d in deps)
-        out.append(Task(
-            t["id"], t["title"],
-            f"Implement everything in {t['module']}. The stub's signatures and doc comments are the spec; "
-            f"keep the signatures exactly.\n\n{t['spec']}\n\nShared contracts (read-only): {contracts}."
-            f"\n\nYou may only edit {t['module']}. If you add your own tests, they must match "
-            f"{stack.dev_test_glob(t['module'])} (any other file gets your work rejected)."
-            + (f"\n\nThis builds on finished, tested work already in the repo. Import and reuse it; "
-               f"you cannot edit it:{builds_on}" if deps else ""),
-            [t["module"], stack.dev_test_glob(t["module"])],
-            stack.verify_cmd(t["module"], test_path),
-            hidden_tests=hidden, depends_on=[*deps, f"{t['id']}-qa"],
-            dispute=make_dispute(t, test_path, stack, hidden, engine, referee) if engine and referee else None))
-    return out
+    return [task for t in plan["tasks"] for task in feature_tasks(t, by_id, contracts, stack, engine, referee)]
+
+
+def feature_tasks(t: dict, by_id: dict[str, dict], contracts: str, stack: PythonStack, engine: Engine | None,
+                  referee, mode: str = "new") -> list[Task]:
+    """A feature's QA task and dev task. mode "new" builds a stub; mode "change" changes a module that already
+    works, so its tests and the dev's instructions say what may stay and what must change."""
+    test_path = stack.qa_test_path(t["module"])
+    hidden: dict[str, str] = {}                      # filled by the QA check, read by the dev's verify
+    deps = t.get("depends_on", [])
+    if mode == "change":
+        qa_spec = (f"Write acceptance tests for change {t['id']} ({t['title']}) to {t['module']}, in {test_path}.\n\n"
+                   f"What changes: {t['spec']}\n\n{t['module']} already works and other code uses it. Its doc "
+                   "comments now describe the behavior after this change, but its code still does the old thing. "
+                   "Test the changed behavior exactly as the doc comments say: at least one test must fail on the "
+                   "current code, because the change isn't made yet. Tests of behavior that stays the same may "
+                   "pass; add a few where the change could break it."
+                   + (f" If the doc comments describe a function that doesn't exist yet, `import {t['module'][:-3]}` "
+                      f"and call `{t['module'][:-3]}.<function>(...)`, so one missing name doesn't stop the other "
+                      "tests from running." if t["module"].endswith(".py") else "")
+                   + f" Shared contracts: {contracts}.")
+        dev_spec = (f"Change {t['module']} so it does exactly what its doc comments now say. The code already works "
+                    "for the earlier behavior and other code uses it: keep everything the doc comments still "
+                    "describe, and keep existing signatures unless the doc comments change them."
+                    f"\n\nWhat changes: {t['spec']}\n\nShared contracts (read-only): {contracts}.")
+    else:
+        qa_spec = (f"Write acceptance tests for task {t['id']} ({t['title']}), module {t['module']}, in {test_path}.\n\n"
+                   f"Task spec: {t['spec']}\n\nThe stub {t['module']} has the signatures and doc comments; those "
+                   f"are the exact behavior to test. Shared contracts: {contracts}.")
+        dev_spec = (f"Implement everything in {t['module']}. The stub's signatures and doc comments are the spec; "
+                    f"keep the signatures exactly.\n\n{t['spec']}\n\nShared contracts (read-only): {contracts}.")
+    builds_on = "".join(f"\n- {d}: {by_id[d]['module']} ({by_id[d]['title']})" for d in deps)
+    return [
+        Task(f"{t['id']}-qa", f"Acceptance tests for {t['title']}", qa_spec,
+             [test_path], "", role="qa", check=qa_check(test_path, stack, hidden, mode), merge=False),
+        Task(t["id"], t["title"],
+             dev_spec + f"\n\nYou may only edit {t['module']}. If you add your own tests, they must match "
+             f"{stack.dev_test_glob(t['module'])} (any other file gets your work rejected)."
+             + (f"\n\nThis builds on finished, tested work already in the repo. Import and reuse it; "
+                f"you cannot edit it:{builds_on}" if deps else ""),
+             [t["module"], stack.dev_test_glob(t["module"])],
+             stack.verify_cmd(t["module"], test_path),
+             hidden_tests=hidden, depends_on=[*deps, f"{t['id']}-qa"],
+             dispute=make_dispute(t, test_path, stack, hidden, engine, referee, mode) if engine and referee else None)]
 
 
 # ------------------------------------------------------------- integration
@@ -333,19 +367,35 @@ def integration_check(stack: PythonStack, pages: list[str]):
     return check
 
 
-def integration_task(plan: dict, description: str, stack: PythonStack, agent=None) -> Task:
+CHANGE_INTEGRATION_NOTE = """This app is already built and working, and its pages in src/app/ exist. A change to it was
+just built, tested and merged. Update the pages for this change and keep everything else as it works now.
+
+The user asked for: {request}
+What changes: {summary}
+Modules this change touched: {touched}"""
+
+
+def integration_task(plan: dict, description: str, stack: PythonStack, agent=None, change: dict | None = None) -> Task:
     """The last task: pages, sign-in and server actions that connect every merged feature. It needs every
     server module, but only waits for UI components: if one never passed its tests, the integrator builds that
     screen itself inside src/app/, still checked by the build and page checks. Regression (Pawfect builds 6-7):
-    one screen component that kept failing its tests blocked the whole app every time."""
-    pages = [r for r in plan.get("pages", []) if isinstance(r, str)] or ["/"]
-    ui = [t["id"] for t in plan["tasks"] if stack.is_ui_module(t["module"])]
-    modules = "\n".join(f"- {t['module']}: {t['title']}" for t in plan["tasks"])
-    return Task("INT", "Integrate: pages, sign-in and data",
-                INTEGRATION_SPEC.format(description=description.strip(), modules=modules, pages=", ".join(pages),
-                                        check=stack.integration_check_cmd(pages)),
-                list(stack.integration_scope), "", role="dev", agent=agent,
-                depends_on=[t["id"] for t in plan["tasks"] if t["id"] not in ui], waits_for=ui,
+    one screen component that kept failing its tests blocked the whole app every time.
+    With a `change`, it runs again after the change's tasks (and waits only for those): the pages are updated
+    for the change, and its check runs the whole test suite, so a change that broke earlier work fails here."""
+    current = apply_change(plan, change) if change else plan
+    pages = [r for r in current.get("pages", []) if isinstance(r, str)] or ["/"]
+    waits_on = change["tasks"] if change else plan["tasks"]
+    ui = [t["id"] for t in waits_on if stack.is_ui_module(t["module"])]
+    modules = "\n".join(f"- {t['module']}: {t['title']}" for t in current["tasks"])
+    spec = INTEGRATION_SPEC.format(description=description.strip(), modules=modules, pages=", ".join(pages),
+                                   check=stack.integration_check_cmd(pages))
+    if change:
+        touched = ", ".join(t["module"] for t in change["tasks"])
+        spec = CHANGE_INTEGRATION_NOTE.format(request=change.get("request", ""), summary=change.get("summary", ""),
+                                              touched=touched) + "\n\n" + spec
+    return Task("INT", "Integrate: pages, sign-in and data" if not change else "Integrate the change: pages and data",
+                spec, list(stack.integration_scope), "", role="dev", agent=agent,
+                depends_on=[t["id"] for t in waits_on if t["id"] not in ui], waits_for=ui,
                 check=integration_check(stack, pages))
 
 
@@ -397,12 +447,24 @@ def build(tasks: list[Task], engine: Engine, parallel: int, save_tests: Path | N
 
 
 def resume_tasks(plan: dict, description: str, stack: PythonStack, merged: set[str], engine: Engine | None = None,
-                 referee=None, integrator=None) -> list[Task]:
+                 referee=None, integrator=None, change: dict | None = None) -> list[Task]:
     """The tasks still to do after a stopped build: every feature (its QA and dev task) and the integration
-    that hadn't merged. Merged work stays as it is in the repo; nothing depends on it any more."""
-    tasks = tasks_from_plan(plan, stack, engine=engine, referee=referee)
+    that hadn't merged. Merged work stays as it is in the repo; nothing depends on it any more.
+    `change` is the latest approved change (changes/{n}.json on main): its tasks that didn't merge are redone as
+    it planned them. Its "change" tasks have to come from there: plan.json only holds the new spec under the
+    owning task's id (T2), which merged long ago."""
+    ids = {t["id"] for t in change["tasks"]} if change else set()
+    tasks = tasks_from_plan(dict(plan, tasks=[t for t in plan["tasks"] if t["id"] not in ids]), stack,
+                            engine=engine, referee=referee)
+    if change:
+        tasks += tasks_from_change(change, plan, stack, engine=engine, referee=referee)
     if stack.integration:
-        tasks.append(integration_task(plan, description, stack, agent=integrator))
+        integ = integration_task(plan, description, stack, agent=integrator, change=change)
+        devs = [t.id for t in tasks if not t.id.endswith("-qa")]
+        modules = {t.id: t.can_edit[0] for t in tasks}
+        integ.depends_on = [d for d in devs if not stack.is_ui_module(modules[d])]
+        integ.waits_for = [d for d in devs if stack.is_ui_module(modules[d])]
+        tasks.append(integ)
     feature = lambda tid: tid.removesuffix("-qa")                      # noqa: E731
     todo = [t for t in tasks if feature(t.id) not in merged]
     for t in todo:
@@ -411,12 +473,367 @@ def resume_tasks(plan: dict, description: str, stack: PythonStack, merged: set[s
     return todo
 
 
+def latest_change(repo: Path) -> dict | None:
+    """The newest changes/{n}.json on main. A rejected change's file is reverted, so any file here was approved."""
+    found = []
+    for f in (Path(repo) / "changes").glob("*.json"):
+        try:
+            change = json.loads(f.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if f.stem.isdigit() and isinstance(change, dict) and isinstance(change.get("tasks"), list):
+            found.append((int(f.stem), change))
+    return max(found, key=lambda x: x[0])[1] if found else None
+
+
 def resume_project(plan: dict, description: str, repo: Path, engine: Engine, merged: set[str],
                    stack: PythonStack | None = None, parallel: int = 4, save_tests: Path | None = None,
                    referee=None, integrator=None) -> list[Result]:
     """Retry only what didn't finish, in the same repo, without planning or approval again."""
     stack = stack or default_stack()
-    todo = resume_tasks(plan, description, stack, merged, engine=engine, referee=referee, integrator=integrator)
+    todo = resume_tasks(plan, description, stack, merged, engine=engine, referee=referee, integrator=integrator,
+                        change=latest_change(repo))
     engine.events.emit("build_resumed", merged=sorted(merged),
                        retrying=sorted({t.id.removesuffix("-qa") for t in todo}))
     return build(todo, engine, parallel, save_tests)
+
+
+# ------------------------------------------------------------------ change requests
+# A change to a project that is already built (docs/change-requests.md is the contract with the app):
+# plan only the change, wait for approval, build it in the same repo. Merged work stays; the engine still
+# verifies everything, and the integration check runs the whole test suite again for web apps.
+CHANGE_KINDS = ("change", "new")
+
+CHANGE_GUIDE = """Plan a change to a project that is already built and working. A team of AI agents will build only
+this change, in the same repo; everything already built stays.
+
+The change the user asked for:
+{request}
+
+Read plan.json first (the original plan: every task, the module it owns and its spec), then AGENTS.md and the
+code of the modules the change touches.
+
+How this project's contracts and stubs are written (from the original planning rules; where they say
+plan.json, write changes/{n}.json instead, and never edit plan.json, the engine updates it after the build):
+{layout}
+
+Write changes/{n}.json, exactly this shape:
+   {{"n": {n},
+     "request": "<the user's words, as above>",
+     "summary": "<one or two plain sentences: what will change>",
+     "contracts": ["<contract file this change adds or edits>", ...],
+     "tasks": [{{"id": "C{n}T1", "kind": "change", "title": "<short>", "module": "<a task module from plan.json>",
+                "spec": "<what changes, precise enough to test>", "depends_on": []}},
+               {{"id": "C{n}T2", "kind": "new", "title": "<short>", "module": "<a new module>",
+                "spec": "<what to build>", "depends_on": ["C{n}T1"]}}]{pages_line}}}
+   - 1 to {max_tasks} tasks, with ids C{n}T1, C{n}T2, ... Each task owns one module and no module is shared.
+   - kind "change": a module that already exists and is a task module in plan.json. Keep its code exactly as it
+     is (a dev agent changes the code) and rewrite its doc comments so they describe the behavior after the
+     change: they are the spec QA tests against. Never stub out, delete or replace the existing code, and never
+     add a `{stub_marker}` body to it. If the change adds a function to an existing module, describe its exact
+     signature and behavior in the task spec and in a comment in the module; the dev writes it.
+   - kind "new": a module that doesn't exist yet, written as a stub exactly like the original plan's stubs.
+   - depends_on lists ids of tasks in this change only (earlier work is already merged); no cycles.
+   - "contracts": every contract file this change adds or edits ({contract_rule}). Contract edits must be
+     additive: existing code must keep working with them.{migration_rule}
+   - Every file you create or edit must be listed in changes/{n}.json, as a contract or a task module.{pages_rule}
+
+Project brief:
+{description}"""
+
+
+def code_size(path: str, text: str) -> int:
+    """Lines of code with comments and docstrings left out. A change planner may rewrite doc comments but never
+    code, so this must not shrink."""
+    if path.endswith(".py"):
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            return 0
+        doc = lambda n: isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant) and isinstance(n.value.value, str)  # noqa: E731
+        return sum(1 for n in ast.walk(tree) if isinstance(n, ast.stmt) and not doc(n))
+    code = re.sub(r"(?m)//.*$", "", re.sub(r"/\*[\s\S]*?\*/", "", text))
+    return sum(1 for line in code.splitlines() if line.strip())
+
+
+def _migration_numbers(stack: PythonStack, files) -> list[int]:
+    rx = stack.migration_re
+    return sorted(int(m.group(1)) for f in files if rx and (m := rx.match(f)))
+
+
+def change_problems(change, plan: dict, stack: PythonStack | None = None, repo_files=()) -> list[str]:
+    """Everything wrong with changes/{n}.json, in words a planner can act on. `repo_files` are the files in the
+    repo before the change (a "change" task needs one of them; a "new" task and a new migration must not)."""
+    stack = stack or default_stack()
+    if not isinstance(change, dict):
+        return ["the change file must be a JSON object"]
+    n = change.get("n")
+    if not isinstance(n, int) or isinstance(n, bool) or n < 1:
+        return ['"n" must be the change number']
+    p = []
+    for key in ("request", "summary"):
+        if not isinstance(change.get(key), str) or not change[key].strip():
+            p.append(f'"{key}" must be a non-empty string')
+    contracts, tasks = change.get("contracts", []), change.get("tasks")
+    if not isinstance(contracts, list) or not all(isinstance(c, str) for c in contracts):
+        return p + ['"contracts" must be a list of file names']
+    if not isinstance(tasks, list) or not 1 <= len(tasks) <= MAX_TASKS:
+        return p + [f'"tasks" must be a list of 1 to {MAX_TASKS} tasks']
+    files = set(repo_files)
+    plan_owner = {t["module"]: t.get("id") for t in plan.get("tasks", []) if isinstance(t, dict) and "module" in t}
+    numbers = _migration_numbers(stack, files)
+    owners: dict[str, str] = {}
+    for c in contracts:
+        mig = stack.migration_re.match(c) if stack.migration_re else None
+        if not stack.contract_re.match(c) or c in stack.reserved:
+            p.append(f"contract {c!r} must be {stack.contract_rule}")
+        elif c in plan_owner:
+            p.append(f"{c} is the module of task {plan_owner[c]}, not a contract; change it with a task")
+        elif mig and c in files:
+            p.append(f"{c} already exists: never edit an existing migration; add a new one")
+        elif mig and numbers and int(mig.group(1)) <= numbers[-1]:
+            p.append(f"new migration {c} must be numbered after the last one ({numbers[-1]:04d})")
+        owners[c] = "contracts"
+    id_re = re.compile(rf"^C{n}T[1-9][0-9]?$")
+    ids: list[str] = []
+    scope = getattr(stack, "integration_scope", []) if stack.integration else []
+    for t in tasks:
+        if not isinstance(t, dict):
+            p.append("every task must be an object")
+            continue
+        tid = t.get("id")
+        if not isinstance(tid, str) or not id_re.match(tid):
+            p.append(f"task id {tid!r} must be C{n}T1, C{n}T2, ...")
+            continue
+        if tid in ids:
+            p.append(f"task id {tid} is used twice")
+            continue
+        ids.append(tid)
+        kind = t.get("kind")
+        if kind not in CHANGE_KINDS:
+            p.append(f'{tid}: "kind" must be "change" or "new"')
+        for key in ("title", "spec"):
+            if not isinstance(t.get(key), str) or not t[key].strip():
+                p.append(f"{tid}: {key!r} must be a non-empty string")
+        mod = t.get("module")
+        if not isinstance(mod, str) or not stack.module_re.match(mod) or mod in stack.reserved:
+            p.append(f"{tid}: module {mod!r} must be {stack.module_rule}")
+        elif any(fnmatch(mod, s) for s in scope):
+            p.append(f"{tid}: pages ({mod}) get no task of their own; describe the fix in \"summary\" and the "
+                     "integrator makes it")
+        elif mod in owners:
+            p.append(f"{tid}: module {mod} is already owned by {owners[mod]}; each module has one owner")
+        else:
+            owners[mod] = tid
+            if kind == "change" and mod not in files:
+                p.append(f'{tid}: kind "change" needs a module that exists, and {mod} doesn\'t (use kind "new")')
+            elif kind == "change" and mod not in plan_owner:
+                p.append(f"{tid}: {mod} isn't a task module in plan.json; only task modules can be changed")
+            elif kind == "new" and (mod in files or mod in plan_owner):
+                p.append(f'{tid}: kind "new" needs a new module, and {mod} already exists (use kind "change")')
+        deps = t.get("depends_on", [])
+        if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
+            p.append(f"{tid}: depends_on must be a list of task ids")
+    if "pages" in change or stack.integration:
+        pages = change.get("pages")
+        if (not isinstance(pages, list) or (stack.integration and not pages)
+                or not all(isinstance(r, str) and re.match(r"^/[A-Za-z0-9_\-/]*$", r) for r in pages)):
+            p.append('"pages" must be a list of every page route after the change, like "/book" (no dynamic segments)')
+    if p:
+        return p
+    for t in tasks:
+        if unknown := [d for d in t.get("depends_on", []) if d not in ids]:
+            p.append(f"{t['id']}: depends_on may only name tasks in this change ({', '.join(unknown)} isn't one; "
+                     "earlier work is already merged)")
+    slugs = [stack.slug(t["module"]) for t in tasks]
+    if len(set(slugs)) != len(slugs):
+        p.append("two task modules would share a test file name; give them distinct names")
+    if p:
+        return p
+    try:
+        check_graph([Task(t["id"], t["title"], "", [], "", depends_on=t.get("depends_on", [])) for t in tasks])
+    except GraphError as e:
+        p.append(str(e))
+    return p
+
+
+def change_check(n: int, request: str, plan: dict, stack: PythonStack):
+    path = f"changes/{n}.json"
+
+    def check(box: Sandbox) -> tuple[bool, str, str]:
+        r = box.exec(f"cat {path}")
+        if r.code:
+            return False, f"{path} is missing", ""
+        try:
+            change = json.loads(r.output)
+        except json.JSONDecodeError as e:
+            return False, f"{path} is not valid JSON ({e})", ""
+        base = box.exec("git merge-base HEAD main").output.strip()
+        existed = set(box.exec(f"git ls-tree -r --name-only {base}").output.split())
+        if isinstance(change, dict):
+            # The record keeps the user's own words and its number, whatever the planner wrote; template files
+            # listed as contracts are dropped, as in planning.
+            change["n"], change["request"] = n, request
+            if isinstance(change.get("contracts"), list):
+                change["contracts"] = [c for c in change["contracts"] if c not in stack.reserved]
+            box.write_file(path, json.dumps(change, indent=2))
+        if problems := change_problems(change, plan, stack, existed):
+            return False, "the change has problems: " + "; ".join(problems), ""
+        changed = sorted(set(box.exec(f"git diff --name-only {base}; "
+                                      "git ls-files --others --exclude-standard").output.split()))
+        rx = stack.migration_re
+        if rx and (edited := [f for f in changed if f in existed and rx.match(f)]):
+            return False, (f"never edit an existing migration ({', '.join(edited)}): it has already been applied; "
+                           "add a new one numbered after the last"), ""
+        if not stack.nested_files_ok and (nested := [f for f in changed if "/" in f and f != path]):
+            return False, f"planning files must be top-level; remove {', '.join(nested)}", ""
+        tasks = change["tasks"]
+        modules = [t["module"] for t in tasks]
+        expected = set(modules) | set(change["contracts"]) | {path}
+        extra = sorted(set(changed) - expected)
+        # Stray edits to existing files (plan.json, template files, modules the change doesn't name) are undone,
+        # as in planning: nothing in the change depends on them.
+        if stray := [f for f in extra if f in existed]:
+            box.exec(f"git checkout {base} -- " + " ".join(shlex.quote(f) for f in stray))
+            extra = [f for f in extra if f not in existed]
+        if extra:
+            return False, f"files not named in {path}: {', '.join(extra)}", ""
+        if missing := [f for f in sorted(expected) if box.exec(f"test -f {shlex.quote(f)}").code]:
+            return False, f"{path} names files that don't exist: {', '.join(missing)}", ""
+        # Its doc comments are the spec QA tests against; unchanged, they still describe the old behavior.
+        if same := [t["module"] for t in tasks if t["kind"] == "change" and t["module"] not in changed]:
+            return False, f"update the doc comments of {', '.join(same)} to describe the behavior after the change", ""
+        chk = box.exec(stack.plan_check_cmd(change["contracts"], modules), timeout=900)
+        if stack.runner_missing(chk.code, chk.output):
+            raise SetupError(f"the checks could not run in the sandbox: {chk.output[-300:]}")
+        if chk.code:
+            return False, "the contracts and modules don't pass the checks (types, imports or migrations)", chk.output[-2000:]
+        marker = stack.stub_marker
+        for t in tasks:
+            q = shlex.quote(t["module"])
+            now = box.exec(f"cat {q}").output
+            if t["kind"] == "new":
+                if marker not in now:
+                    return False, f"new task modules must be stubs ({marker}): {t['module']}", ""
+                continue
+            before = box.exec(f"git show {base}:{q}").output
+            # Regression guard (contract: implementations stay): an existing module rewritten as a stub would
+            # throw away merged, tested work, and its QA tests would pass the "fails now" rule trivially.
+            if now.count(marker) > before.count(marker) or code_size(t["module"], now) < code_size(t["module"], before):
+                return False, (f"{t['module']} already works: keep its code exactly as it is and change only its "
+                               "doc comments; the dev agent changes the code"), ""
+        return True, "", f"change OK: {len(tasks)} tasks"
+    return check
+
+
+def change_planning_task(n: int, request: str, plan: dict, stack: PythonStack, description: str = "") -> Task:
+    web = stack.integration
+    rx = stack.migration_re
+    return Task(f"C{n}PLAN", "Plan the change",
+                CHANGE_GUIDE.format(
+                    n=n, request=request.strip(), layout=stack.plan_layout, max_tasks=MAX_TASKS,
+                    stub_marker=stack.stub_marker, contract_rule=stack.contract_rule,
+                    description=(description or plan.get("project", "")).strip(),
+                    migration_rule=("\n     Migrations: add new ones only, numbered after the last existing one; "
+                                    "never edit an existing migration (it has already been applied).") if rx else "",
+                    pages_line=(',\n     "pages": ["/", "..."]' if web else ""),
+                    pages_rule=("\n   - \"pages\": every page route the app has after the change. Fixes to pages "
+                                "(src/app/) get no task of their own: describe them in \"summary\" and the "
+                                "integrator makes them after the tasks merge." if web else "")),
+                ["*"], "", role="planner", check=change_check(n, request, plan, stack))
+
+
+def tasks_from_change(change: dict, plan: dict, stack: PythonStack, engine: Engine | None = None,
+                      referee=None) -> list[Task]:
+    """QA + dev tasks for a change. Dependencies stay inside the change: earlier work is already merged."""
+    by_id = {t["id"]: t for t in change["tasks"]}
+    contracts = ", ".join(dict.fromkeys([*plan.get("contracts", []), *change.get("contracts", [])])) or "none"
+    return [task for t in change["tasks"]
+            for task in feature_tasks(t, by_id, contracts, stack, engine, referee, mode=t["kind"])]
+
+
+def apply_change(plan: dict, change: dict) -> dict:
+    """plan.json after a change: a "change" task replaces the spec of the task that owns its module, a "new"
+    task is appended (its depends_on renamed to the plan ids those modules have), new contracts are added, and
+    the change's pages replace the plan's."""
+    new = copy.deepcopy(plan)
+    owner = {t["module"]: t for t in new["tasks"]}
+    plan_id = {}
+    for t in change["tasks"]:
+        if t["kind"] == "change" and t["module"] in owner:
+            owner[t["module"]]["spec"] = t["spec"]
+            plan_id[t["id"]] = owner[t["module"]]["id"]
+        else:
+            plan_id[t["id"]] = t["id"]
+    have = {t["id"] for t in new["tasks"]}
+    for t in change["tasks"]:
+        if plan_id[t["id"]] == t["id"] and t["id"] not in have:          # applying twice changes nothing
+            new["tasks"].append({"id": t["id"], "title": t["title"], "module": t["module"], "spec": t["spec"],
+                                 "depends_on": [plan_id.get(d, d) for d in t.get("depends_on", [])]})
+    new["contracts"] = list(dict.fromkeys([*new.get("contracts", []), *change.get("contracts", [])]))
+    if "pages" in change:
+        new["pages"] = list(change["pages"])
+    return new
+
+
+def commit_on_main(engine: Engine, files: dict[str, str], message: str) -> bool:
+    """Commit files the engine itself writes (plan.json) straight to main. Serialized with merges (merge_lock)
+    and with worktree changes (repo_lock) like Engine.merge, and pushed like a merge when there is a remote."""
+    repo = engine.repo
+    with engine.merge_lock, repo_lock(repo):
+        for path, body in files.items():
+            (repo / path).write_text(body)
+        git(["add", "--", *files], repo)
+        if git(["diff", "--cached", "--quiet"], repo).returncode == 0:
+            return True                                     # nothing changed
+        if git(["commit", "-qm", message], repo).returncode:
+            git(["reset", "-q", "--", *files], repo)
+            return False
+        return not engine.remote or git(["push", "-q", "origin", "main"], repo).returncode == 0
+
+
+def undo_merge(engine: Engine, task_id: str) -> bool:
+    """Revert the merge of one task on main (and push). A rejected change must not leave its new migrations and
+    rewritten doc comments behind: the next change would plan on top of a spec nobody approved."""
+    repo = engine.repo
+    with engine.merge_lock, repo_lock(repo):
+        sha = git(["log", "--merges", "-1", "--format=%H", f"--grep=^merge {task_id}$"], repo).stdout.strip()
+        if not sha:
+            return False
+        if git(["revert", "--no-edit", "-m", "1", sha], repo).returncode:
+            git(["revert", "--abort"], repo)
+            return False
+        return not engine.remote or git(["push", "-q", "origin", "main"], repo).returncode == 0
+
+
+def change_project(n: int, request: str, description: str, repo: Path, engine: Engine,
+                   approve: Approver = auto_approve, stack: PythonStack | None = None, parallel: int = 4,
+                   save_tests: Path | None = None, referee=None, integrator=None) -> tuple[dict | None, list[Result]]:
+    """Plan change n, pause for approval, record it in plan.json, then QA + build it in the same repo (and
+    integrate again for web apps). Returns (change, results): change is None if planning failed; results is just
+    the planner's if the change was rejected (its merge is reverted then)."""
+    emit = engine.events.emit
+    stack = stack or default_stack()
+    repo = Path(repo)
+    emit("change_started", n=n, text=request)
+    plan = json.loads((repo / "plan.json").read_text())
+    planner = change_planning_task(n, request, plan, stack, description)
+    emit("task_queued", planner.id, title=planner.title, role="planner", depends_on=[])
+    plan_result = engine.run_task(planner)
+    if plan_result.status != "merged":
+        return None, [plan_result]
+    change = json.loads((repo / "changes" / f"{n}.json").read_text())
+    emit("change_plan_ready", n=n, change=change)
+    approved, note = approve(change)
+    emit("plan_decision", approved=approved, note=note)
+    if not approved:
+        undo_merge(engine, planner.id)
+        return change, [plan_result]
+    # Recorded before the build, so a worker that dies mid-build still leaves plan.json matching the doc comments
+    # already on main; a retry rebuilds what didn't merge from plan.json and changes/{n}.json (resume_tasks).
+    commit_on_main(engine, {"plan.json": json.dumps(apply_change(plan, change), indent=2) + "\n"},
+                   f"plan.json: change {n}")
+    tasks = tasks_from_change(change, plan, stack, engine=engine, referee=referee)
+    if stack.integration:
+        tasks.append(integration_task(plan, description, stack, agent=integrator, change=change))
+    return change, [plan_result, *build(tasks, engine, parallel, save_tests)]

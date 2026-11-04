@@ -39,6 +39,7 @@ class PythonStack:
     module_re = re.compile(r"^[a-z_][a-z0-9_]*\.py$")
     contract_re = module_re
     reserved = {"conftest.py", "setup.py", "plan.py"}
+    migration_re: re.Pattern | None = None       # contracts that are applied in order and never edited again
 
     def __init__(self, python: str = "python3"):
         self.python = python
@@ -125,6 +126,7 @@ class NextSupabaseStack(PythonStack):
     nested_files_ok = True
     module_re = re.compile(r"^src/(server|components|app|lib)/[A-Za-z0-9_\-/\[\]().]+\.tsx?$")
     contract_re = re.compile(r"^(supabase/migrations/\d{4}_[a-z0-9_]+\.sql|src/contracts/[A-Za-z0-9_\-]+\.ts)$")
+    migration_re = re.compile(r"^supabase/migrations/(\d{4})_[^/]+\.sql$")
     reserved = {"supabase/migrations/0000_base.sql", "src/lib/db.ts", "src/lib/errors.ts", "src/lib/db-postgres.ts",
                 "src/test/db.ts", "src/app/layout.tsx"}
     template = TEMPLATES / "next-supabase"

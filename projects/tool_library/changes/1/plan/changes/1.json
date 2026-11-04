@@ -1,0 +1,12 @@
+{"n": 1,
+ "request": "Give members one free day before late fees start, and let them renew a loan that isn't late.",
+ "summary": "Late fees start on the second day late. Members can renew an open loan for more days while it owes no late fee.",
+ "contracts": [],
+ "tasks": [
+   {"id": "C1T1", "kind": "change", "title": "One free day before late fees", "module": "fees.py",
+    "spec": "late_fee_cents no longer charges the first day late: 1 day late costs 0, 3 days late costs 2 days' fee. Cap unchanged.",
+    "depends_on": []},
+   {"id": "C1T2", "kind": "new", "title": "Renew a loan", "module": "renewals.py",
+    "spec": "renew_loan extends an open loan's due date, refused when the loan owes a late fee today (fees.late_fee_cents).",
+    "depends_on": ["C1T1"]}
+ ]}

@@ -1,0 +1,10 @@
+{"n": 1,
+ "request": "Pet names are too long on the tags: keep them to 40 characters.",
+ "summary": "Pet names can be at most 40 characters, checked when booking and by the database.",
+ "contracts": ["supabase/migrations/0002_pet_name_40.sql"],
+ "tasks": [
+   {"id": "C1T1", "kind": "change", "title": "Shorter pet names", "module": "src/server/bookings.ts",
+    "spec": "bookSlot accepts a trimmed pet name of 1 to 40 characters (was 60); longer names throw AppError invalid.",
+    "depends_on": []}
+ ],
+ "pages": ["/", "/sign-up", "/book"]}

@@ -2,7 +2,8 @@
 
 Reads the project from Convex, creates its own private GitHub repo, plans it, waits for the owner to
 approve the plan in the app, then builds it in Daytona sandboxes, streaming every step back to Convex.
-Started by the `Worker` workflow, which the app triggers when a project is created."""
+Started by the `Worker` workflow, which the app triggers when a project is created, retried
+(`resume`) or changed (`mode: "change"`, docs/change-requests.md)."""
 from __future__ import annotations
 
 import argparse
@@ -20,7 +21,7 @@ from pathlib import Path
 from engine.convex_sink import ConvexBackend
 from engine.engine import Engine
 from engine.events import Emitter, JsonlSink
-from engine.project import resume_project, run_project
+from engine.project import change_project, resume_project, run_project
 from engine.stacks import NextSupabaseStack
 from run_benchmark import load_env
 
@@ -118,10 +119,13 @@ def main():
 
     out = ROOT / "results" / f"{datetime.now():%Y%m%d-%H%M%S}-worker-{a.project_id[-8:]}"
     stack = NextSupabaseStack(link_node_modules=False)
-    resume = bool(project.get("resume"))
-    if resume:                                  # retry what failed: continue in the project's own repo
+    change = project.get("change") if project.get("mode") == "change" else None
+    resume = bool(project.get("resume")) and not change
+    if change and not change.get("text"):
+        raise SystemExit("change run without a change request")
+    if resume or change:                        # retry what failed, or change it: continue in the project's own repo
         if not project.get("repo"):
-            raise SystemExit("nothing to retry: this project has no repo yet")
+            raise SystemExit("nothing to retry or change: this project has no repo yet")
         repo_url, repo = project["repo"], out / "repo"
         out.mkdir(parents=True, exist_ok=True)
         subprocess.run(["git", "-c", f"credential.helper={CREDENTIALS}", "clone", "-q", repo_url, str(repo)], check=True)
@@ -147,6 +151,13 @@ def main():
     status = "failed"
     results = []
     try:
+        if change:                              # plan only the change, wait for approval, build it in the same repo
+            planned, results = change_project(int(change["n"]), change["text"], project["description"], repo, engine,
+                                              approve=wait_for_decision(backend.project), stack=stack,
+                                              parallel=stack.parallel, save_tests=out / "hidden_tests",
+                                              referee=referee, integrator=integrator)
+            status = "failed" if planned is None else "rejected" if len(results) == 1 else finished(results)
+            return
         if resume:
             plan = json.loads((repo / "plan.json").read_text())
             results = resume_project(plan, project["description"], repo, engine, set(project.get("merged") or []),
@@ -166,7 +177,9 @@ def main():
     finally:
         events.emit("project_finished", status=status, repo=repo_url)
         print(f"project {a.project_id}: {status} ({repo_url})")
-        publish_preview(results, repo, repo_url, events, merged_before=set(project.get("merged") or []))
+        # a rejected change merged (and reverted) only its plan: nothing new to deploy
+        publish_preview(results if status != "rejected" else [], repo, repo_url, events,
+                        merged_before=set(project.get("merged") or []))
         if status not in ("done", "rejected"):
             sys.exit(1)
 

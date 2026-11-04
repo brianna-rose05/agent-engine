@@ -587,3 +587,268 @@ def test_retry_includes_the_integration_for_web_apps():
     assert [t.id for t in todo] == ["T2-qa", "T2", "INT"]
     assert next(t for t in todo if t.id == "T2").depends_on == ["T2-qa"]     # T1 is merged: nothing to wait for
     assert next(t for t in todo if t.id == "INT").depends_on == ["T2"]
+
+
+# --------------------------------------------------------------------------- change requests
+CHANGE_DIR = FIXTURE / "changes" / "1"
+CHANGE = json.loads((CHANGE_DIR / "plan" / "changes" / "1.json").read_text())
+REQUEST = "One free day before late fees, please. And renewals!"        # the user's words win over the planner's
+
+
+@pytest.fixture(scope="module")
+def built_repo(tmp_path_factory):
+    """The tool library, planned and built once; each change test works on its own copy."""
+    import shutil
+    base = tmp_path_factory.mktemp("built")
+    repo = build_project_repo(base / "r")
+    eng = Engine(repo, ScriptedTeam(FIXTURE), lambda t, n: LocalWorktreeSandbox(repo, t.id, n))
+    _, results = run_project(DESCRIPTION, repo, eng, python=sys.executable)
+    assert all(r.status in ("merged", "passed") for r in results)
+    shutil.rmtree(base / "sandboxes", ignore_errors=True)
+    git(repo, "worktree", "prune")
+    return repo
+
+
+def go_change(tmp_path, built_repo, agent, approve=None, referee=None):
+    import shutil
+    from engine.events import Emitter, ListSink
+    from engine.project import auto_approve, change_project
+    repo = tmp_path / "r"
+    shutil.copytree(built_repo, repo, symlinks=True)
+    sink = ListSink()
+    eng = Engine(repo, agent, lambda t, n: LocalWorktreeSandbox(repo, t.id, n), events=Emitter(sink))
+    change, results = change_project(1, REQUEST, DESCRIPTION, repo, eng, approve=approve or auto_approve,
+                                     stack=default_stack(sys.executable), referee=referee)
+    return repo, change, {r.task: r for r in results}, sink.events
+
+
+def tree(repo):
+    return dict(line.split(None, 3)[2:4][::-1] for line in git(repo, "ls-tree", "-r", "main").splitlines())
+
+
+def test_change_plans_approves_builds_and_updates_the_plan(tmp_path, built_repo):
+    before = tree(built_repo)
+    seen = []
+    repo, change, res, events = go_change(tmp_path, built_repo, ScriptedTeam(FIXTURE),
+                                          approve=lambda c: (seen.append(c), (True, "ok"))[1])
+    assert {k: r.status for k, r in res.items()} == {
+        "C1PLAN": "merged", "C1T1-qa": "passed", "C1T1": "merged", "C1T2-qa": "passed", "C1T2": "merged"}, \
+        {k: [a.reason for a in r.attempts] for k, r in res.items()}
+    assert seen == [change] and change["request"] == REQUEST and change["n"] == 1
+    after = tree(repo)
+    for f in ("lending.py", "reports.py", "models.py"):                     # merged work untouched
+        assert after[f] == before[f], f
+    assert after["fees.py"] != before["fees.py"] and "renewals.py" in after and "changes/1.json" in after
+    assert not [f for f in after if f.startswith("acceptance/")]           # hidden tests never merged
+    plan = json.loads(git(repo, "show", "main:plan.json"))
+    assert [t["id"] for t in plan["tasks"]] == ["T1", "T2", "T3", "C1T2"]
+    assert plan["tasks"][1]["spec"] == CHANGE["tasks"][0]["spec"]          # T2 owns fees.py: its spec is replaced
+    assert plan["tasks"][3]["depends_on"] == ["T2"] and plan_problems(plan) == []
+    kinds = [(e.kind, e.task_id) for e in events]
+    assert kinds[:2] == [("change_started", None), ("task_queued", "C1PLAN")]
+    assert events[0].data == {"n": 1, "text": REQUEST}
+    assert next(e for e in events if e.task_id == "C1PLAN" and e.kind == "task_queued").data["role"] == "planner"
+    ready = next(e for e in events if e.kind == "change_plan_ready")
+    assert ready.data == {"n": 1, "change": change}
+    assert kinds.index(("change_plan_ready", None)) < kinds.index(("plan_decision", None)) < kinds.index(("task_queued", "C1T1-qa"))
+    assert next(e for e in events if e.kind == "task_queued" and e.task_id == "C1T2").data["depends_on"] == ["C1T1", "C1T2-qa"]
+
+
+def test_rejected_change_builds_nothing_and_leaves_main_as_it_was(tmp_path, built_repo):
+    calls = []
+
+    class Spy(ScriptedTeam):
+        def run(self, task, box, attempt, feedback):
+            calls.append(task.id)
+            return super().run(task, box, attempt, feedback)
+
+    repo, change, res, events = go_change(tmp_path, built_repo, Spy(FIXTURE), approve=lambda c: (False, "not now"))
+    assert list(res) == ["C1PLAN"] and calls == ["C1PLAN"] and change is not None
+    assert next(e for e in events if e.kind == "plan_decision").data == {"approved": False, "note": "not now"}
+    # its doc comments and changes/1.json were merged for review, and reverted: nobody approved that spec
+    assert tree(repo) == tree(built_repo)
+
+
+@pytest.mark.parametrize("edit,msg", [
+    (lambda c: c["tasks"][0].update(id="T4"), "C1T1, C1T2"),
+    (lambda c: c["tasks"][0].update(kind="fix"), '"kind"'),
+    (lambda c: c["tasks"][0].update(module="nope.py"), "needs a module that exists"),
+    (lambda c: c["tasks"][1].update(module="lending.py"), 'kind "new" needs a new module'),
+    (lambda c: c["tasks"][1].update(module="fees.py"), "already owned"),
+    (lambda c: c["tasks"][1].update(depends_on=["T1"]), "only name tasks in this change"),
+    (lambda c: c["tasks"][0].update(depends_on=["C1T2"]), "cycle"),
+    (lambda c: c.update(contracts=["fees.py"]), "not a contract"),
+    (lambda c: c["tasks"][0].update(module="models.py"), "isn't a task module"),
+    (lambda c: c.update(tasks=[]), "1 to"),
+    (lambda c: c.update(summary=" "), "summary"),
+])
+def test_change_structure_rules(edit, msg):
+    from engine.project import change_problems
+    files = {"models.py", "lending.py", "fees.py", "reports.py", "plan.json", "AGENTS.md"}
+    assert change_problems(CHANGE, PLAN, default_stack(), files) == []
+    bad = copy.deepcopy(CHANGE)
+    edit(bad)
+    problems = change_problems(bad, PLAN, default_stack(), files)
+    assert any(msg in p for p in problems), problems
+
+
+def test_web_change_rules():
+    """Migrations are applied in order and never edited; pages get no task (the integrator makes them)."""
+    from engine.project import change_problems
+    from engine.stacks import NextSupabaseStack
+    st = NextSupabaseStack(link_node_modules=False)
+    plan = json.loads((WEB / "plan" / "plan.json").read_text())
+    files = {"supabase/migrations/0000_base.sql", "supabase/migrations/0001_bookings.sql", "src/contracts/types.ts",
+             "src/server/slots.ts", "src/server/bookings.ts", "src/components/SlotPicker.tsx", "src/app/page.tsx"}
+    ok = {"n": 2, "request": "r", "summary": "s", "pages": ["/", "/book"],
+          "contracts": ["supabase/migrations/0002_tz.sql", "src/contracts/types.ts"],
+          "tasks": [{"id": "C2T1", "kind": "change", "title": "t", "module": "src/server/bookings.ts", "spec": "s"},
+                    {"id": "C2T2", "kind": "new", "title": "t", "module": "src/components/Reviews.tsx", "spec": "s",
+                     "depends_on": ["C2T1"]}]}
+    assert change_problems(ok, plan, st, files) == []
+
+    def problems(**kw):
+        return " ".join(change_problems({**copy.deepcopy(ok), **kw}, plan, st, files))
+    assert "never edit an existing migration" in problems(contracts=["supabase/migrations/0001_bookings.sql"])
+    assert "numbered after the last one (0001)" in problems(contracts=["supabase/migrations/0001_tz.sql"])
+    assert "must be a migration" in problems(contracts=["supabase/migrations/0000_base.sql"])    # template file
+    page = [{"id": "C2T1", "kind": "change", "title": "t", "module": "src/app/page.tsx", "spec": "s"}]
+    assert "get no task of their own" in problems(tasks=page)
+    assert '"pages"' in problems(pages=[])
+
+
+def test_change_integration_waits_for_the_change_and_carries_its_summary():
+    from engine.project import integration_task
+    from engine.stacks import NextSupabaseStack
+    plan = json.loads((WEB / "plan" / "plan.json").read_text())
+    change = {"n": 1, "request": "Keep the groomer", "summary": "Bookings keep the groomer when the date changes.",
+              "contracts": [], "pages": ["/", "/book", "/my-bookings"],
+              "tasks": [{"id": "C1T1", "kind": "change", "title": "Keep groomer", "module": "src/server/bookings.ts",
+                         "spec": "s", "depends_on": []},
+                        {"id": "C1T2", "kind": "new", "title": "List", "module": "src/components/MyBookings.tsx",
+                         "spec": "s", "depends_on": []}]}
+    t = integration_task(plan, "A booking site", NextSupabaseStack(link_node_modules=False), change=change)
+    assert t.id == "INT" and t.depends_on == ["C1T1"] and t.waits_for == ["C1T2"]
+    assert "Bookings keep the groomer" in t.spec and "/my-bookings" in t.spec
+    assert "src/components/MyBookings.tsx" in t.spec and "src/server/slots.ts" in t.spec    # every module, old and new
+
+
+def test_change_qa_may_pass_on_unchanged_behavior_but_one_test_must_fail(tmp_path, built_repo):
+    regression_only = (
+        "from datetime import date\nfrom fees import late_fee_cents\nfrom models import Loan, Tool\n"
+        "L = Loan(1, 1, 1, date(2026, 11, 1), date(2026, 11, 5))\nT = Tool(1, 'd', 300)\n"
+        "def test_a():\n    assert late_fee_cents(L, T, date(2026, 11, 5)) == 0\n"
+        "def test_b():\n    assert late_fee_cents(L, T, date(2026, 11, 1)) == 0\n"
+        "def test_c():\n    assert late_fee_cents(L, T, date(2027, 1, 1)) == 5000\n")
+
+    class RegressionOnlyFirst(ScriptedTeam):
+        def run(self, task, box, attempt, feedback):
+            rep = super().run(task, box, attempt, feedback)
+            if task.id == "C1T1-qa" and attempt == 1:
+                box.write_file(task.can_edit[0], regression_only)
+            return rep
+
+    _, _, res, _ = go_change(tmp_path, built_repo, RegressionOnlyFirst(FIXTURE))
+    first, second = res["C1T1-qa"].attempts
+    assert "every test passes on the current code" in first.reason
+    assert second.passed and "2 failed, 2 passed" in second.test_output       # regression tests may pass
+    assert res["C1T1"].status == res["C1T2"].status == "merged"
+
+
+@pytest.mark.parametrize("fees", [
+    'def late_fee_cents(loan, tool, today):\n    """Free first day; then (days late - 1) * fee, capped at 5000."""\n'
+    '    raise NotImplementedError\n',
+    'def late_fee_cents(loan, tool, today):\n    """Free first day; then (days late - 1) * fee, capped at 5000."""\n'
+    '    return 0\n',
+])
+def test_change_planner_cannot_stub_out_an_existing_module(tmp_path, built_repo, fees):
+    class StubsFees(ScriptedTeam):
+        def run(self, task, box, attempt, feedback):
+            rep = super().run(task, box, attempt, feedback)
+            if task.id == "C1PLAN" and attempt == 1:
+                box.write_file("fees.py", fees)
+            return rep
+
+    repo, _, res, _ = go_change(tmp_path, built_repo, StubsFees(FIXTURE))
+    assert "keep its code exactly as it is" in res["C1PLAN"].attempts[0].reason
+    assert res["C1PLAN"].status == "merged" and res["C1T1"].status == "merged"
+
+
+def test_change_planner_stray_edits_are_undone_and_unchanged_docs_rejected(tmp_path, built_repo):
+    class Strays(ScriptedTeam):
+        def run(self, task, box, attempt, feedback):
+            rep = super().run(task, box, attempt, feedback)
+            if task.id == "C1PLAN":
+                box.write_file("plan.json", "{}")                          # the engine owns plan.json
+                box.write_file("lending.py", "# rewritten\n")              # not part of the change
+                if attempt == 1:
+                    box.exec("git checkout HEAD -- fees.py")               # forgot fees.py's doc comments
+            return rep
+
+    repo, _, res, _ = go_change(tmp_path, built_repo, Strays(FIXTURE))
+    assert "update the doc comments of fees.py" in res["C1PLAN"].attempts[0].reason
+    assert res["C1PLAN"].status == "merged" and len(res["C1PLAN"].attempts) == 2
+    assert tree(repo)["lending.py"] == tree(built_repo)["lending.py"]
+    assert json.loads(git(repo, "show", "main:plan.json"))["project"] == PLAN["project"]
+
+
+def test_a_failed_change_is_retried_from_the_change_file(tmp_path, built_repo):
+    """The app retries a change run through the resume path. A "change" task can't come from plan.json (its
+    module's task, T2, merged long ago), so resume_project also redoes the latest change's unmerged tasks."""
+    from engine.events import Emitter, ListSink
+    from engine.project import resume_project
+
+    class NeverFixesFees(ScriptedTeam):
+        def run(self, task, box, attempt, feedback):
+            rep = super().run(task, box, attempt, feedback)
+            if task.id == "C1T1":
+                box.write_file("fees.py", "def late_fee_cents(loan, tool, today):\n    return 1\n")
+            return rep
+
+    repo, _, res, _ = go_change(tmp_path, built_repo, NeverFixesFees(FIXTURE))
+    assert res["C1T1"].status == "failed" and res["C1T2"].status == "blocked"
+    plan = json.loads((repo / "plan.json").read_text())                    # recorded before the build
+    assert [t["id"] for t in plan["tasks"]][-1] == "C1T2"
+    merged = {"PLAN", "T1", "T2", "T3", "C1PLAN"}
+    sink = ListSink()
+    eng = Engine(repo, ScriptedTeam(FIXTURE), lambda t, n: LocalWorktreeSandbox(repo, t.id, n), events=Emitter(sink))
+    again = {r.task: r.status for r in resume_project(plan, DESCRIPTION, repo, eng, merged,
+                                                     stack=default_stack(sys.executable))}
+    assert again == {"C1T1-qa": "passed", "C1T1": "merged", "C1T2-qa": "passed", "C1T2": "merged"}, again
+    assert [e.data["retrying"] for e in sink.events if e.kind == "build_resumed"] == [["C1T1", "C1T2"]]
+
+
+@web
+def test_web_change_adds_a_migration_and_never_edits_an_old_one(tmp_path):
+    """A web change end to end (without the integration build): the planner's first try edits the applied
+    migration and is sent back; the second adds 0002, which the check applies on a fresh database; QA's
+    change tests fail on the 60-character code and pass on the 40-character fix."""
+    from engine.project import change_project
+    from engine.stacks import NextSupabaseStack
+
+    class EditsOldMigration(ScriptedTeam):
+        def run(self, task, box, attempt, feedback):
+            rep = super().run(task, box, attempt, feedback)
+            if task.id == "C1PLAN" and attempt == 1:
+                path = "supabase/migrations/0001_bookings.sql"
+                box.write_file(path, box.exec(f"cat {path}").output.replace("between 1 and 60", "between 1 and 40"))
+            return rep
+
+    repo, _, first = go_web(tmp_path, ScriptedTeam(WEB))
+    assert all(r.status in ("merged", "passed") for r in first.values())
+    stack = NextSupabaseStack()
+    stack.integration = False
+    eng = Engine(repo, EditsOldMigration(WEB), lambda t, n: LocalWorktreeSandbox(repo, t.id, n))
+    change, results = change_project(1, "Keep pet names to 40 characters.", "A booking site", repo, eng,
+                                     stack=stack, parallel=3)
+    res = {r.task: r for r in results}
+    assert {k: r.status for k, r in res.items()} == {"C1PLAN": "merged", "C1T1-qa": "passed", "C1T1": "merged"}, \
+        {k: [(a.reason, a.test_output[-500:]) for a in r.attempts] for k, r in res.items()}
+    assert "never edit an existing migration" in res["C1PLAN"].attempts[0].reason
+    assert "Failed Tests 1 " in res["C1T1-qa"].attempts[0].test_output         # the 40-char rule; the rest pass
+    tracked = git(repo, "ls-tree", "-r", "--name-only", "main").split()
+    assert "supabase/migrations/0002_pet_name_40.sql" in tracked
+    assert "between 1 and 60" in git(repo, "show", "main:supabase/migrations/0001_bookings.sql")
+    assert "petName.length > 40" in git(repo, "show", "main:src/server/bookings.ts")
+    plan = json.loads(git(repo, "show", "main:plan.json"))
+    assert "supabase/migrations/0002_pet_name_40.sql" in plan["contracts"] and plan["tasks"][1]["spec"] == change["tasks"][0]["spec"]
