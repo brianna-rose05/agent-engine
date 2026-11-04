@@ -16,8 +16,9 @@ class Task:
     depends_on: list[str] = field(default_factory=list)         # task ids that must finish before this starts
     # task ids to wait for, without being blocked if they fail (the integrator stands in for a failed screen)
     waits_for: list[str] = field(default_factory=list)
-    # change tasks: true when QA found the change already holds; the engine then confirms it on main, no agent
-    already_done: Callable[[], bool] | None = None
+    # change tasks: "confirmed" when QA's tests all pass and a reviewer agrees the change already holds (the engine
+    # then checks it on main, no agent); "unconfirmed" when they pass but the reviewer disagrees; None otherwise
+    already_done: Callable[[], str | None] | None = None
     role: str = "dev"                                           # dev | planner | qa (picks the agent's rules)
     # Custom verification instead of hidden tests: check(box) -> (passed, reason, output). Run by the engine.
     check: Callable[..., tuple[bool, str, str]] | None = field(default=None, repr=False)

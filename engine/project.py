@@ -175,7 +175,7 @@ def summary_counts(output: str) -> dict[str, int]:
 
 
 def qa_check(test_path: str, stack: PythonStack, bucket: dict[str, str], mode: str = "new",
-             state: dict | None = None, confirm: Callable[[str], bool] | None = None):
+             state: dict | None = None, can_confirm: bool = False):
     """Tests are useful only if they run, and fail now because the code isn't written yet. For a change to
     working code (mode "change") tests of behavior that stays may pass, but at least one must fail: the change
     isn't made yet, so a suite that passes in full checks nothing new. The unimplemented-marker rule is for
@@ -199,12 +199,13 @@ def qa_check(test_path: str, stack: PythonStack, bucket: dict[str, str], mode: s
             # data the code reads. The dev task then only confirms it on main. Regression (Pawfect change 1): the
             # time-zone fix was complete once migration 0003 set the salon's zone; QA was required to write a
             # failing test for it, couldn't, and 4 of 5 tasks were lost.
-            # A suite that passes in full is accepted only if a reviewer (a different model) confirms it really
-            # tests the change; otherwise tests of unchanged behavior alone would declare the change done.
-            if not n["failed"]:
-                if confirm is None or not confirm(body.output):
-                    return False, ("every test passes on the current code, so none of them checks the change; at least "
-                                   "one test must exercise the changed behavior and fail until it is made"), tail
+            # A suite that passes in full needs a reviewer (a different model) to confirm it really tests the change,
+            # or tests of unchanged behavior alone would declare the change done. The review runs later, from the dev
+            # task, after this sandbox is gone. Regression (Pawfect change 1 retry): reviews run from inside the QA
+            # check needed a second sandbox each; three at once hit Daytona's 10 GB limit and waited out their tries.
+            if not n["failed"] and not can_confirm:
+                return False, ("every test passes on the current code, so none of them checks the change; at least "
+                               "one test must exercise the changed behavior and fail until it is made"), tail
             if state is not None:
                 state["satisfied"] = not n["failed"]
         else:
@@ -293,6 +294,17 @@ shows the change already holds), or NO if they only check behavior that didn't c
 End with DONE."""
 
 
+def already_done(state: dict, hidden: dict[str, str], test_path: str, confirm: Callable[[str], bool]):
+    """For a change task's dev step: None when QA's tests fail on the current code (do the work as usual);
+    "confirmed" when they all pass and a reviewer agrees they test the change; "unconfirmed" when they all pass
+    but the reviewer doesn't agree (the tests can't show the change was made)."""
+    def check() -> str | None:
+        if not state.get("satisfied"):
+            return None
+        return "confirmed" if confirm(hidden.get(test_path, "")) else "unconfirmed"
+    return check
+
+
 def make_confirm(t: dict, test_path: str, engine: Engine, referee):
     """When every QA test passes on the current code, a different model checks that they test the change."""
     verdict = f"review/{t['id']}-verdict.txt"
@@ -354,8 +366,7 @@ def feature_tasks(t: dict, by_id: dict[str, dict], contracts: str, stack: Python
     return [
         Task(f"{t['id']}-qa", f"Acceptance tests for {t['title']}", qa_spec,
              [test_path], "", role="qa", merge=False,
-             check=qa_check(test_path, stack, hidden, mode, state,
-                            confirm=make_confirm(t, test_path, engine, referee) if engine and referee else None)),
+             check=qa_check(test_path, stack, hidden, mode, state, can_confirm=bool(engine and referee))),
         Task(t["id"], t["title"],
              dev_spec + f"\n\nYou may only edit {t['module']}. If you add your own tests, they must match "
              f"{stack.dev_test_glob(t['module'])} (any other file gets your work rejected)."
@@ -364,7 +375,8 @@ def feature_tasks(t: dict, by_id: dict[str, dict], contracts: str, stack: Python
              [t["module"], stack.dev_test_glob(t["module"])],
              stack.verify_cmd(t["module"], test_path),
              hidden_tests=hidden, depends_on=[*deps, f"{t['id']}-qa"],
-             already_done=(lambda: bool(state.get("satisfied"))) if mode == "change" else None,
+             already_done=already_done(state, hidden, test_path, make_confirm(t, test_path, engine, referee))
+             if mode == "change" and engine and referee else None,
              dispute=make_dispute(t, test_path, stack, hidden, engine, referee, mode) if engine and referee else None)]
 
 

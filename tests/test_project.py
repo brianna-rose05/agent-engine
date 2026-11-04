@@ -787,13 +787,17 @@ def test_change_that_already_holds_is_confirmed_by_a_reviewer_then_checked_on_ma
             return AgentReport("done")
 
     _, _, res, events = go_change(tmp_path, built_repo, AllPass(FIXTURE), referee=Reviewer())
+    assert res["C1T1-qa"].status == "passed"
     if verdict == "YES":
-        assert res["C1T1-qa"].status == "passed" and res["C1T1"].status == "merged" and not devs
+        assert res["C1T1"].status == "merged" and not devs
         assert [e.task_id for e in events if e.data.get("status") == "already_done"] == ["C1T1"]
     else:
-        assert res["C1T1-qa"].status == "failed"
-        assert "every test passes on the current code" in res["C1T1-qa"].attempts[0].reason
+        assert res["C1T1"].status == "failed" and "didn't confirm" in res["C1T1"].error and not devs
         assert not [e for e in events if e.data.get("status") == "already_done"]
+    # the review never ran inside the QA task's sandbox (two at once per task hit the provider's memory limit)
+    order = [e.task_id for e in events if e.kind == "task_status" and e.task_id in ("C1T1-qa", "C1T1-confirm")]
+    assert order[-1] == "C1T1-confirm" and order.index("C1T1-confirm") > max(
+        i for i, t in enumerate(order) if t == "C1T1-qa")
 
 
 @pytest.mark.parametrize("fees", [

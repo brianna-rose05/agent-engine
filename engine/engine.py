@@ -183,7 +183,13 @@ class Engine:
         agent = task.agent or self.agent
         disputes, last_fixed = 0, False
         try:
-            if task.already_done is not None and task.already_done() and self._holds_on_main(task):
+            verdict = task.already_done() if task.already_done is not None else None
+            if verdict == "unconfirmed":
+                res.status = "failed"
+                res.error = ("QA's tests all pass on the current code, and the reviewer didn't confirm they test the "
+                             "change; retry to have QA write tests that do")
+                return res
+            if verdict == "confirmed" and self._holds_on_main(task):
                 emit("task_status", task.id, status="already_done")
                 res.status = "merged"                 # nothing to merge: main already does it, and we checked
                 return res
