@@ -1,4 +1,4 @@
-import type { Attempt, EngineEvent, FeedItem, Plan, ProjectState, Role, TaskState } from "./types";
+import type { Attempt, ChangeState, ChangeTask, EngineEvent, FeedItem, Plan, PlanTask, ProjectState, Role, TaskState } from "./types";
 
 export const initialState = (): ProjectState => ({
   status: "queued",
@@ -8,6 +8,8 @@ export const initialState = (): ProjectState => ({
   cost_usd: 0,
   now: 0,
   preview_url: null,
+  changes: [],
+  change: null,
 });
 
 export const money = (c: number) => (c > 0 && c < 0.01 ? `$${c.toFixed(4)}` : `$${c.toFixed(2)}`);
@@ -17,6 +19,25 @@ export const INTEGRATION = "INT";
 
 /** Plan task id behind a QA task id ("T3-qa" -> "T3"). */
 export const featureId = (taskId: string) => taskId.replace(/-qa$/, "");
+
+/** Planner id of change n ("C1PLAN"), and whether a task id is a change planner. */
+export const changePlannerId = (n: number) => `C${n}PLAN`;
+export const isChangePlanner = (taskId: string) => /^C\d+PLAN$/.test(taskId);
+
+/** The planner the planning screen follows: the latest change's while a change is planned, else the first plan's. */
+export function currentPlanner(s: ProjectState): TaskState | undefined {
+  if (s.change) {
+    const t = s.tasks[changePlannerId(s.change.n)];
+    if (t) return t;
+  }
+  return s.tasks.PLAN ?? Object.values(s.tasks).find((t) => t.role === "planner" && !isChangePlanner(t.id));
+}
+
+/** Change tasks that belong on the board: those of approved changes, or any the engine has queued. */
+export function boardChangeTasks(s: ProjectState): ChangeTask[] {
+  return s.changes.flatMap((c) =>
+    c.decision === "approved" || c.tasks.some((t) => s.tasks[t.id] || s.tasks[`${t.id}-qa`]) ? c.tasks : []);
+}
 
 /** Activity notes kept per task: the planning screen shows this many, a board card the latest. */
 export const NOTES_KEPT = 5;
@@ -32,9 +53,18 @@ export function reduce(s: ProjectState, e: EngineEvent): ProjectState {
   const tasks = { ...s.tasks };
   const feed = [...s.feed];
   let { status, plan, cost_usd, preview_url } = s;
+  let changes = s.changes;
   const task = e.task_id ? tasks[e.task_id] : undefined;
   const say = (item: Omit<FeedItem, "t">) => feed.push({ t: e.t, ...item });
-  const lookup = (t: TaskState) => plan?.tasks.find((p) => p.id === featureId(t.id));
+  const setChange = (n: number, next: Partial<ChangeState>) => {
+    changes = changes.map((c) => (c.n === n ? { ...c, ...next } : c));
+  };
+  const latest = changes.at(-1);
+  const lookup = (t: TaskState): PlanTask | ChangeTask | undefined => {
+    const id = featureId(t.id);
+    return plan?.tasks.find((p) => p.id === id) ?? changes.flatMap((c) => c.tasks).find((p) => p.id === id);
+  };
+  const changeKind = (t: TaskState) => (lookup(t) as ChangeTask | undefined)?.kind;
   const name = (t: TaskState) => lookup(t)?.title ?? t.title.replace(/^Acceptance tests for /, "");
   const mod = (t: TaskState) => (t.id === INTEGRATION ? "the pages, sign-in and server actions" : lookup(t)?.module ?? "its module");
 
@@ -47,7 +77,10 @@ export function reduce(s: ProjectState, e: EngineEvent): ProjectState {
       };
       if (d.role === "planner") {
         status = "planning";
-        say({ who: "planner", channel: "planning", text: "Reading your description and drafting a plan." });
+        say({ who: "planner", channel: "planning",
+              text: isChangePlanner(e.task_id!)
+                ? "Reading the code and your change request, and planning only what has to change."
+                : "Reading your description and drafting a plan." });
       }
       break;
     }
@@ -84,7 +117,9 @@ export function reduce(s: ProjectState, e: EngineEvent): ProjectState {
         say({ who: "engine", channel: "build", task_id: task.id, tone: "good", text: `Verified and merged ${mod(task)}.` });
       } else if (d.status === "passed" && task.role === "qa") {
         say({ who: "engine", channel: "tests", task_id: task.id, tone: "good",
-              text: `Accepted the tests for ${name(task)}. They all fail on the empty code, as they should, and stay hidden from the dev agent.` });
+              text: changeKind(task) === "change"
+                ? `Accepted the tests for ${name(task)}. At least one fails on the current code, as it should until the change is made, and they stay hidden from the dev agent.`
+                : `Accepted the tests for ${name(task)}. They all fail on the empty code, as they should, and stay hidden from the dev agent.` });
       } else if (d.status === "blocked") {
         say({ who: "engine", channel: ch, task_id: task.id, tone: "bad", text: `Paused ${name(task)}: ${d.error ?? "a dependency didn't finish"}.` });
       } else if (d.status === "failed" || d.status === "error") {
@@ -134,9 +169,38 @@ export function reduce(s: ProjectState, e: EngineEvent): ProjectState {
             text: `Plan ready: ${plan.tasks.length} features and a shared contract (${plan.contracts.join(", ")}). Waiting for your approval.` });
       break;
     }
+    case "change_started": {
+      const d = e.data as { n: number; text: string };
+      const entry: ChangeState = { n: d.n, text: d.text, summary: "", contracts: [], tasks: [], pages: [],
+                                   decision: "planning", before: latest?.n === d.n ? latest.before : status };
+      changes = [...changes.filter((c) => c.n !== d.n), entry];
+      status = "planning";
+      say({ who: "you", channel: "planning", text: `Change ${d.n} requested: ${d.text}` });
+      break;
+    }
+    case "change_plan_ready": {
+      const d = e.data as { n: number; change: Partial<ChangeState> & { request?: string; tasks?: ChangeTask[] } };
+      const c = d.change ?? {};
+      const fields = { summary: c.summary ?? "", contracts: c.contracts ?? [], tasks: c.tasks ?? [], pages: c.pages ?? [],
+                       decision: "pending" as const };
+      if (changes.some((x) => x.n === d.n)) setChange(d.n, fields);
+      else changes = [...changes, { n: d.n, text: c.request ?? "", before: status, ...fields }];  // change_started missed
+      status = "awaiting_approval";
+      const k = fields.tasks.length;
+      say({ who: "planner", channel: "planning",
+            text: `Change ${d.n} planned: ${k} task${k === 1 ? "" : "s"}. ${fields.summary ? `${fields.summary} ` : ""}Waiting for your approval.` });
+      break;
+    }
     case "plan_decision": {
       const d = e.data as { approved: boolean; note?: string };
       status = d.approved ? "building" : "rejected";
+      if (latest?.decision === "pending") {
+        setChange(latest.n, { decision: d.approved ? "approved" : "rejected" });
+        say({ who: "you", channel: "planning",
+              text: d.approved ? `Approved change ${latest.n}. Building started.`
+                               : `Sent change ${latest.n} back${d.note ? `: ${d.note}` : "."}` });
+        break;
+      }
       say({ who: "you", channel: "planning",
             text: d.approved ? "Approved the plan. Building started." : `Sent the plan back${d.note ? `: ${d.note}` : "."}` });
       break;
@@ -151,8 +215,14 @@ export function reduce(s: ProjectState, e: EngineEvent): ProjectState {
       break;
     }
     case "project_finished": {
-      const d = e.data as { status: "done" | "failed" };
-      status = d.status;
+      const d = e.data as { status: "done" | "failed" | "rejected" };
+      if (d.status === "rejected" && latest?.decision === "rejected") {
+        // a sent-back change built nothing: the project is as it was (Convex record does the same)
+        status = latest.before;
+        say({ who: "engine", channel: "build", text: `Change ${latest.n} was sent back, so nothing was built. The app is as it was.` });
+        break;
+      }
+      status = d.status as ProjectState["status"];
       const devs = Object.values(tasks).filter((t) => t.role === "dev");
       const ok = devs.filter((t) => t.status === "merged").length;
       say({ who: "engine", channel: "build", tone: d.status === "done" ? "good" : "bad",
@@ -180,7 +250,7 @@ export function reduce(s: ProjectState, e: EngineEvent): ProjectState {
       break;
     }
   }
-  return { status, plan, tasks, feed, cost_usd, now: Math.max(s.now, e.t), preview_url };
+  return { status, plan, tasks, feed, cost_usd, now: Math.max(s.now, e.t), preview_url, changes, change: changes.at(-1) ?? null };
 }
 
 /* --------------------------------------------------------------- board columns */
@@ -212,15 +282,17 @@ export type Feature = {
 
 const BAD = new Set(["failed", "blocked", "error", "merge_conflict"]);
 
-/** One card per planned feature, combining its QA task and its dev task, plus the integration card. */
+/** One card per planned feature, combining its QA task and its dev task, then the cards of approved changes
+ *  (C1T1, C1T2, ...), then the integration card. */
 export function features(s: ProjectState): Feature[] {
   if (!s.plan) return [];
   const integ = s.tasks[INTEGRATION];
+  const planned: PlanTask[] = [...s.plan.tasks, ...boardChangeTasks(s)];
   const cards = integ
-    ? [...s.plan.tasks, { id: INTEGRATION, title: "Put it together: pages, sign-in and data", module: "src/app",
+    ? [...planned, { id: INTEGRATION, title: "Put it together: pages, sign-in and data", module: "src/app",
                           spec: "Wires every merged feature into a working website. Checked with a production build " +
                                 "and by opening every page.", depends_on: integ.depends_on }]
-    : s.plan.tasks;
+    : planned;
   return cards.map((p) => {
     const qa = s.tasks[`${p.id}-qa`];
     const dev = s.tasks[p.id];

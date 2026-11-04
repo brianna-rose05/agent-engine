@@ -3,6 +3,7 @@ import { ConvexError, v } from "convex/values";
 import { anyApi } from "convex/server";
 
 import { checkOwner } from "./owner";
+import { canRequestChange, checkChangeText, nextChangeNumber, type ChangeRequest } from "./changes";
 
 const owner = { key: v.string() };
 
@@ -42,6 +43,8 @@ export const get = queryGeneric({
     return {
       project: { id: p._id, name: p.name, description: p.description, model: p.model, status: p.status,
                  canRetry: p.status === "failed" && Boolean(p.plan),
+                 canChange: Boolean(p.repo) && canRequestChange(p.status, Boolean(p.plan), false),
+                 changes: ((p.changes ?? []) as ChangeRequest[]).map((c) => ({ n: c.n, text: c.text, at: c.at })),
                  createdAt: p._creationTime, error: p.error ?? null, wizard: p.wizard ?? null, previewUrl: p.previewUrl ?? null },
       events: events.map((e) => ({ kind: e.kind, task_id: e.taskId, data: e.data, ts: e.ts })),
     };
@@ -77,8 +80,33 @@ export const retryFailed = mutationGeneric({
     checkOwner(key);
     const p = await ctx.db.get(id);
     if (!p || p.status !== "failed" || !p.plan) throw new ConvexError("Only a build that stopped after planning can be retried.");
-    await ctx.db.patch(id, { status: "queued", resume: true, error: undefined });
+    // mode back to a plain build/retry, so projectForWorker doesn't take this retry for a change request
+    await ctx.db.patch(id, { status: "queued", resume: true, mode: undefined, error: undefined });
     await ctx.scheduler.runAfter(0, anyApi.projects.startWorker, { projectId: id });
+  },
+});
+
+/** Ask the team for a change to a built project, in the same repo (docs/change-requests.md). */
+export const requestChange = mutationGeneric({
+  args: { ...owner, id: v.id("projects"), text: v.string() },
+  handler: async (ctx, { key, id, text }) => {
+    checkOwner(key);
+    const p = await ctx.db.get(id);
+    if (!p) throw new ConvexError("This project doesn't exist any more.");
+    if (!canRequestChange(p.status, Boolean(p.plan), false)) {
+      throw new ConvexError(p.status === "failed"
+        ? "This build stopped before it had a plan, so there's nothing to change yet. Build it again instead."
+        : "The team is still working on this project. Ask for a change once it has finished.");
+    }
+    if (!p.repo) throw new ConvexError("This project has no repo yet, so there's nothing to change. Build it again instead.");
+    const checked = checkChangeText(text);
+    if (!checked.ok) throw new ConvexError(checked.message);
+    const changes = (p.changes ?? []) as ChangeRequest[];
+    const entry: ChangeRequest = { n: nextChangeNumber(changes), text: checked.text, at: Date.now() };
+    await ctx.db.patch(id, { status: "queued", mode: "change", resume: false, error: undefined, changeFrom: p.status,
+                             pendingChange: undefined, planNote: undefined, changes: [...changes, entry] });
+    await ctx.scheduler.runAfter(0, anyApi.projects.startWorker, { projectId: id });
+    return entry.n;
   },
 });
 
@@ -104,7 +132,10 @@ export const decide = mutationGeneric({
   handler: async (ctx, { key, id, approved, note }) => {
     checkOwner(key);
     const p = await ctx.db.get(id);
-    if (!p || p.status !== "awaiting_approval") throw new ConvexError("This plan isn't waiting for a decision.");
+    // the first plan and a planned change (pendingChange) wait for the same decision
+    if (!p || p.status !== "awaiting_approval") {
+      throw new ConvexError(p?.mode === "change" ? "This change isn't waiting for a decision." : "This plan isn't waiting for a decision.");
+    }
     await ctx.db.patch(id, { status: approved ? "approved" : "rejected", planNote: (note ?? "").slice(0, 2000) });
   },
 });

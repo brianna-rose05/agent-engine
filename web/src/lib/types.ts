@@ -14,13 +14,30 @@ export type EngineEvent = {
     | "preview_ready"
     | "preview_failed"
     | "preview_skipped"
-    | "agent_activity";
+    | "agent_activity"
+    | "change_started"
+    | "change_plan_ready";
   task_id: string | null;
   data: Record<string, unknown>;
 };
 
 export type PlanTask = { id: string; title: string; module: string; spec: string; depends_on: string[] };
 export type Plan = { project: string; contracts: string[]; tasks: PlanTask[] };
+
+/** A task in a planned change (changes/{n}.json): "change" rewrites an existing module's spec, "new" adds one. */
+export type ChangeTask = PlanTask & { kind: "change" | "new" };
+
+/** One change request as the app sees it: what was asked, then the planner's change plan and your decision. */
+export type ChangeState = {
+  n: number;
+  text: string;            // the request, in the owner's words
+  summary: string;         // empty until change_plan_ready
+  contracts: string[];
+  tasks: ChangeTask[];
+  pages: string[];
+  decision: "planning" | "pending" | "approved" | "rejected";
+  before: ProjectStatus;   // status before the change started, restored if it is sent back
+};
 
 export type Attempt = {
   n: number;
@@ -75,6 +92,8 @@ export type ProjectState = {
   cost_usd: number;
   now: number;
   preview_url: string | null; // live preview of the finished app, once deployed
+  changes: ChangeState[];      // change requests, oldest first
+  change: ChangeState | null;  // the latest one (the same object as changes.at(-1))
 };
 
 export type Project = {

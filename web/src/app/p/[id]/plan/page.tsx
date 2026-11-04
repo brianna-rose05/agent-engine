@@ -5,9 +5,10 @@ import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowRight, Check, FileCode2, Loader2, MessageSquareReply, ShieldCheck } from "lucide-react";
 import { useProject } from "@/lib/project-store";
-import { layers } from "@/lib/reduce";
-import type { Plan } from "@/lib/types";
+import { currentPlanner, layers } from "@/lib/reduce";
+import type { ChangeState, Plan, TaskState } from "@/lib/types";
 import { Avatar, Mono } from "@/components/ui";
+import { ChangeRequestBox } from "@/components/ChangeRequest";
 
 export default function PlanPage() {
   const { state, approve, sendBack, project, liveStatus, liveError } = useProject();
@@ -45,13 +46,19 @@ export default function PlanPage() {
   if (!plan) return <PlannerAtWork />;
 
   const waiting = state.status === "awaiting_approval";
+  const change = state.change;
+  const changeWaiting = waiting && change?.decision === "pending" ? change : null;
+  const changePlanning = state.status === "planning" && change?.decision === "planning" ? change : null;
   const parallelNow = layers(plan)[0]?.length ?? 0;
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-6 md:px-6 md:py-8">
+      {changePlanning && <ChangeAtWork change={changePlanning} />}
+      {changeWaiting && <ChangeReview change={changeWaiting} />}
+
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="text-sm text-muted">The plan</p>
+          <p className="text-sm text-muted">{change ? "The original plan" : "The plan"}</p>
           <h2 className="text-2xl font-semibold tracking-tight">
             {plan.tasks.length} features, {parallelNow} can start right away
           </h2>
@@ -96,7 +103,9 @@ export default function PlanPage() {
                   autoFocus
                   value={note}
                   onChange={(e) => setNote(e.target.value)}
-                  placeholder="What should the planner change? e.g. split rentals and waitlist into two features"
+                  placeholder={changeWaiting
+                    ? "What should the planner do differently? e.g. leave the booking emails alone, only fix the time zone"
+                    : "What should the planner change? e.g. split rentals and waitlist into two features"}
                   className="min-h-20 w-full resize-y rounded-xl border border-line bg-canvas p-3 text-sm outline-none focus:ring-2 focus:ring-planner/30"
                 />
                 <div className="flex justify-end gap-2">
@@ -120,7 +129,7 @@ export default function PlanPage() {
               <div className="flex flex-wrap items-center gap-3">
                 <ShieldCheck className="text-you" size={20} strokeWidth={1.6} />
                 <p className="mr-auto text-sm">
-                  <span className="font-medium">Nothing is built until you approve.</span>{" "}
+                  <span className="font-medium">{changeWaiting ? `Nothing changes until you approve change ${changeWaiting.n}.` : "Nothing is built until you approve."}</span>{" "}
                   <span className="text-muted">Agents start the moment you do.</span>
                 </p>
                 <button
@@ -138,7 +147,7 @@ export default function PlanPage() {
                   }}
                   className="flex items-center gap-2 rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white transition-transform duration-150 hover:-translate-y-px"
                 >
-                  <Check size={15} strokeWidth={2} /> Approve and build
+                  <Check size={15} strokeWidth={2} /> {changeWaiting ? "Approve the change" : "Approve and build"}
                 </button>
               </div>
             )}
@@ -146,12 +155,17 @@ export default function PlanPage() {
         )}
       </AnimatePresence>
 
-      {!waiting && (
+      <div className="mt-8">
+        <ChangeRequestBox />
+      </div>
+
+      {!waiting && !changePlanning && (
         <button
           onClick={() => router.push(`/p/${project.id}/board`)}
           className="mt-8 flex items-center gap-2 text-sm text-muted hover:text-ink"
         >
-          {state.status === "rejected" ? "Plan sent back. The planner will revise it." : "Approved. Watch the board"}
+          {state.status === "rejected" ? "Plan sent back. The planner will revise it."
+            : ["done", "failed"].includes(state.status) ? "See the board" : "Approved. Watch the board"}
           <ArrowRight size={14} />
         </button>
       )}
@@ -258,8 +272,27 @@ const clockText = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStar
 /** While the planner works (10 to 25 minutes): what it did last and a timer that ticks every second, so a
  *  long run doesn't look stuck. Regression: the first live users saw one static line and gave up. */
 function PlannerAtWork() {
-  const { state, project, mode, clock, t0 } = useProject();
-  const planner = Object.values(state.tasks).find((t) => t.role === "planner");
+  const { state, project } = useProject();
+  const planner = currentPlanner(state);
+  const elapsed = useElapsed(planner);
+
+  return (
+    <div className="mx-auto flex max-w-xl flex-col items-center gap-4 px-6 py-24 text-center">
+      <Avatar who="planner" size={48} active />
+      <h2 className="text-xl font-semibold tracking-tight">The planner is working on your plan</h2>
+      <p className="text-muted">
+        It&apos;s splitting {project.name.toLowerCase()} into features that can be built in parallel, and writing the shared
+        contract they&apos;ll all use. This usually takes 10 to 25 minutes. You&apos;ll approve it before anything is built.
+      </p>
+      <Elapsed elapsed={elapsed} />
+      <PlannerNotes notes={planner?.notes ?? []} empty="Reading your description…" />
+    </div>
+  );
+}
+
+/** Seconds the planner has worked, ticking every second; undefined until known. */
+function useElapsed(planner: TaskState | undefined) {
+  const { mode, clock, t0 } = useProject();
   const [wall, setWall] = useState(0); // browser time in seconds, 0 until the first tick
   useEffect(() => {
     const tick = () => setWall(Date.now() / 1000);
@@ -273,42 +306,105 @@ function PlannerAtWork() {
   const start = planner ? planner.started ?? planner.since : undefined;
   // Event times count from the first event: live, that is wall-clock t0; the demo replays on its own clock.
   const now = mode === "live" ? (t0 !== undefined && wall ? wall - t0 : undefined) : clock;
-  const elapsed = start !== undefined && now !== undefined ? Math.max(0, Math.floor(now - start)) : undefined;
-  const notes = planner?.notes ?? [];
+  return start !== undefined && now !== undefined ? Math.max(0, Math.floor(now - start)) : undefined;
+}
 
+function Elapsed({ elapsed }: { elapsed: number | undefined }) {
   return (
-    <div className="mx-auto flex max-w-xl flex-col items-center gap-4 px-6 py-24 text-center">
-      <Avatar who="planner" size={48} active />
-      <h2 className="text-xl font-semibold tracking-tight">The planner is working on your plan</h2>
-      <p className="text-muted">
-        It&apos;s splitting {project.name.toLowerCase()} into features that can be built in parallel, and writing the shared
-        contract they&apos;ll all use. This usually takes 10 to 25 minutes. You&apos;ll approve it before anything is built.
+    <p className="flex items-center gap-2 text-sm text-muted">
+      <Loader2 className="animate-spin text-faint motion-reduce:animate-none" size={15} />
+      {elapsed !== undefined ? (
+        <span className="tabular-nums">Working for {clockText(elapsed)}</span>
+      ) : (
+        <span>Starting</span>
+      )}
+    </p>
+  );
+}
+
+function PlannerNotes({ notes, empty }: { notes: string[]; empty: string }) {
+  return (
+    <ol className="flex w-full flex-col gap-1 text-left" aria-live="polite" aria-label="What the planner did last">
+      {notes.length ? (
+        notes.map((n, i) => (
+          <li
+            key={`${i}-${n}`}
+            className={`truncate rounded-lg px-3 py-1.5 font-mono text-[12px] ${
+              i === notes.length - 1 ? "bg-surface text-ink ring-1 ring-line" : "text-faint"
+            }`}
+            title={n}
+          >
+            {n}
+          </li>
+        ))
+      ) : (
+        <li className="px-3 py-1.5 text-center text-sm text-faint">{empty}</li>
+      )}
+    </ol>
+  );
+}
+
+/** While the change planner (C{n}PLAN) reads the code and plans the change: the request, a timer, its notes. */
+function ChangeAtWork({ change }: { change: ChangeState }) {
+  const { state } = useProject();
+  const planner = currentPlanner(state);
+  const elapsed = useElapsed(planner);
+  return (
+    <section className="mb-8 flex flex-col items-center gap-3 rounded-2xl border border-line bg-surface px-5 py-6 text-center">
+      <Avatar who="planner" size={40} active />
+      <h2 className="text-lg font-semibold tracking-tight">The planner is planning change {change.n}</h2>
+      <p className="max-w-xl text-sm text-muted">&ldquo;{change.text}&rdquo;</p>
+      <p className="max-w-xl text-sm text-muted">
+        It reads the code and plans only what has to change. Merged work stays. You&apos;ll approve the change before
+        anything is built.
       </p>
-      <p className="flex items-center gap-2 text-sm text-muted">
-        <Loader2 className="animate-spin text-faint motion-reduce:animate-none" size={15} />
-        {elapsed !== undefined ? (
-          <span className="tabular-nums">Working for {clockText(elapsed)}</span>
-        ) : (
-          <span>Starting</span>
-        )}
-      </p>
-      <ol className="flex w-full flex-col gap-1 text-left" aria-live="polite" aria-label="What the planner did last">
-        {notes.length ? (
-          notes.map((n, i) => (
-            <li
-              key={`${i}-${n}`}
-              className={`truncate rounded-lg px-3 py-1.5 font-mono text-[12px] ${
-                i === notes.length - 1 ? "bg-surface text-ink ring-1 ring-line" : "text-faint"
-              }`}
-              title={n}
-            >
-              {n}
-            </li>
-          ))
-        ) : (
-          <li className="px-3 py-1.5 text-center text-sm text-faint">Reading your description…</li>
-        )}
+      <Elapsed elapsed={elapsed} />
+      <div className="w-full max-w-xl">
+        <PlannerNotes notes={planner?.notes ?? []} empty="Reading the code and your request…" />
+      </div>
+    </section>
+  );
+}
+
+/** A planned change waiting for approval: what will change, and each task (changed or new module). */
+function ChangeReview({ change }: { change: ChangeState }) {
+  return (
+    <section className="mb-8 rounded-2xl border border-you/30 bg-surface p-5" aria-labelledby="change-review-title">
+      <p className="text-sm text-muted">Change {change.n}, ready for your approval</p>
+      <h2 id="change-review-title" className="text-xl font-semibold tracking-tight">
+        {change.tasks.length} task{change.tasks.length === 1 ? "" : "s"} to make your change
+      </h2>
+      <p className="mt-1 text-sm text-muted">You asked: &ldquo;{change.text}&rdquo;</p>
+      {change.summary && <p className="mt-3 text-[15px] leading-relaxed">{change.summary}</p>}
+      {change.contracts.length > 0 && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-muted">
+          <FileCode2 size={15} strokeWidth={1.6} /> Contract edits
+          {change.contracts.map((c) => <Mono key={c}>{c}</Mono>)}
+        </div>
+      )}
+      <ol className="mt-4 grid gap-3 md:grid-cols-2">
+        {change.tasks.map((t) => (
+          <li key={t.id} className="rounded-xl border border-line bg-canvas/50 p-3">
+            <div className="mb-1 flex flex-wrap items-center gap-2">
+              <span className="text-[11px] font-medium text-faint">{t.id}</span>
+              <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                t.kind === "new" ? "bg-dev-bg text-dev" : "bg-check-bg text-check"}`}>
+                {t.kind === "new" ? "New" : "Change"}
+              </span>
+              <span className="ml-auto"><Mono>{t.module}</Mono></span>
+            </div>
+            <p className="text-[15px] font-medium leading-snug">{t.title}</p>
+            {t.depends_on.length > 0 && <p className="mt-1 text-xs text-faint">After {t.depends_on.join(", ")}</p>}
+            <details className="mt-1.5">
+              <summary className="cursor-pointer text-xs text-muted hover:text-ink">The spec</summary>
+              <p className="mt-1 whitespace-pre-wrap text-[13px] leading-relaxed text-muted">{t.spec}</p>
+            </details>
+          </li>
+        ))}
       </ol>
-    </div>
+      {change.pages.length > 0 && (
+        <p className="mt-3 text-xs text-faint">Pages checked after the change: {change.pages.join(", ")}</p>
+      )}
+    </section>
   );
 }

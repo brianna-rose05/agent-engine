@@ -8,6 +8,7 @@ import { api, liveEnabled, useOwner } from "./convex";
 import { OwnerGate } from "@/components/OwnerGate";
 import type { EngineEvent, Project, ProjectState } from "./types";
 import type { Wizard } from "../../convex/wizard";
+import { canRequestChange, checkChangeText, nextChangeNumber, type ChangeRequest } from "../../convex/changes";
 
 type Store = {
   project: Project;
@@ -27,7 +28,20 @@ type Store = {
   wizard?: Wizard | null;       // setup wizard state (live mode)
   canRetry?: boolean;           // a stopped build that can retry only what failed
   previewUrl?: string | null;   // live preview of the finished app (Vercel), once deployed
+  canChange: boolean;           // the owner can ask for a change now (docs/change-requests.md)
+  changeHistory: ChangeRequest[]; // the change requests asked so far, oldest first
+  requestChange: (text: string) => Promise<void>; // throws with a message to show when it can't be sent
 };
+
+/** A task agent is busy right now (the demo has no project row to ask). */
+const RUNNING = new Set(["working", "checking", "merging", "disputing"]);
+export const anyRunning = (s: ProjectState) => Object.values(s.tasks).some((t) => RUNNING.has(t.status));
+
+/** Message of a Convex error (ConvexError's data is the friendly text), or a generic one. */
+function errorText(e: unknown): string {
+  const data = (e as { data?: unknown })?.data;
+  return typeof data === "string" ? data : "Couldn't send the change. Try again in a moment.";
+}
 
 const Ctx = createContext<Store | null>(null);
 
@@ -88,12 +102,23 @@ function useDemo(): Omit<Store, "project" | "mode"> {
   const restart = useCallback(() => {
     setDecision(null);
     setClock(0);
+    setHistory([]);
   }, []);
-  return { state, approve, sendBack, speed, setSpeed, restart, clock, duration: DEMO_END };
+  // The demo is a recording: a change request is kept on this page only, no team picks it up.
+  const [history, setHistory] = useState<ChangeRequest[]>([]);
+  const requestChange = useCallback(async (text: string) => {
+    const checked = checkChangeText(text);
+    if (!checked.ok) throw new Error(checked.message);
+    setHistory((h) => [...h, { n: nextChangeNumber(h), text: checked.text, at: Date.now() }]);
+  }, []);
+  const canChange = canRequestChange(state.status, Boolean(state.plan), anyRunning(state));
+  return { state, approve, sendBack, speed, setSpeed, restart, clock, duration: DEMO_END,
+           canChange, changeHistory: history, requestChange };
 }
 
 type LiveData = {
-  project: Project & { status: string; error: string | null; wizard: Wizard | null; canRetry?: boolean; previewUrl?: string | null };
+  project: Project & { status: string; error: string | null; wizard: Wizard | null; canRetry?: boolean; previewUrl?: string | null;
+                      canChange?: boolean; changes?: ChangeRequest[] };
   events: { kind: EngineEvent["kind"]; task_id: string | null; data: Record<string, unknown>; ts: number }[];
 } | null;
 
@@ -102,6 +127,7 @@ function LiveProvider({ id, children }: { id: string; children: React.ReactNode 
   const { key } = useOwner();
   const data = useQuery(api.projects.get, key ? { key, id } : "skip") as LiveData | undefined;
   const decide = useMutation(api.projects.decide);
+  const askChange = useMutation(api.projects.requestChange);
   const t0 = data?.events[0]?.ts;
   const state = useMemo(() => {
     if (!data) return initialState();
@@ -120,6 +146,17 @@ function LiveProvider({ id, children }: { id: string; children: React.ReactNode 
     speed: 1, setSpeed: () => {}, restart: () => {}, clock: state.now, duration: state.now, t0,
     liveStatus: data?.project.status, liveError: data?.project.error ?? null, wizard: data?.project.wizard ?? null, canRetry: Boolean(data?.project.canRetry),
     previewUrl: data?.project.previewUrl ?? state.preview_url,
+    canChange: Boolean(data?.project.canChange),
+    changeHistory: data?.project.changes ?? [],
+    requestChange: async (text: string) => {
+      const checked = checkChangeText(text);
+      if (!checked.ok) throw new Error(checked.message);
+      try {
+        await askChange({ key: key!, id, text: checked.text });
+      } catch (e) {
+        throw new Error(errorText(e));
+      }
+    },
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

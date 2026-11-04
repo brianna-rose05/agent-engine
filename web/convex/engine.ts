@@ -1,6 +1,7 @@
 import { mutationGeneric, queryGeneric } from "convex/server";
 import { ConvexError, v } from "convex/values";
 import { composeSpec } from "./wizard";
+import type { ChangeRequest } from "./changes";
 
 /*
  * What the engine (worker.py in GitHub Actions) calls. Authenticated with ENGINE_SECRET, which both sides
@@ -17,10 +18,11 @@ export const projectForWorker = queryGeneric({
     checkEngine(secret);
     const p = await ctx.db.get(projectId);
     if (!p) return null;
+    const change = p.mode === "change";
     let merged: string[] = [];
     let repo = p.repo ?? null;
-    if (p.resume) {
-      // what a retry can keep: every task whose latest status is merged
+    if (p.resume || change) {
+      // what a retry or a change keeps: every task whose latest status is merged
       const events = await ctx.db.query("events").withIndex("by_project_ts", (q) => q.eq("projectId", projectId)).collect();
       const last: Record<string, string> = {};
       for (const e of events) {
@@ -29,7 +31,11 @@ export const projectForWorker = queryGeneric({
       }
       merged = Object.keys(last).filter((k) => last[k] === "merged").sort();
     }
-    return { resume: Boolean(p.resume), repo, merged, plan: p.resume ? p.plan ?? null : null, name: p.name, description: composeSpec(p.name, p.description, p.wizard), model: p.model, status: p.status, planNote: p.planNote ?? "" };
+    const latest = change ? ((p.changes ?? []) as ChangeRequest[]).at(-1) : undefined;
+    return { resume: Boolean(p.resume), mode: change ? "change" : p.resume ? "resume" : "build",
+             change: latest ? { n: latest.n, text: latest.text } : null,
+             repo, merged, plan: p.resume || change ? p.plan ?? null : null, name: p.name,
+             description: composeSpec(p.name, p.description, p.wizard), model: p.model, status: p.status, planNote: p.planNote ?? "" };
   },
 });
 
@@ -61,10 +67,17 @@ export const record = mutationGeneric({
       patch.status = STATUS_AFTER.plan_ready;
       patch.plan = data.plan;
     }
+    if (kind === "change_started") patch.status = "planning";
+    if (kind === "change_plan_ready") {
+      patch.status = "awaiting_approval";
+      patch.pendingChange = data.change;
+    }
     if (kind === "plan_decision") patch.status = data.approved ? "building" : "rejected";
     if (kind === "attempt_finished") patch.costUsd = Math.round((p.costUsd + Number(data.cost_usd ?? 0)) * 10000) / 10000;
     if (kind === "project_finished") {
-      patch.status = data.status;
+      // A change that was sent back built nothing: the project goes back to how it was (done, or failed), so the
+      // owner can ask for a different change. Matches the app reducer.
+      patch.status = data.status === "rejected" && p.mode === "change" && p.changeFrom ? p.changeFrom : data.status;
       if (data.repo) patch.repo = data.repo;
     }
     if (kind === "preview_ready" && typeof data?.url === "string" && /^https:\/\//.test(data.url)) patch.previewUrl = data.url;
