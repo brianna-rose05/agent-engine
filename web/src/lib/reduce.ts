@@ -7,6 +7,7 @@ export const initialState = (): ProjectState => ({
   feed: [],
   cost_usd: 0,
   now: 0,
+  preview_url: null,
 });
 
 export const money = (c: number) => (c > 0 && c < 0.01 ? `$${c.toFixed(4)}` : `$${c.toFixed(2)}`);
@@ -27,7 +28,7 @@ function channelFor(role: Role): FeedItem["channel"] {
 export function reduce(s: ProjectState, e: EngineEvent): ProjectState {
   const tasks = { ...s.tasks };
   const feed = [...s.feed];
-  let { status, plan, cost_usd } = s;
+  let { status, plan, cost_usd, preview_url } = s;
   const task = e.task_id ? tasks[e.task_id] : undefined;
   const say = (item: Omit<FeedItem, "t">) => feed.push({ t: e.t, ...item });
   const lookup = (t: TaskState) => plan?.tasks.find((p) => p.id === featureId(t.id));
@@ -135,8 +136,28 @@ export function reduce(s: ProjectState, e: EngineEvent): ProjectState {
             text: `${d.status === "done" ? "Finished" : "Stopped"}: ${ok} of ${devs.length} features verified and merged, ${money(cost_usd)} in total.` });
       break;
     }
+    case "preview_ready": {
+      const url = (e.data as { url?: unknown }).url;
+      if (typeof url !== "string" || !url.startsWith("https://")) break;
+      preview_url = url;
+      say({ who: "engine", channel: "build", tone: "good",
+            text: `Preview is live at ${url}. It runs without a real database, so preview data resets.` });
+      break;
+    }
+    case "preview_failed": {
+      const d = e.data as { reason?: string };
+      say({ who: "engine", channel: "build", tone: "warn",
+            text: `Couldn't publish a preview: ${d.reason ?? "the deploy failed"}. The code is still in the repo.` });
+      break;
+    }
+    case "preview_skipped": {
+      const d = e.data as { reason?: string };
+      say({ who: "engine", channel: "build",
+            text: `No preview link this time (${d.reason ?? "previews are off"}). The code is in the repo.` });
+      break;
+    }
   }
-  return { status, plan, tasks, feed, cost_usd, now: Math.max(s.now, e.t) };
+  return { status, plan, tasks, feed, cost_usd, now: Math.max(s.now, e.t), preview_url };
 }
 
 /* --------------------------------------------------------------- board columns */

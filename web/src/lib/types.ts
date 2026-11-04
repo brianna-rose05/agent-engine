@@ -10,7 +10,10 @@ export type EngineEvent = {
     | "plan_decision"
     | "dispute_resolved"
     | "build_resumed"
-    | "project_finished";
+    | "project_finished"
+    | "preview_ready"
+    | "preview_failed"
+    | "preview_skipped";
   task_id: string | null;
   data: Record<string, unknown>;
 };
@@ -68,6 +71,7 @@ export type ProjectState = {
   feed: FeedItem[];
   cost_usd: number;
   now: number;
+  preview_url: string | null; // live preview of the finished app, once deployed
 };
 
 export type Project = {

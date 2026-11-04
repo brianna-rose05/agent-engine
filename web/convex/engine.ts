@@ -62,6 +62,7 @@ export const record = mutationGeneric({
       patch.status = data.status;
       if (data.repo) patch.repo = data.repo;
     }
+    if (kind === "preview_ready" && typeof data?.url === "string" && /^https:\/\//.test(data.url)) patch.previewUrl = data.url;
     if (kind === "build_resumed") {
       patch.status = "building";
       patch.resume = false;

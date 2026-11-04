@@ -42,7 +42,7 @@ export const get = queryGeneric({
     return {
       project: { id: p._id, name: p.name, description: p.description, model: p.model, status: p.status,
                  canRetry: p.status === "failed" && Boolean(p.plan),
-                 createdAt: p._creationTime, error: p.error ?? null, wizard: p.wizard ?? null },
+                 createdAt: p._creationTime, error: p.error ?? null, wizard: p.wizard ?? null, previewUrl: p.previewUrl ?? null },
       events: events.map((e) => ({ kind: e.kind, task_id: e.taskId, data: e.data, ts: e.ts })),
     };
   },

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useMutation } from "convex/react";
-import { RefreshCw, RotateCcw } from "lucide-react";
+import { ExternalLink, RefreshCw, RotateCcw } from "lucide-react";
 import { api, useOwner } from "@/lib/convex";
 import { motion } from "motion/react";
 import { useProject } from "@/lib/project-store";
@@ -13,7 +13,8 @@ import { StatusPill } from "./ui";
 const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
 export function TopBar() {
-  const { project, state, mode, speed, setSpeed, restart, clock: t, duration, liveStatus, canRetry } = useProject();
+  const { project, state, mode, speed, setSpeed, restart, clock: t, duration, liveStatus, canRetry, previewUrl } = useProject();
+  const preview = previewUrl ?? state.preview_url;
   const fs = features(state);
   const done = fs.filter((f) => f.column === "done").length;
   const pct = fs.length ? done / fs.length : 0;
@@ -44,8 +45,9 @@ export function TopBar() {
             {clock(state.now)}
           </span>
           <span className="rounded-md bg-surface px-2 py-0.5 text-xs ring-1 ring-line">{project.model}</span>
+          {preview && <OpenPreview url={preview} />}
           {mode === "live" && canRetry && <RetryFailed id={project.id} />}
-          {mode === "live" && ["failed", "done", "rejected"].includes(liveStatus ?? "") && <Rebuild id={project.id} quiet={canRetry} />}
+          {mode === "live" && ["failed", "done", "rejected"].includes(liveStatus ?? "") && <Rebuild id={project.id} quiet={canRetry || Boolean(preview)} />}
 
           {mode === "demo" && (
             <div className="flex items-center gap-1 rounded-lg bg-surface p-0.5 ring-1 ring-line" title="Replay speed">
@@ -76,7 +78,19 @@ export function TopBar() {
   );
 }
 
-/** Start a fresh build of a stopped project from the same approved setup (new repo, same requirements). */
+/** The finished app, deployed to Vercel in local mode (in-memory database), so its data doesn't last. */
+function OpenPreview({ url }: { url: string }) {
+  return (
+    <span className="flex items-center gap-2">
+      <a href={url} target="_blank" rel="noopener noreferrer" title={`${url}. Preview data resets.`}
+        className="flex items-center gap-1.5 rounded-lg bg-ink px-3 py-1 text-xs font-medium text-white hover:opacity-90">
+        <ExternalLink size={12} /> Open preview
+      </a>
+      <span className="text-xs text-muted">Preview data resets</span>
+    </span>
+  );
+}
+
 /** Rerun only the features (and integration) that didn't merge, in the same repo. */
 function RetryFailed({ id }: { id: string }) {
   const { key } = useOwner();
@@ -91,6 +105,7 @@ function RetryFailed({ id }: { id: string }) {
   );
 }
 
+/** Start a fresh build of a stopped project from the same approved setup (new repo, same requirements). */
 function Rebuild({ id, quiet = false }: { id: string; quiet?: boolean }) {
   const { key } = useOwner();
   const router = useRouter();

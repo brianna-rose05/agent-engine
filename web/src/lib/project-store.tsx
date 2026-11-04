@@ -25,6 +25,7 @@ type Store = {
   liveError?: string | null;    // e.g. the worker couldn't be started
   wizard?: Wizard | null;       // setup wizard state (live mode)
   canRetry?: boolean;           // a stopped build that can retry only what failed
+  previewUrl?: string | null;   // live preview of the finished app (Vercel), once deployed
 };
 
 const Ctx = createContext<Store | null>(null);
@@ -91,7 +92,7 @@ function useDemo(): Omit<Store, "project" | "mode"> {
 }
 
 type LiveData = {
-  project: Project & { status: string; error: string | null; wizard: Wizard | null; canRetry?: boolean };
+  project: Project & { status: string; error: string | null; wizard: Wizard | null; canRetry?: boolean; previewUrl?: string | null };
   events: { kind: EngineEvent["kind"]; task_id: string | null; data: Record<string, unknown>; ts: number }[];
 } | null;
 
@@ -116,6 +117,7 @@ function LiveProvider({ id, children }: { id: string; children: React.ReactNode 
     sendBack: async (note: string) => { await decide({ key: key!, id, approved: false, note }); },
     speed: 1, setSpeed: () => {}, restart: () => {}, clock: state.now, duration: state.now,
     liveStatus: data?.project.status, liveError: data?.project.error ?? null, wizard: data?.project.wizard ?? null, canRetry: Boolean(data?.project.canRetry),
+    previewUrl: data?.project.previewUrl ?? state.preview_url,
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
