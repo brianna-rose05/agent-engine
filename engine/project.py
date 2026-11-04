@@ -312,7 +312,8 @@ def make_confirm(t: dict, test_path: str, engine: Engine, referee):
     def confirm(tests: str) -> bool:
         def check(box: Sandbox) -> tuple[bool, str, str]:
             said = box.exec(f"cat {shlex.quote(verdict)} 2>/dev/null").output.strip().upper()
-            return said.startswith("YES"), "the reviewer did not confirm the tests check the change", said[:200]
+            yes = said.startswith("YES")
+            return yes, "" if yes else "the reviewer did not confirm the tests check the change", said[:200]
         review = Task(f"{t['id']}-confirm", f"Confirm the change already holds: {t['title']}",
                       CONFIRM_SPEC.format(tid=t["id"], title=t["title"], module=t["module"], spec=t["spec"],
                                           test_path=test_path, verdict=verdict),
