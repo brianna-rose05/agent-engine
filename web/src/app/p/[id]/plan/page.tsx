@@ -42,19 +42,7 @@ export default function PlanPage() {
     );
   }
 
-  if (!plan) {
-    return (
-      <div className="mx-auto flex max-w-xl flex-col items-center gap-4 px-6 py-24 text-center">
-        <Avatar who="planner" size={48} active />
-        <h2 className="text-xl font-semibold tracking-tight">The planner is reading your description</h2>
-        <p className="text-muted">
-          It&apos;s splitting {project.name.toLowerCase()} into features that can be built in parallel, and writing the shared
-          contract they&apos;ll all use. You&apos;ll approve it before anything is built.
-        </p>
-        <Loader2 className="animate-spin text-faint motion-reduce:animate-none" size={18} />
-      </div>
-    );
-  }
+  if (!plan) return <PlannerAtWork />;
 
   const waiting = state.status === "awaiting_approval";
   const parallelNow = layers(plan)[0]?.length ?? 0;
@@ -261,6 +249,66 @@ function PlanMap({ plan }: { plan: Plan }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+const clockText = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+
+/** While the planner works (10 to 25 minutes): what it did last and a timer that ticks every second, so a
+ *  long run doesn't look stuck. Regression: the first live users saw one static line and gave up. */
+function PlannerAtWork() {
+  const { state, project, mode, clock, t0 } = useProject();
+  const planner = Object.values(state.tasks).find((t) => t.role === "planner");
+  const [wall, setWall] = useState(0); // browser time in seconds, 0 until the first tick
+  useEffect(() => {
+    const tick = () => setWall(Date.now() / 1000);
+    const id = setInterval(tick, 1000);
+    const first = setTimeout(tick, 0);
+    return () => {
+      clearInterval(id);
+      clearTimeout(first);
+    };
+  }, []);
+  const start = planner ? planner.started ?? planner.since : undefined;
+  // Event times count from the first event: live, that is wall-clock t0; the demo replays on its own clock.
+  const now = mode === "live" ? (t0 !== undefined && wall ? wall - t0 : undefined) : clock;
+  const elapsed = start !== undefined && now !== undefined ? Math.max(0, Math.floor(now - start)) : undefined;
+  const notes = planner?.notes ?? [];
+
+  return (
+    <div className="mx-auto flex max-w-xl flex-col items-center gap-4 px-6 py-24 text-center">
+      <Avatar who="planner" size={48} active />
+      <h2 className="text-xl font-semibold tracking-tight">The planner is working on your plan</h2>
+      <p className="text-muted">
+        It&apos;s splitting {project.name.toLowerCase()} into features that can be built in parallel, and writing the shared
+        contract they&apos;ll all use. This usually takes 10 to 25 minutes. You&apos;ll approve it before anything is built.
+      </p>
+      <p className="flex items-center gap-2 text-sm text-muted">
+        <Loader2 className="animate-spin text-faint motion-reduce:animate-none" size={15} />
+        {elapsed !== undefined ? (
+          <span className="tabular-nums">Working for {clockText(elapsed)}</span>
+        ) : (
+          <span>Starting</span>
+        )}
+      </p>
+      <ol className="flex w-full flex-col gap-1 text-left" aria-live="polite" aria-label="What the planner did last">
+        {notes.length ? (
+          notes.map((n, i) => (
+            <li
+              key={`${i}-${n}`}
+              className={`truncate rounded-lg px-3 py-1.5 font-mono text-[12px] ${
+                i === notes.length - 1 ? "bg-surface text-ink ring-1 ring-line" : "text-faint"
+              }`}
+              title={n}
+            >
+              {n}
+            </li>
+          ))
+        ) : (
+          <li className="px-3 py-1.5 text-center text-sm text-faint">Reading your description…</li>
+        )}
+      </ol>
     </div>
   );
 }

@@ -35,7 +35,11 @@ export const projectForWorker = queryGeneric({
 
 const STATUS_AFTER: Record<string, string> = { task_queued: "planning", plan_ready: "awaiting_approval" };
 
-/** One engine event: stored as-is (the app rebuilds every screen from these), plus the project summary. */
+/**
+ * One engine event: stored as-is (the app rebuilds every screen from these), plus the project summary.
+ * agent_activity events (what a running agent is doing, about one every 10 s per agent) are stored like any
+ * other but return before the project row is touched.
+ */
 export const record = mutationGeneric({
   args: {
     secret: v.string(),
@@ -50,6 +54,7 @@ export const record = mutationGeneric({
     const p = await ctx.db.get(projectId);
     if (!p) throw new ConvexError("no such project");
     await ctx.db.insert("events", { projectId, kind, taskId, data, ts });
+    if (kind === "agent_activity") return; // frequent and informational: never touches the project row
     const patch: Record<string, unknown> = {};
     if (kind === "task_queued" && taskId === "PLAN") patch.status = STATUS_AFTER.task_queued;
     if (kind === "plan_ready") {

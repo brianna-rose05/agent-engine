@@ -10,7 +10,8 @@ export type EngineEvent = {
     | "plan_decision"
     | "dispute_resolved"
     | "build_resumed"
-    | "project_finished";
+    | "project_finished"
+    | "agent_activity";
   task_id: string | null;
   data: Record<string, unknown>;
 };
@@ -41,6 +42,8 @@ export type TaskState = {
   cost_usd: number;
   error?: string;
   since: number; // when the current status began
+  started?: number; // when it first started working (the planner's elapsed timer)
+  notes?: string[]; // what its agent did last ("Wrote src/x.ts"), newest last, current try only
 };
 
 export type ProjectStatus =

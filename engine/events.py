@@ -6,6 +6,8 @@ Event kinds and their data:
     attempt_finished {n, passed, claim, reason, cost_usd, seconds, turns, files_changed}
     plan_ready       {plan}
     plan_decision    {approved, note}
+    agent_activity   {attempt, note, notes}   what a running agent is doing ("Wrote src/x.ts"),
+                     at most one every ~10 s per task; note is the latest of notes
 A sink must never break a run: errors inside a sink are swallowed by `emit`.
 """
 from __future__ import annotations

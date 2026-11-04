@@ -21,6 +21,7 @@ type Store = {
   restart: () => void;
   clock: number;
   duration: number;
+  t0?: number;                  // live: wall-clock seconds of the first event (event times count from it)
   liveStatus?: string;          // the project row's status (live mode): queued, starting, planning...
   liveError?: string | null;    // e.g. the worker couldn't be started
   wizard?: Wizard | null;       // setup wizard state (live mode)
@@ -100,6 +101,7 @@ function LiveProvider({ id, children }: { id: string; children: React.ReactNode 
   const { key } = useOwner();
   const data = useQuery(api.projects.get, key ? { key, id } : "skip") as LiveData | undefined;
   const decide = useMutation(api.projects.decide);
+  const t0 = data?.events[0]?.ts;
   const state = useMemo(() => {
     if (!data) return initialState();
     const t0 = data.events[0]?.ts ?? 0;
@@ -114,7 +116,7 @@ function LiveProvider({ id, children }: { id: string; children: React.ReactNode 
     project, state, mode: "live",
     approve: async () => { await decide({ key: key!, id, approved: true }); },
     sendBack: async (note: string) => { await decide({ key: key!, id, approved: false, note }); },
-    speed: 1, setSpeed: () => {}, restart: () => {}, clock: state.now, duration: state.now,
+    speed: 1, setSpeed: () => {}, restart: () => {}, clock: state.now, duration: state.now, t0,
     liveStatus: data?.project.status, liveError: data?.project.error ?? null, wizard: data?.project.wizard ?? null, canRetry: Boolean(data?.project.canRetry),
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

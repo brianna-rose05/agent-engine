@@ -102,6 +102,9 @@ function Card({ f, now, onOpen, titles }: { f: Feature; now: number; onOpen: () 
     : f.waitingOn.length ? (integ ? `Waiting for ${f.waitingOn.length} feature${f.waitingOn.length > 1 ? "s" : ""} to merge`
                                   : `Waiting on ${f.waitingOn.map((d) => titles[d] ?? d).join(", ")}`)
     : testsDone ? "Tests ready, waiting for a dev agent" : "Waiting for a QA agent";
+  // What the agent on an active card is doing right now ("Wrote src/x.ts"); stale once the engine is checking.
+  const working = f.active === "qa" ? f.qa : f.active === "dev" ? f.dev : undefined;
+  const note = working?.status === "working" ? working.notes?.at(-1) : undefined;
 
   return (
     <motion.button
@@ -135,6 +138,11 @@ function Card({ f, now, onOpen, titles }: { f: Feature; now: number; onOpen: () 
         ))}
       </div>
       <p className={`line-clamp-2 text-xs ${f.column === "attention" ? "text-bad" : "text-muted"}`}>{doing}</p>
+      {note && (
+        <p className="truncate font-mono text-[11px] text-faint" title={note} aria-live="polite">
+          {note}
+        </p>
+      )}
     </motion.button>
   );
 }
