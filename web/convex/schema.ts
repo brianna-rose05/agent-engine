@@ -18,6 +18,7 @@ export default defineSchema({
     wizard: v.optional(v.any()), // setup wizard state, see convex/wizard.ts
     repo: v.optional(v.string()), // the project's GitHub repo, once the worker has made it
     resume: v.optional(v.boolean()), // the next worker run retries only what didn't merge
+    previewUrl: v.optional(v.string()), // live Vercel preview of the finished app (worker.py publish_preview)
   }),
   events: defineTable({
     projectId: v.id("projects"),

@@ -36,6 +36,8 @@ jobs:
           DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
           PROJECTS_GITHUB_TOKEN: ${{ secrets.PROJECTS_GITHUB_TOKEN }}
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}       # optional: without it, no preview link
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}   # optional: deploy under a team instead of the user
           PROJECT_ID: ${{ inputs.project_id }}
         run: |
           git config --global user.email "engine@agents.local"

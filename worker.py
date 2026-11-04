@@ -68,6 +68,26 @@ def create_repo(name: str, token: str, description: str) -> str:
         raise
 
 
+def publish_preview(results, repo: Path, repo_url: str, events, deploy=None, merged_before=()) -> None:
+    """Once the integration task has merged, deploy main to Vercel and tell the app where it lives (on a
+    retry where INT merged earlier, redeploy if anything new merged). Never raises: a preview is a bonus."""
+    merged_now = {r.task for r in results if r.status == "merged"}
+    if "INT" not in merged_now and not ("INT" in merged_before and merged_now):
+        return
+    try:
+        from engine.deploy import deploy_preview
+        r = (deploy or deploy_preview)(repo, project_name=repo_url.rstrip("/").rsplit("/", 1)[-1], log=print)
+        if r.status == "ready":
+            events.emit("preview_ready", url=r.url)
+        elif r.status == "skipped":
+            events.emit("preview_skipped", reason=r.reason)
+        else:
+            events.emit("preview_failed", reason=r.reason)
+        print(f"preview: {r.status} {r.url or r.reason}")
+    except Exception as e:
+        events.emit("preview_failed", reason=f"{type(e).__name__}: {e}"[:300])
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--project-id", required=True)
@@ -117,6 +137,7 @@ def main():
     integrator = ClaudeCLIAgent(model=project["model"], max_turns=90, budget_usd=min(1.00, a.budget * 2),
                                 timeout_s=45 * 60)
     status = "failed"
+    results = []
     try:
         if resume:
             plan = json.loads((repo / "plan.json").read_text())
@@ -137,6 +158,7 @@ def main():
     finally:
         events.emit("project_finished", status=status, repo=repo_url)
         print(f"project {a.project_id}: {status} ({repo_url})")
+        publish_preview(results, repo, repo_url, events, merged_before=set(project.get("merged") or []))
         if status not in ("done", "rejected"):
             sys.exit(1)
 

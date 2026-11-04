@@ -6,6 +6,9 @@ Event kinds and their data:
     attempt_finished {n, passed, claim, reason, cost_usd, seconds, turns, files_changed}
     plan_ready       {plan}
     plan_decision    {approved, note}
+    preview_ready    {url}      the finished app on Vercel (worker.py, engine/deploy.py)
+    preview_failed   {reason}
+    preview_skipped  {reason}   e.g. no VERCEL_TOKEN
 A sink must never break a run: errors inside a sink are swallowed by `emit`.
 """
 from __future__ import annotations

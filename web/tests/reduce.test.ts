@@ -44,3 +44,44 @@ describe("retry what failed", () => {
     expect(s.feed.at(-1)!.text).toContain("Retrying 1 unfinished task");
   });
 });
+
+describe("preview link", () => {
+  const finished = () => reduce(initialState(), ev(0, "project_finished", null, { status: "done" }));
+
+  it("stores the URL from preview_ready and says the data resets", () => {
+    const s = reduce(finished(), ev(1, "preview_ready", null, { url: "https://studio-x.vercel.app" }));
+    expect(s.preview_url).toBe("https://studio-x.vercel.app");
+    expect(s.status).toBe("done");
+    const last = s.feed.at(-1)!;
+    expect(last.channel).toBe("build");
+    expect(last.tone).toBe("good");
+    expect(last.text).toContain("https://studio-x.vercel.app");
+    expect(last.text).toContain("preview data resets");
+  });
+
+  it("ignores a preview_ready without an https URL", () => {
+    const s = reduce(finished(), ev(1, "preview_ready", null, { url: "javascript:alert(1)" }));
+    expect(s.preview_url).toBeNull();
+  });
+
+  it("reports a failed deploy in the build channel without a link", () => {
+    const s = reduce(finished(), ev(1, "preview_failed", null, { reason: "Vercel build error: next build failed" }));
+    expect(s.preview_url).toBeNull();
+    expect(s.feed.at(-1)).toMatchObject({ channel: "build", tone: "warn" });
+    expect(s.feed.at(-1)!.text).toContain("next build failed");
+  });
+
+  it("mentions a skipped preview quietly", () => {
+    const s = reduce(finished(), ev(1, "preview_skipped", null, { reason: "no VERCEL_TOKEN" }));
+    expect(s.preview_url).toBeNull();
+    expect(s.feed.at(-1)!.channel).toBe("build");
+    expect(s.feed.at(-1)!.tone).toBeUndefined();
+    expect(s.feed.at(-1)!.text).toContain("no VERCEL_TOKEN");
+  });
+
+  it("keeps the link when a later retry starts", () => {
+    let s = reduce(finished(), ev(1, "preview_ready", null, { url: "https://a.vercel.app" }));
+    s = reduce(s, ev(2, "build_resumed", null, { merged: ["PLAN"], retrying: [] }));
+    expect(s.preview_url).toBe("https://a.vercel.app");
+  });
+});
