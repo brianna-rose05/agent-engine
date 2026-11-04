@@ -386,3 +386,13 @@ def test_daytona_exec_long_streams_new_complete_lines():
     state["polls"] = 0
     fake.process = SimpleNamespace(exec=broken)
     assert box.exec_long("x", timeout=600, poll_s=0, sleep=lambda s: None, on_output=lambda t: 1 / 0).code == 0
+
+
+def test_role_rules_fit_web_projects_too():
+    """Regression (Pawfect retry): the QA agent was told "use pytest and the standard library only" on a
+    Next.js project and blocked; the rules now point at the project's own framework."""
+    from engine.agents.prompt import RULES
+    from engine.stacks import NextSupabaseStack
+    assert "pytest and the standard library only" not in RULES["qa"] and "Vitest" in RULES["qa"]
+    assert "raise NotImplementedError" not in RULES["planner"]
+    assert NextSupabaseStack(link_node_modules=False).run_tests("t.ts").startswith("DEBUG_PRINT_LIMIT=1500 ")

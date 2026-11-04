@@ -188,13 +188,17 @@ class NextSupabaseStack(PythonStack):
         # picking the same name would surface as a merge conflict, which the engine already handles.
         return "tests/unit/*"
 
+    # Testing Library prints the whole page when a query fails; a short limit keeps the actual error in the
+    # feedback. Regression (Pawfect build 7): T10's failure output was a wall of inline-styled HTML.
+    VITEST = "DEBUG_PRINT_LIMIT=1500 NO_COLOR=1 npx vitest run"
+
     def run_tests(self, path: str) -> str:
-        return f"NO_COLOR=1 npx vitest run {path}"
+        return f"{self.VITEST} {path}"
 
     def verify_cmd(self, module: str, test_path: str) -> str:
         # Types for the whole repo (hidden tests included), lint for the module, then its hidden tests.
         return (f"npx tsc --noEmit -p . && npx eslint --max-warnings=0 {module} && "
-                f"NO_COLOR=1 npx vitest run {test_path}")
+                f"{self.VITEST} {test_path}")
 
     def plan_check_cmd(self, contracts: list[str], modules: list[str]) -> str:
         # Everything type-checks, and every migration applies to a fresh Postgres.
@@ -239,7 +243,11 @@ Write these files:
    - Server modules export async functions taking `(db: Db, actor: Actor, ...)` (or `(db: Db, ...)` when no
      user is involved). They never read cookies or env; pages pass those in. All SQL is parameterized.
    - UI modules export React components that take everything through props (data and callbacks), so they
-     can be tested without a server. No data fetching inside components.
+     can be tested without a server. No data fetching inside components. Their doc comments must name the
+     exact visible text of every button, heading and field label, the empty and error messages, and the
+     exact arguments each callback receives: QA tests look elements up by that text, and the dev must
+     render it exactly. Regression (Pawfect builds 3-7): the owner setup screens failed in every build
+     because tests and code guessed different labels.
    - Pages (src/app/**/page.tsx) are written by the integrator at the end, not by tasks. Sign-in, sign-up
      and sessions come from the template (src/lib/session.ts); server functions take the user id in Actor.
    - Template files (everything already in src/lib/, src/test/db.ts, src/app/, scripts/ and
