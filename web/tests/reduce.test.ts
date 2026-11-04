@@ -113,3 +113,15 @@ describe("live agent activity", () => {
     expect(s.tasks.PLAN.started).toBe(1); // the timer counts from the first try
   });
 });
+
+describe("integration without a failed screen", () => {
+  it("says so in the feed and leaves the card's status alone", () => {
+    const plan = { project: "x", contracts: [], tasks: [{ id: "T3", title: "Owner screens", module: "src/components/O.tsx", spec: "", depends_on: [] }] };
+    let s = reduce(initialState(), ev(0, "plan_ready", null, { plan }));
+    s = reduce(s, ev(1, "task_queued", "INT", { title: "Integrate", role: "dev", depends_on: [] }));
+    s = reduce(s, ev(2, "task_status", "INT", { status: "without", missing: ["T3"] }));
+    expect(s.tasks.INT.status).toBe("queued");
+    expect(s.feed.at(-1)!.text).toContain("without Owner screens");
+    expect(s.feed.at(-1)!.tone).toBe("warn");
+  });
+});

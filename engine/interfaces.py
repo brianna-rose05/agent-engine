@@ -14,6 +14,8 @@ class Task:
     test_cmd: str                     # run by the ENGINE, never trusted from the agent
     hidden_tests: dict[str, str] = field(default_factory=dict)  # path -> contents, added only at verify time
     depends_on: list[str] = field(default_factory=list)         # task ids that must finish before this starts
+    # task ids to wait for, without being blocked if they fail (the integrator stands in for a failed screen)
+    waits_for: list[str] = field(default_factory=list)
     role: str = "dev"                                           # dev | planner | qa (picks the agent's rules)
     # Custom verification instead of hidden tests: check(box) -> (passed, reason, output). Run by the engine.
     check: Callable[..., tuple[bool, str, str]] | None = field(default=None, repr=False)
@@ -29,6 +31,12 @@ class Task:
 class SandboxUnavailable(RuntimeError):
     """The sandbox provider couldn't give us a sandbox right now (capacity, 5xx, timeouts).
     The engine waits and retries these; every other sandbox error fails fast."""
+
+
+class SandboxLost(SandboxUnavailable):
+    """A sandbox we already had stopped answering (connection dropped, timed out, sandbox gone).
+    Raised by a sandbox's exec/write_file/publish. During an attempt the engine opens a fresh sandbox
+    and redoes the attempt (a couple of times per task) instead of failing the task."""
 
 
 @dataclass

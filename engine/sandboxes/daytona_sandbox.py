@@ -6,12 +6,13 @@ The sandbox is always deleted, even if the attempt crashes, so nothing keeps bil
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import time
 import uuid
 from typing import Callable
 
-from engine.interfaces import ExecResult, SandboxUnavailable
+from engine.interfaces import ExecResult, SandboxLost, SandboxUnavailable
 
 WORKDIR = "repo"
 # Installs what the agent and the checks need inside the sandbox: the Claude Code CLI and pytest.
@@ -38,6 +39,77 @@ LABELS = {"app": "agent-engine"}
 IDLE_STOP_MINUTES = 60
 
 
+# Daytona error classes that mean "the sandbox or the connection to it is gone", not "your command failed".
+# Exact class names: subclasses such as DaytonaFileNotFoundError or DaytonaProcessExecutionTimeoutError are
+# about our request, and retrying would only repeat them.
+LOST_ERRORS = {"DaytonaConnectionError", "DaytonaConnectionTimeoutError", "DaytonaTimeoutError",
+               "DaytonaBadGatewayError", "DaytonaServiceUnavailableError", "DaytonaInternalServerError",
+               "DaytonaRateLimitError", "DaytonaSpotEvictedError", "DaytonaGoneError", "DaytonaNotFoundError",
+               "DaytonaGitTransportFailedError"}
+# Transport errors from the HTTP stack underneath (requests, urllib3, httpx, aiohttp), matched by name so
+# none of them has to be imported.
+TRANSPORT_ERRORS = ("ConnectionError", "RemoteDisconnected", "ProtocolError", "ReadTimeout", "ConnectTimeout",
+                    "TimeoutException", "NetworkError", "ServerDisconnectedError", "ClientOSError")
+# A plain DaytonaError carries the transport failure only in its message. Regression: "DaytonaError: Remote
+# end closed connection without response" mid-attempt ended a task as "error".
+LOST_MESSAGE = re.compile(r"remote end closed connection|connection (aborted|reset|refused|closed)|"
+                          r"max retries exceeded|read timed out|timed out|bad gateway|service unavailable|"
+                          r"sandbox .*(not found|is not running|not started|stopped|destroyed)", re.I)
+
+
+def is_lost(e: BaseException) -> bool:
+    """True if `e` means the sandbox can't be reached any more (connection dropped, timed out, sandbox gone),
+    so a fresh sandbox is worth trying. Errors in our own request (bad path, failed command) are False."""
+    if isinstance(e, SandboxLost):
+        return True
+    names = [c.__name__ for c in type(e).__mro__]
+    if type(e).__name__ in LOST_ERRORS:
+        return True
+    if type(e).__name__ == "DaytonaError":
+        return bool(LOST_MESSAGE.search(str(e)))
+    if any(n.startswith("Daytona") for n in names):
+        return False                                    # a specific Daytona error about our request
+    return isinstance(e, (ConnectionError, TimeoutError)) or any(n in TRANSPORT_ERRORS for n in names)
+
+
+def lost_wrapped(fn):
+    """Re-raise connection-level failures of a sandbox call as SandboxLost, so the engine can tell a dead
+    sandbox (redo the attempt in a fresh one) from a real error (stop)."""
+    def call(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except SandboxUnavailable:
+            raise
+        except Exception as e:
+            if is_lost(e):
+                raise SandboxLost(f"{type(e).__name__}: {e}") from e
+            raise
+    call.__name__, call.__doc__ = fn.__name__, fn.__doc__
+    return call
+
+
+# Seconds between delete tries while Daytona says the sandbox is changing state (starting, stopping).
+DELETE_RETRIES = (2, 5, 10, 20)
+
+
+def delete_with_retry(delete, sleep=time.sleep) -> None:
+    """Call `delete()`, retrying while the sandbox is mid state change. Regression: worker logs showed
+    "DaytonaConflictError: Failed to remove sandbox: Sandbox state change in progress", and the sandbox
+    lived on until its idle timer. A sandbox that is already gone counts as deleted."""
+    for wait_s in (*DELETE_RETRIES, None):
+        try:
+            delete()
+            return
+        except Exception as e:
+            name = type(e).__name__
+            if name in ("DaytonaNotFoundError", "DaytonaGoneError"):
+                return                                   # ephemeral sandboxes delete themselves when they stop
+            changing = name == "DaytonaConflictError" or "state change in progress" in str(e).lower()
+            if wait_s is None or not changing:
+                raise
+            sleep(wait_s)
+
+
 def web_params():
     from daytona import CreateSandboxFromImageParams, Resources
     return CreateSandboxFromImageParams(image="node:22-bookworm", resources=Resources(cpu=2, memory=3, disk=8),
@@ -62,6 +134,7 @@ class DaytonaSandbox:
         self.create_params = create_params
         self._client = client
         self.sb = None
+        self.sleep = time.sleep
 
     def __enter__(self):
         if self._client is None:
@@ -102,19 +175,28 @@ class DaytonaSandbox:
         try:
             for box in self._client.list(query):
                 if getattr(box, "name", None) == name:
-                    self._client.delete(box, timeout=120)
+                    delete_with_retry(lambda: self._client.delete(box, timeout=120), self.sleep)
         except Exception:
             pass                                 # best effort; the end-of-job cleanup catches the rest
 
     def __exit__(self, *exc):
         if self.sb is not None:
             try:
-                self.sb.delete()
+                delete_with_retry(self.sb.delete, self.sleep)
             finally:
                 self.sb = None
 
+    @lost_wrapped
     def exec(self, cmd: str, timeout: int = 600, env: dict[str, str] | None = None) -> ExecResult:
-        r = self.sb.process.exec(cmd, cwd=WORKDIR, env=env, timeout=timeout)   # Daytona's default timeout is only 10s
+        t0 = time.monotonic()
+        try:
+            r = self.sb.process.exec(cmd, cwd=WORKDIR, env=env, timeout=timeout)   # Daytona's default is only 10s
+        except Exception as e:
+            # The command outran its own timeout: that's the command's result (as in the local sandbox),
+            # not a lost sandbox, so it must not trigger a fresh sandbox and a redo.
+            if is_lost(e) and time.monotonic() - t0 >= timeout:
+                return ExecResult(124, f"timed out after {timeout}s")
+            raise
         return ExecResult(r.exit_code, r.result or "")
 
     def exec_long(self, cmd: str, timeout: int, env: dict[str, str] | None = None, poll_s: float = 15,
@@ -164,9 +246,11 @@ class DaytonaSandbox:
             pass
         return seen + complete.count("\n")
 
+    @lost_wrapped
     def write_file(self, path: str, content: str) -> None:
         self.sb.fs.upload_file(content.encode(), f"{WORKDIR}/{path}")
 
+    @lost_wrapped
     def publish(self, message: str) -> None:
         r = self.exec(f"git add -A && git commit -qm {shlex.quote(message)}")
         if r.code != 0:

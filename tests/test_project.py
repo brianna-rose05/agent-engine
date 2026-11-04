@@ -271,12 +271,39 @@ def test_web_integration_that_crashes_a_page_or_skips_one_is_sent_back(tmp_path)
     assert "FAIL /book -> 404 (required page is missing)" in tries[1].test_output
 
 
+@web
+def test_web_integration_goes_ahead_without_a_failed_screen(tmp_path):
+    """Regression (Pawfect builds 6-7): the owner screens never passed their tests and blocked the whole app.
+    Server features stay required; a failed screen component no longer blocks the integrator."""
+    from engine.events import Emitter, ListSink
+    from engine.stacks import NextSupabaseStack
+
+    class BrokenPicker(ScriptedTeam):
+        def run(self, task, box, attempt, feedback):
+            rep = super().run(task, box, attempt, feedback)
+            if task.id == "T3":
+                box.write_file("src/components/SlotPicker.tsx", 'export function SlotPicker(): null { return null; }\n')
+            return rep
+
+    sink = ListSink()
+    stack = NextSupabaseStack()
+    repo = build_project_repo(tmp_path / "r", stack)
+    eng = Engine(repo, BrokenPicker(WEB), lambda t, n: LocalWorktreeSandbox(repo, t.id, n), events=Emitter(sink))
+    _, results = run_project((WEB / "description.md").read_text(), repo, eng, stack=stack, parallel=3)
+    res = {r.task: r.status for r in results}
+    assert res["T3"] == "failed" and res["INT"] == "merged", res
+    assert [e.data for e in sink.events if e.task_id == "INT" and e.data.get("status") == "without"] == \
+        [{"status": "without", "missing": ["T3"]}]
+    from worker import finished
+    assert finished(results) == "done"
+
+
 def test_integration_task_only_for_web_and_scoped_to_pages():
     from engine.project import integration_task
     from engine.stacks import NextSupabaseStack
     plan = json.loads((WEB / "plan" / "plan.json").read_text())
     t = integration_task(plan, "A booking site", NextSupabaseStack(link_node_modules=False))
-    assert t.depends_on == ["T1", "T2", "T3"] and t.check and not t.hidden_tests
+    assert t.depends_on == ["T1", "T2"] and t.waits_for == ["T3"] and t.check and not t.hidden_tests
     assert t.can_edit == ["src/app/*", "src/middleware.ts", "tests/unit/*"]
     assert "/sign-up" in t.spec and "src/server/bookings.ts" in t.spec and "next build" in t.spec
     assert not default_stack().integration

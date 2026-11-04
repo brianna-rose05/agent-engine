@@ -88,6 +88,14 @@ def publish_preview(results, repo: Path, repo_url: str, events, deploy=None, mer
         events.emit("preview_failed", reason=f"{type(e).__name__}: {e}"[:300])
 
 
+def finished(results) -> str:
+    """Done when everything merged, or when the integration merged: then the app works, and any screen whose
+    own feature failed was rebuilt by the integrator (the board still shows that feature as needing you)."""
+    if all(r.status in ("merged", "passed") for r in results):
+        return "done"
+    return "done" if any(r.task == "INT" and r.status == "merged" for r in results) else "failed"
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--project-id", required=True)
@@ -144,7 +152,7 @@ def main():
             results = resume_project(plan, project["description"], repo, engine, set(project.get("merged") or []),
                                      stack=stack, parallel=stack.parallel, save_tests=out / "hidden_tests",
                                      referee=referee, integrator=integrator)
-            status = "done" if all(r.status in ("merged", "passed") for r in results) else "failed"
+            status = finished(results)
             return
         plan, results = run_project(project["description"], repo, engine, "python3",
                                     parallel=stack.parallel, approve=wait_for_decision(backend.project), stack=stack,
@@ -154,7 +162,7 @@ def main():
         elif len(results) == 1:
             status = "rejected"
         else:
-            status = "done" if all(r.status in ("merged", "passed") for r in results) else "failed"
+            status = finished(results)
     finally:
         events.emit("project_finished", status=status, repo=repo_url)
         print(f"project {a.project_id}: {status} ({repo_url})")

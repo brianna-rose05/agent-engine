@@ -53,7 +53,15 @@ export function reduce(s: ProjectState, e: EngineEvent): ProjectState {
     }
     case "task_status": {
       if (!task) break;
-      const d = e.data as { status: string; attempt?: number; error?: string };
+      const d = e.data as { status: string; attempt?: number; error?: string; missing?: string[] };
+      if (d.status === "without") {          // the integrator goes ahead without screens whose tests failed
+        const names = (d.missing ?? []).map((id) => plan?.tasks.find((p) => p.id === id)?.title ?? id);
+        say({ who: "engine", channel: "build", task_id: task.id, tone: "warn",
+              text: `Putting the app together without ${names.join(", ")}: ${names.length > 1 ? "those screens" : "that screen"} ` +
+                    `didn't pass ${names.length > 1 ? "their" : "its"} hidden tests, so the integrator builds a simpler version, ` +
+                    `checked only by the app build and page checks.` });
+        break;
+      }
       const next: TaskState = { ...task, status: d.status, since: e.t, attempt: d.attempt ?? task.attempt };
       if (d.error) next.error = d.error;
       if (d.status === "working") {

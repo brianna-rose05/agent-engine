@@ -311,6 +311,8 @@ How to wire it (read AGENTS.md first):
 - Sign-up, sign-in, sign-out and password changes use getAuth() from src/lib/session.ts inside server actions;
   after sign-up, call the project's own account functions (for example, create the profile).
 - Components that need callbacks: pass server actions, or write a small "use client" wrapper in src/app/.
+- If a component module still throws "Not implemented" (its feature didn't pass its tests), don't import it:
+  build that screen yourself in src/app/ from its doc comments.
 - Send people to the right page for their role and keep others out, using the project's server functions.
 - A simple header with links to the main pages in src/app/layout.tsx, styled with the look in the brief.
 - You may only edit files under src/app/, src/middleware.ts, and your own tests under tests/unit/.
@@ -332,14 +334,19 @@ def integration_check(stack: PythonStack, pages: list[str]):
 
 
 def integration_task(plan: dict, description: str, stack: PythonStack, agent=None) -> Task:
-    """The last task: pages, sign-in and server actions that connect every merged feature."""
+    """The last task: pages, sign-in and server actions that connect every merged feature. It needs every
+    server module, but only waits for UI components: if one never passed its tests, the integrator builds that
+    screen itself inside src/app/, still checked by the build and page checks. Regression (Pawfect builds 6-7):
+    one screen component that kept failing its tests blocked the whole app every time."""
     pages = [r for r in plan.get("pages", []) if isinstance(r, str)] or ["/"]
+    ui = [t["id"] for t in plan["tasks"] if stack.is_ui_module(t["module"])]
     modules = "\n".join(f"- {t['module']}: {t['title']}" for t in plan["tasks"])
     return Task("INT", "Integrate: pages, sign-in and data",
                 INTEGRATION_SPEC.format(description=description.strip(), modules=modules, pages=", ".join(pages),
                                         check=stack.integration_check_cmd(pages)),
                 list(stack.integration_scope), "", role="dev", agent=agent,
-                depends_on=[t["id"] for t in plan["tasks"]], check=integration_check(stack, pages))
+                depends_on=[t["id"] for t in plan["tasks"] if t["id"] not in ui], waits_for=ui,
+                check=integration_check(stack, pages))
 
 
 # -------------------------------------------------------------------- run
@@ -400,6 +407,7 @@ def resume_tasks(plan: dict, description: str, stack: PythonStack, merged: set[s
     todo = [t for t in tasks if feature(t.id) not in merged]
     for t in todo:
         t.depends_on = [d for d in t.depends_on if feature(d) not in merged]
+        t.waits_for = [d for d in t.waits_for if feature(d) not in merged]
     return todo
 
 

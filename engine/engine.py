@@ -14,7 +14,8 @@ from threading import Lock
 from typing import Callable
 
 from engine.events import Emitter
-from engine.interfaces import Agent, Sandbox, SandboxUnavailable, Task
+from engine.gitlock import repo_lock
+from engine.interfaces import Agent, Sandbox, SandboxLost, SandboxUnavailable, Task
 
 MAX_ATTEMPTS = 3
 OK = ("merged", "passed")      # statuses that let dependent tasks start
@@ -45,6 +46,11 @@ def failure_excerpt(output: str, limit: int = 4000) -> str:
 # free memory. Regression: the fifth web run gave up on a retry after ~12 minutes.
 SANDBOX_RETRIES = (30, 60, 120, 240, 300, 300, 300, 300)
 
+# Seconds to wait before redoing an attempt whose sandbox dropped mid-way (SandboxLost); one entry per
+# retry, so at most two per task. These are not the agent's tries. Regression: a Daytona "Remote end
+# closed connection" in the middle of an attempt ended the task as "error" and blocked all its dependents.
+INFRA_RETRIES = (10, 30)
+
 
 class GraphError(ValueError):
     """The task plan itself is broken (unknown dependency, cycle). Caught before any money is spent."""
@@ -56,9 +62,9 @@ def check_graph(tasks: list[Task]) -> None:
         raise GraphError("duplicate task ids")
     known = set(ids)
     for t in tasks:
-        if missing := [d for d in t.depends_on if d not in known]:
+        if missing := [d for d in [*t.depends_on, *t.waits_for] if d not in known]:
             raise GraphError(f"{t.id} depends on {', '.join(missing)}, which is not in this run")
-    deps = {t.id: list(t.depends_on) for t in tasks}
+    deps = {t.id: [*t.depends_on, *t.waits_for] for t in tasks}
     state: dict[str, int] = {}                     # 1 = visiting, 2 = done
 
     def visit(tid: str, path: list[str]) -> None:
@@ -125,6 +131,7 @@ class Engine:
         self.repo = Path(repo)
         self.events = events or Emitter()
         self.sandbox_retries = SANDBOX_RETRIES
+        self.infra_retries = INFRA_RETRIES
         self.sleep = time.sleep
         self.clock = time.monotonic             # paces agent_activity events
         self.agent = agent
@@ -176,9 +183,10 @@ class Engine:
         agent = task.agent or self.agent
         disputes, last_fixed = 0, False
         try:
-            for n in range(1, (task.max_attempts or self.max_attempts) + 1):
+            attempts = _Attempts(task.max_attempts or self.max_attempts)
+            for n in attempts:
                 t0 = time.time()
-                with self._open_sandbox(task, n) as box:
+                with self._open_sandbox(task, n, attempts) as box:
                     for path, body in task.setup_files.items():
                         box.write_file(path, body)
                     emit("task_status", task.id, status="working", attempt=n)
@@ -204,6 +212,8 @@ class Engine:
                         res.status = self.merge(box.branch, task.id)
                         return res
                     feedback = f"Your previous attempt was rejected: {reason}." + (f"\nTest output:\n{out}" if out else "")
+                if attempts.redo:                    # the sandbox dropped mid-attempt: run that attempt again
+                    continue
                 # One review per task, plus a second when the first found and fixed bad tests (they often come in
                 # batches). Regression: Pawfect build 6, the referee fixed one batch and the dev then lost the
                 # feature to two more tests whose setup the schema refused.
@@ -246,14 +256,16 @@ class Engine:
         finally:
             activity.flush()
 
-    def _open_sandbox(self, task: Task, n: int):
+    def _open_sandbox(self, task: Task, n: int, attempts: "_Attempts | None" = None):
         """Create and enter a sandbox, waiting and retrying while the provider is at capacity
-        (spec: provider outages retry with backoff instead of failing the task)."""
+        (spec: provider outages retry with backoff instead of failing the task). Once entered, a
+        SandboxLost inside the attempt is handed to _sandbox_lost, which may redo the attempt."""
+        on_lost = (lambda e: self._sandbox_lost(task, n, attempts, e)) if attempts is not None else None
         for wait_s in (*self.sandbox_retries, None):
             box = self.make_sandbox(task, n)
             try:
                 box.__enter__()
-                return _Entered(box)
+                return _Entered(box, on_lost)
             except Exception as e:
                 # Only the provider being unavailable (capacity, 502s, timeouts) is worth waiting for. Our own
                 # setup failing, or a local git error, fails fast. Regression: retrying every error turned a
@@ -263,8 +275,22 @@ class Engine:
                 self.events.emit("task_status", task.id, status="waiting_for_sandbox", attempt=n, error=str(e)[:200])
                 self.sleep(wait_s)
 
+    def _sandbox_lost(self, task: Task, n: int, attempts: "_Attempts", e: Exception) -> bool:
+        """A sandbox stopped answering during an attempt. That's the provider, not the agent: open a fresh
+        one and redo the attempt, a few times per task. True means the attempt will run again."""
+        used = attempts.infra_used
+        if used >= len(self.infra_retries):
+            return False                                        # out of retries: the task errors as before
+        attempts.infra_used, attempts.redo = used + 1, True
+        self.events.emit("task_status", task.id, status="sandbox_lost", attempt=n, retry=used + 1,
+                         error=str(e)[:200])
+        self.sleep(self.infra_retries[used])
+        return True
+
     def merge(self, branch: str, task_id: str) -> str:
-        with self.merge_lock:                                   # one merge at a time, main never half-merged
+        # merge_lock: one merge at a time, main never half-merged. repo_lock: no worktree is being added or
+        # removed while main moves (git keeps no lock of its own around that bookkeeping).
+        with self.merge_lock, repo_lock(self.repo):
             if self.remote:
                 git(["fetch", "-q", "origin", f"{branch}:{branch}"], self.repo)
             m = git(["merge", "--no-ff", "-q", branch, "-m", f"merge {task_id}"], self.repo)
@@ -299,7 +325,10 @@ class Engine:
                             del pending[tid]
                             blocked_any = True
                 for tid, t in list(pending.items()):
-                    if all(d in results for d in t.depends_on):
+                    if all(d in results for d in [*t.depends_on, *t.waits_for]):
+                        missing = [d for d in t.waits_for if results[d].status not in OK]
+                        if missing:                         # it goes ahead, but the app should say so
+                            self.events.emit("task_status", tid, status="without", missing=missing)
                         running[pool.submit(self.run_task, t)] = tid
                         del pending[tid]
                 if not running:
@@ -348,17 +377,41 @@ def _takes(fn, name: str) -> bool:
     return name in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
-class _Entered:
-    """Context manager around a sandbox that is already entered; exiting cleans it up."""
+class _Attempts:
+    """Attempt numbers 1..limit. An attempt whose sandbox was lost (`redo` set) runs again under the same
+    number, so infrastructure failures never use up the agent's tries."""
 
-    def __init__(self, box):
-        self.box = box
+    def __init__(self, limit: int):
+        self.limit, self.redo, self.infra_used = limit, False, 0
+
+    def __iter__(self):
+        n = 1
+        while n <= self.limit:
+            self.redo = False
+            yield n
+            if not self.redo:
+                n += 1
+
+
+class _Entered:
+    """Context manager around a sandbox that is already entered; exiting cleans it up. A SandboxLost
+    raised inside is offered to `on_lost`; if that returns True the attempt will be redone, so the
+    error is swallowed (and so is a failing cleanup of the dead sandbox)."""
+
+    def __init__(self, box, on_lost=None):
+        self.box, self.on_lost = box, on_lost
 
     def __enter__(self):
         return self.box
 
-    def __exit__(self, *exc):
-        return self.box.__exit__(*exc)
+    def __exit__(self, exc_type, exc, tb):
+        if isinstance(exc, SandboxLost) and self.on_lost is not None:
+            try:
+                self.box.__exit__(exc_type, exc, tb)
+            except Exception:
+                pass                    # the sandbox is already unreachable; its own expiry cleans it up
+            return self.on_lost(exc)
+        return self.box.__exit__(exc_type, exc, tb)
 
 
 def results_to_json(results: list[Result]) -> str:

@@ -4,7 +4,7 @@ import subprocess
 from benchmark.suite import HERE, build_repo, load_tasks
 from engine.agents.scripted import ReferenceAgent, SloppyAgent
 from engine.engine import Engine
-from engine.interfaces import AgentReport, SandboxUnavailable
+from engine.interfaces import AgentReport, SandboxLost, SandboxUnavailable
 from engine.sandboxes.local_worktree import LocalWorktreeSandbox
 
 
@@ -253,3 +253,165 @@ def test_agents_without_a_progress_argument_still_run(tmp_path):
                  events=Emitter(sink))
     assert eng.run_task(load_tasks(["B1"])[0]).status == "merged"
     assert not [e for e in sink.events if e.kind == "agent_activity"]
+# ------------------------------------------------------------- infrastructure failures mid-attempt
+class Drops(LocalWorktreeSandbox):
+    """A sandbox whose connection drops during the agent's work, `drops` times in all."""
+    left = 0
+    opened: list = []
+
+    def __enter__(self):
+        Drops.opened.append(self.branch)
+        return super().__enter__()
+
+    def write_file(self, path, content):
+        if Drops.left:
+            Drops.left -= 1
+            raise SandboxLost("DaytonaError: Remote end closed connection without response")
+        super().write_file(path, content)
+
+
+def drop_engine(repo, drops, sink):
+    from engine.events import Emitter
+    Drops.left, Drops.opened = drops, []
+    eng = Engine(repo, ReferenceAgent(HERE / "solutions"), lambda t, n: Drops(repo, t.id, n), events=Emitter(sink))
+    naps = []
+    eng.sleep = naps.append
+    return eng, naps
+
+
+def test_a_dropped_sandbox_mid_attempt_is_redone_in_a_fresh_one(tmp_path):
+    """Regression (Daytona build): "Remote end closed connection" in the middle of an attempt ended the task as
+    "error" and blocked everything after it. A lost sandbox is the provider's fault: open a fresh one and redo
+    that attempt, without using up one of the agent's tries, and tell the app why it's taking longer."""
+    from engine.events import ListSink
+    repo = build_repo(tmp_path / "r")
+    sink = ListSink()
+    eng, naps = drop_engine(repo, 1, sink)
+    r = eng.run_task(load_tasks(["B6"])[0])
+    assert r.status == "merged" and r.first_pass and [a.n for a in r.attempts] == [1]
+    assert Drops.opened == ["task/B6-a1", "task/B6-a1"] and naps == [10]
+    lost = [e.data for e in sink.events if e.data.get("status") == "sandbox_lost"]
+    assert len(lost) == 1 and lost[0]["retry"] == 1 and "Remote end closed" in lost[0]["error"]
+    assert "B6" in git(repo, "log", "--oneline", "main")
+
+
+def test_a_sandbox_that_keeps_dropping_errors_after_two_retries(tmp_path):
+    from engine.events import ListSink
+    repo = build_repo(tmp_path / "r")
+    eng, naps = drop_engine(repo, 99, ListSink())
+    r = eng.run_task(load_tasks(["B6"])[0])
+    assert r.status == "error" and "SandboxLost" in r.error and not r.attempts
+    assert len(Drops.opened) == 3 and naps == [10, 30]          # the first try plus two fresh sandboxes
+
+
+def test_infra_retries_are_per_task_not_per_attempt(tmp_path):
+    """The agent's own failed tries still count as usual; a drop on a later try is redone under the same number."""
+    from engine.events import ListSink
+    repo = build_repo(tmp_path / "r")
+
+    class SloppyThenDrop(Drops):
+        def write_file(self, path, content):
+            if self.branch.endswith("-a2") and Drops.left:
+                Drops.left -= 1
+                raise SandboxLost("DaytonaConnectionError: connection reset")
+            LocalWorktreeSandbox.write_file(self, path, content)
+
+    from engine.events import Emitter
+    Drops.left, Drops.opened = 1, []
+    eng = Engine(repo, SloppyAgent(HERE / "solutions"), lambda t, n: SloppyThenDrop(repo, t.id, n),
+                 events=Emitter(ListSink()))
+    eng.sleep = lambda s: None
+    r = eng.run_task(load_tasks(["B6"])[0])
+    assert r.status == "merged" and [a.n for a in r.attempts] == [1, 2] and not r.attempts[0].passed
+    assert Drops.opened == ["task/B6-a1", "task/B6-a2", "task/B6-a2"]
+
+
+def test_other_errors_mid_attempt_still_stop_at_once(tmp_path):
+    """Only a lost sandbox is retried. A bug or a broken environment would fail the same way again."""
+    repo = build_repo(tmp_path / "r")
+
+    class Buggy(LocalWorktreeSandbox):
+        def write_file(self, path, content):
+            raise KeyError("a bug in our own code")
+
+    opened = []
+    eng = Engine(repo, ReferenceAgent(HERE / "solutions"), lambda t, n: (opened.append(n), Buggy(repo, t.id, n))[1])
+    eng.sleep = lambda s: (_ for _ in ()).throw(AssertionError("should not wait"))
+    r = eng.run_task(load_tasks(["B6"])[0])
+    assert r.status == "error" and "KeyError" in r.error and opened == [1]
+
+
+def test_setup_errors_mid_attempt_are_not_retried(tmp_path):
+    repo = build_repo(tmp_path / "r")
+    task = load_tasks(["B6"])[0]
+    task.test_cmd = "definitely-not-a-command"                        # exit 127: the checks can't run
+    eng = engine(repo, ReferenceAgent(HERE / "solutions"))
+    eng.sleep = lambda s: (_ for _ in ()).throw(AssertionError("should not wait"))
+    r = eng.run_task(task)
+    assert r.status == "error" and "SetupError" in r.error
+
+
+# ------------------------------------------------------------- git on the shared repo
+def test_parallel_worktrees_never_trip_over_each_other(tmp_path):
+    """Regression (CI flakes in test_project): `git worktree add` and `remove` running in parallel race on
+    .git/worktrees itself ("could not create directory of '.git/worktrees/T1-a1'", "failed to read
+    .git/worktrees/T2-a1/gitdir"); no .lock file is involved, so the old retry missed it and the task
+    ended as "error". Every change to the shared repo now goes through one lock."""
+    from concurrent.futures import ThreadPoolExecutor
+    repo = build_repo(tmp_path / "r")
+
+    def churn(k):
+        errors = []
+        for i in range(40):
+            try:
+                with LocalWorktreeSandbox(repo, f"W{k}", i) as box:
+                    box.write_file(f"w{k}.txt", str(i))
+            except Exception as e:
+                errors.append(str(e))
+        return errors
+
+    with ThreadPoolExecutor(8) as pool:
+        errors = [e for errs in pool.map(churn, range(8)) for e in errs]
+    assert errors == []
+    assert git(repo, "worktree", "list").count("\n") == 1                 # only the main checkout is left
+
+
+def test_merges_and_worktree_changes_take_turns(tmp_path):
+    """A merge into main and a sandbox being created or removed never run at the same time."""
+    import threading
+    import time
+    from engine.gitlock import repo_lock
+    repo = build_repo(tmp_path / "r")
+    eng = engine(repo, ReferenceAgent(HERE / "solutions"))
+    with LocalWorktreeSandbox(repo, "B6", 1) as box:
+        box.write_file("note.txt", "x")
+        box.publish("note")
+        done = []
+        with repo_lock(repo):
+            t = threading.Thread(target=lambda: done.append(eng.merge(box.branch, "B6")))
+            t.start()
+            time.sleep(0.5)
+            assert not done                                              # waiting for the lock
+            u = threading.Thread(target=lambda: done.append(LocalWorktreeSandbox(repo, "X", 1).__enter__().branch))
+            u.start()
+            time.sleep(0.3)
+            assert not done
+        t.join(10)
+        u.join(10)
+    assert sorted(done) == ["merged", "task/X-a1"]
+
+
+def test_a_failed_commit_is_an_error_not_a_silent_merge(tmp_path):
+    """publish ignored a failed `git commit`, so the unchanged branch merged as "merged" with none of the
+    work on main. It raises now; an agent that committed its own work still publishes fine."""
+    import pytest
+    repo = build_repo(tmp_path / "r")
+    with LocalWorktreeSandbox(repo, "B6", 1) as box:
+        box.write_file("a.txt", "1")
+        box.exec("git add -A && git commit -qm 'agent committed it'")
+        box.publish("nothing left to commit")                              # fine
+        box.write_file("b.txt", "2")
+        box.exec("git config core.hooksPath hooks && mkdir -p hooks && printf '#!/bin/sh\\nexit 1\\n' > hooks/pre-commit"
+                 " && chmod +x hooks/pre-commit")
+        with pytest.raises(RuntimeError, match="commit failed"):
+            box.publish("blocked by a hook")

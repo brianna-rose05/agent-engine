@@ -105,6 +105,9 @@ Use Python 3.11+ standard library only. Every file must import cleanly."""
 
     integration = False      # web apps get a final integrator task that wires pages (NextSupabaseStack)
 
+    def is_ui_module(self, module: str) -> bool:
+        return False
+
     def missing_imports(self, box, test_body: str) -> list[str]:
         """Project files a test imports that don't exist (and that no task will build). Python: not checked."""
         return []
@@ -129,6 +132,9 @@ class NextSupabaseStack(PythonStack):
 
     # ---------------------------------------------------------------- integration
     integration = True
+
+    def is_ui_module(self, module: str) -> bool:
+        return module.startswith("src/components/")
     # Pages, server actions, layout and small client wrappers, plus the integrator's own tests.
     integration_scope = ["src/app/*", "src/middleware.ts", "tests/unit/*"]
 

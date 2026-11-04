@@ -9,6 +9,9 @@
 Needs DAYTONA_API_KEY. Never prints keys."""
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))     # run as a script from anywhere
 
 LABEL = {"app": "agent-engine"}
 ENGINE_START = datetime(2026, 11, 2, tzinfo=timezone.utc)
@@ -16,6 +19,7 @@ ENGINE_START = datetime(2026, 11, 2, tzinfo=timezone.utc)
 
 def main():
     from daytona import Daytona, ListSandboxesQuery
+    from engine.sandboxes.daytona_sandbox import delete_with_retry
     mode = sys.argv[1] if len(sys.argv) > 1 else "list"
     d = Daytona()
     boxes = list(d.list(ListSandboxesQuery(labels=LABEL) if mode == "delete-engine" else None))
@@ -29,7 +33,7 @@ def main():
             mode == "delete-unlabeled-engine" and "app" not in labels and created and created >= ENGINE_START)
         if doomed:
             try:
-                d.delete(b, timeout=120)
+                delete_with_retry(lambda: d.delete(b, timeout=120))   # waits out "state change in progress"
                 deleted += 1
                 print("  deleted")
             except Exception as e:  # keep going; report what's left
