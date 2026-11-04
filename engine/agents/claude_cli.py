@@ -36,7 +36,8 @@ class ClaudeCLIAgent:
     def run(self, task: Task, box: Sandbox, attempt: int, feedback: str | None) -> AgentReport:
         if not self.api_key:
             return AgentReport("error: ANTHROPIC_API_KEY is not set")
-        r = box.exec(self.command(task, feedback), timeout=self.timeout_s,
+        run = getattr(box, "exec_long", box.exec)       # cloud sandboxes poll instead of holding a connection
+        r = run(self.command(task, feedback), timeout=self.timeout_s,
                      # CI=1: test runners like Vitest exit instead of waiting for file changes
                      env={"ANTHROPIC_API_KEY": self.api_key, "CI": "1"})
         data = parse_cli_json(r.output)

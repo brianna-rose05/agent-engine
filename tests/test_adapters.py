@@ -166,6 +166,39 @@ def test_daytona_lifecycle():
     assert fake.deleted                                                 # nothing left billing
 
 
+def test_daytona_long_commands_run_in_background_and_survive_dropped_polls():
+    """Regression (Pawfect build 4): Daytona dropped the 18-minute planner request and the project errored."""
+    fake = FakeDaytonaSandbox()
+    polls = {"n": 0}
+
+    def exec_(cmd, cwd=None, env=None, timeout=None):
+        fake.log.append(("exec", cmd, cwd, timeout, env))
+        if cmd.startswith("cat /tmp/run-") and cmd.endswith(".code 2>/dev/null"):
+            polls["n"] += 1
+            if polls["n"] == 1:
+                raise ConnectionError("Remote end closed connection without response")
+            return SimpleNamespace(exit_code=0, result="" if polls["n"] < 3 else "0\n")
+        if cmd.startswith("cat /tmp/run-"):
+            return SimpleNamespace(exit_code=0, result='{"result": "DONE"}')
+        return SimpleNamespace(exit_code=0, result="")
+
+    fake.process = SimpleNamespace(exec=exec_)
+    box = DaytonaSandbox("u", "T1", 1, github_token="t", client=FakeClient(fake))
+    box.__enter__()
+    r = box.exec_long("claude -p hi", timeout=600, env={"ANTHROPIC_API_KEY": "k"}, poll_s=0, sleep=lambda s: None)
+    assert (r.code, r.output) == (0, '{"result": "DONE"}') and polls["n"] == 3
+    start = next(e for e in fake.log if "nohup" in e[1])
+    assert start[4] == {"ANTHROPIC_API_KEY": "k"} and "k" not in start[1].replace("hi", "")   # key only in env
+    assert all(e[3] for e in fake.log if e[0] == "exec")
+
+
+def test_cli_agent_uses_exec_long_when_the_sandbox_has_it():
+    box = FakeBox(json.dumps({"subtype": "success", "result": "DONE", "num_turns": 2}))
+    used = []
+    box.exec_long = lambda cmd, timeout, env=None: (used.append(cmd), box.exec(cmd, timeout, env))[1]
+    assert ClaudeCLIAgent(api_key="k").run(TASK, box, 1, None).claim == "done" and used
+
+
 def test_daytona_branch_names_are_unique_per_run():
     """Regression (second Daytona run): branches from run 1 already existed on GitHub, so
     run 2's pushes to the same names were rejected as non-fast-forward."""

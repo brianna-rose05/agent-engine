@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import time
 import uuid
 
 from engine.interfaces import ExecResult, SandboxUnavailable
@@ -110,6 +111,30 @@ class DaytonaSandbox:
     def exec(self, cmd: str, timeout: int = 600, env: dict[str, str] | None = None) -> ExecResult:
         r = self.sb.process.exec(cmd, cwd=WORKDIR, env=env, timeout=timeout)   # Daytona's default timeout is only 10s
         return ExecResult(r.exit_code, r.result or "")
+
+    def exec_long(self, cmd: str, timeout: int, env: dict[str, str] | None = None, poll_s: float = 15,
+                  sleep=time.sleep) -> ExecResult:
+        """Run a long command (an agent) in the background and poll for it. Holding one HTTP request open
+        for many minutes is fragile: the Pawfect planner lost its connection after 18 minutes and the
+        whole project errored. A dropped poll is just retried."""
+        tag = uuid.uuid4().hex[:10]
+        out, code = f"/tmp/run-{tag}.out", f"/tmp/run-{tag}.code"
+        script = f"{cmd} > {out} 2>&1; echo $? > {code}"
+        self.exec(f"nohup bash -c {shlex.quote(script)} > /dev/null 2>&1 &", timeout=60, env=env)
+        deadline, misses = time.monotonic() + timeout, 0
+        while time.monotonic() < deadline:
+            sleep(poll_s)
+            try:
+                r = self.exec(f"cat {code} 2>/dev/null", timeout=60)
+                misses = 0
+            except Exception:
+                misses += 1
+                if misses >= 8:                  # about 2 minutes of failed polls: the sandbox is gone
+                    raise
+                continue
+            if r.output.strip():
+                return ExecResult(int(r.output.strip().splitlines()[-1]), self.exec(f"cat {out}", timeout=120).output)
+        return ExecResult(124, f"timed out after {timeout}s")
 
     def write_file(self, path: str, content: str) -> None:
         self.sb.fs.upload_file(content.encode(), f"{WORKDIR}/{path}")
