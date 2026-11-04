@@ -168,3 +168,14 @@ describe("change request rules", () => {
     expect(nextChangeNumber([{ n: 1, text: "a", at: 0 }, { n: 2, text: "b", at: 1 }])).toBe(3);
   });
 });
+
+describe("a change that already holds", () => {
+  it("is reported in the build channel as needing no code", () => {
+    const plan = { project: "x", contracts: [], tasks: [{ id: "T1", title: "Salon", module: "src/server/salon.ts", spec: "", depends_on: [] }] };
+    let s = reduce(initialState(), { t: 0, kind: "plan_ready", task_id: null, data: { plan } });
+    s = reduce(s, { t: 1, kind: "task_queued", task_id: "C1T2", data: { title: "Slots in Pacific time", role: "dev", depends_on: [] } });
+    s = reduce(s, { t: 2, kind: "task_status", task_id: "C1T2", data: { status: "already_done" } });
+    expect(s.feed.at(-1)!.text).toContain("already holds on the current code");
+    expect(s.feed.at(-1)!.tone).toBe("good");
+  });
+});

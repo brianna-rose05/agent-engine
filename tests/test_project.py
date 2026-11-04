@@ -755,6 +755,47 @@ def test_change_qa_may_pass_on_unchanged_behavior_but_one_test_must_fail(tmp_pat
     assert res["C1T1"].status == res["C1T2"].status == "merged"
 
 
+REGRESSION_ONLY = (
+    "from datetime import date\nfrom fees import late_fee_cents\nfrom models import Loan, Tool\n"
+    "L = Loan(1, 1, 1, date(2026, 11, 1), date(2026, 11, 5))\nT = Tool(1, 'd', 300)\n"
+    "def test_a():\n    assert late_fee_cents(L, T, date(2026, 11, 5)) == 0\n"
+    "def test_b():\n    assert late_fee_cents(L, T, date(2026, 11, 1)) == 0\n"
+    "def test_c():\n    assert late_fee_cents(L, T, date(2027, 1, 1)) == 5000\n")
+
+
+@pytest.mark.parametrize("verdict", ["YES", "NO"])
+def test_change_that_already_holds_is_confirmed_by_a_reviewer_then_checked_on_main(tmp_path, built_repo, verdict):
+    """Regression (Pawfect change 1): the time-zone fix was complete once the change's migration set the salon's
+    zone, every QA test passed on the current code, the old rule demanded a failing test, and 4 of 5 tasks were
+    lost. Now a suite that passes in full is accepted if a different model confirms it tests the change; the
+    engine then runs the task's checks on main and skips the dev agent. Without that confirmation, the old rule
+    stands (tests of unchanged behavior alone must never declare a change done)."""
+    devs = []
+
+    class AllPass(ScriptedTeam):
+        def run(self, task, box, attempt, feedback):
+            if task.id == "C1T1":
+                devs.append(attempt)
+            rep = super().run(task, box, attempt, feedback)
+            if task.id == "C1T1-qa":
+                box.write_file(task.can_edit[0], REGRESSION_ONLY)
+            return rep
+
+    class Reviewer:
+        def run(self, task, box, attempt, feedback):
+            box.write_file(task.can_edit[0], verdict + "\n")
+            return AgentReport("done")
+
+    _, _, res, events = go_change(tmp_path, built_repo, AllPass(FIXTURE), referee=Reviewer())
+    if verdict == "YES":
+        assert res["C1T1-qa"].status == "passed" and res["C1T1"].status == "merged" and not devs
+        assert [e.task_id for e in events if e.data.get("status") == "already_done"] == ["C1T1"]
+    else:
+        assert res["C1T1-qa"].status == "failed"
+        assert "every test passes on the current code" in res["C1T1-qa"].attempts[0].reason
+        assert not [e for e in events if e.data.get("status") == "already_done"]
+
+
 @pytest.mark.parametrize("fees", [
     'def late_fee_cents(loan, tool, today):\n    """Free first day; then (days late - 1) * fee, capped at 5000."""\n'
     '    raise NotImplementedError\n',

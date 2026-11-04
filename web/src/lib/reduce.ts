@@ -87,6 +87,11 @@ export function reduce(s: ProjectState, e: EngineEvent): ProjectState {
     case "task_status": {
       if (!task) break;
       const d = e.data as { status: string; attempt?: number; error?: string; missing?: string[] };
+      if (d.status === "already_done") {     // a change that already holds on main: checked, no code needed
+        say({ who: "engine", channel: "build", task_id: task.id, tone: "good",
+              text: `${name(task)}: the change already holds on the current code. Its hidden tests pass on main, so no new code was needed.` });
+        break;
+      }
       if (d.status === "without") {          // the integrator goes ahead without screens whose tests failed
         const names = (d.missing ?? []).map((id) => plan?.tasks.find((p) => p.id === id)?.title ?? id);
         say({ who: "engine", channel: "build", task_id: task.id, tone: "warn",

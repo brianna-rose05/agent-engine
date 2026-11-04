@@ -174,7 +174,8 @@ def summary_counts(output: str) -> dict[str, int]:
     return {k: int(n) for n, k in re.findall(r"(\d+) (passed|failed|errors?)", tail)}
 
 
-def qa_check(test_path: str, stack: PythonStack, bucket: dict[str, str], mode: str = "new"):
+def qa_check(test_path: str, stack: PythonStack, bucket: dict[str, str], mode: str = "new",
+             state: dict | None = None, confirm: Callable[[str], bool] | None = None):
     """Tests are useful only if they run, and fail now because the code isn't written yet. For a change to
     working code (mode "change") tests of behavior that stays may pass, but at least one must fail: the change
     isn't made yet, so a suite that passes in full checks nothing new. The unimplemented-marker rule is for
@@ -192,11 +193,20 @@ def qa_check(test_path: str, stack: PythonStack, bucket: dict[str, str], mode: s
         if stack.collection_failed(r.code, r.output) or n["errors"]:
             return False, "the tests don't run cleanly (import, syntax or setup errors)", tail
         if mode == "change":
-            if not n["failed"]:
-                return False, ("every test passes on the current code, so none of them checks the change; at least "
-                               "one test must exercise the changed behavior and fail until it is made"), tail
             if n["passed"] + n["failed"] < MIN_QA_TESTS:
                 return False, f"write at least {MIN_QA_TESTS} tests", tail
+            # All passing is fine when the change already holds, e.g. a migration in the change's contract set the
+            # data the code reads. The dev task then only confirms it on main. Regression (Pawfect change 1): the
+            # time-zone fix was complete once migration 0003 set the salon's zone; QA was required to write a
+            # failing test for it, couldn't, and 4 of 5 tasks were lost.
+            # A suite that passes in full is accepted only if a reviewer (a different model) confirms it really
+            # tests the change; otherwise tests of unchanged behavior alone would declare the change done.
+            if not n["failed"]:
+                if confirm is None or not confirm(body.output):
+                    return False, ("every test passes on the current code, so none of them checks the change; at least "
+                                   "one test must exercise the changed behavior and fail until it is made"), tail
+            if state is not None:
+                state["satisfied"] = not n["failed"]
         else:
             if n["passed"]:
                 return False, (f"{n['passed']} test(s) already pass against the unimplemented stub, so they "
@@ -271,6 +281,35 @@ def make_dispute(t: dict, test_path: str, stack: PythonStack, bucket: dict[str, 
     return dispute
 
 
+CONFIRM_SPEC = """QA wrote acceptance tests for change {tid} ({title}) to {module}, and every one of them passes on
+the current code, before any dev work. That is fine only if the change is already in place (for example a migration
+in this change already set the data the code reads). Decide which it is.
+
+What the change is: {spec}
+
+The tests are in {test_path}. Read them, the doc comments in {module}, and the change's contract files.
+Write {verdict} with exactly one line: YES if the tests check the changed behavior described above (so their passing
+shows the change already holds), or NO if they only check behavior that didn't change.
+End with DONE."""
+
+
+def make_confirm(t: dict, test_path: str, engine: Engine, referee):
+    """When every QA test passes on the current code, a different model checks that they test the change."""
+    verdict = f"review/{t['id']}-verdict.txt"
+
+    def confirm(tests: str) -> bool:
+        def check(box: Sandbox) -> tuple[bool, str, str]:
+            said = box.exec(f"cat {shlex.quote(verdict)} 2>/dev/null").output.strip().upper()
+            return said.startswith("YES"), "the reviewer did not confirm the tests check the change", said[:200]
+        review = Task(f"{t['id']}-confirm", f"Confirm the change already holds: {t['title']}",
+                      CONFIRM_SPEC.format(tid=t["id"], title=t["title"], module=t["module"], spec=t["spec"],
+                                          test_path=test_path, verdict=verdict),
+                      [verdict, test_path], "", role="qa", merge=False, max_attempts=1, agent=referee,
+                      setup_files={test_path: tests}, check=check)
+        return engine.run_task(review).status == "passed"
+    return confirm
+
+
 # ------------------------------------------------------------------ tasks
 def tasks_from_plan(plan: dict, python_or_stack: "str | PythonStack" = "python3",
                     engine: Engine | None = None, referee=None) -> list[Task]:
@@ -286,6 +325,7 @@ def feature_tasks(t: dict, by_id: dict[str, dict], contracts: str, stack: Python
     works, so its tests and the dev's instructions say what may stay and what must change."""
     test_path = stack.qa_test_path(t["module"])
     hidden: dict[str, str] = {}                      # filled by the QA check, read by the dev's verify
+    state: dict = {}                                 # QA check: does the change already hold on main?
     deps = t.get("depends_on", [])
     if mode == "change":
         qa_spec = (f"Write acceptance tests for change {t['id']} ({t['title']}) to {t['module']}, in {test_path}.\n\n"
@@ -293,7 +333,9 @@ def feature_tasks(t: dict, by_id: dict[str, dict], contracts: str, stack: Python
                    "comments now describe the behavior after this change, but its code still does the old thing. "
                    "Test the changed behavior exactly as the doc comments say: at least one test must fail on the "
                    "current code, because the change isn't made yet. Tests of behavior that stays the same may "
-                   "pass; add a few where the change could break it."
+                   "pass; add a few where the change could break it. If the code already does what the doc comments "
+                   "say (for example a migration in this change already set the data it reads), write the tests "
+                   "anyway; they may all pass, and the engine will confirm that on main."
                    + (f" If the doc comments describe a function that doesn't exist yet, `import {t['module'][:-3]}` "
                       f"and call `{t['module'][:-3]}.<function>(...)`, so one missing name doesn't stop the other "
                       "tests from running." if t["module"].endswith(".py") else "")
@@ -311,7 +353,9 @@ def feature_tasks(t: dict, by_id: dict[str, dict], contracts: str, stack: Python
     builds_on = "".join(f"\n- {d}: {by_id[d]['module']} ({by_id[d]['title']})" for d in deps)
     return [
         Task(f"{t['id']}-qa", f"Acceptance tests for {t['title']}", qa_spec,
-             [test_path], "", role="qa", check=qa_check(test_path, stack, hidden, mode), merge=False),
+             [test_path], "", role="qa", merge=False,
+             check=qa_check(test_path, stack, hidden, mode, state,
+                            confirm=make_confirm(t, test_path, engine, referee) if engine and referee else None)),
         Task(t["id"], t["title"],
              dev_spec + f"\n\nYou may only edit {t['module']}. If you add your own tests, they must match "
              f"{stack.dev_test_glob(t['module'])} (any other file gets your work rejected)."
@@ -320,6 +364,7 @@ def feature_tasks(t: dict, by_id: dict[str, dict], contracts: str, stack: Python
              [t["module"], stack.dev_test_glob(t["module"])],
              stack.verify_cmd(t["module"], test_path),
              hidden_tests=hidden, depends_on=[*deps, f"{t['id']}-qa"],
+             already_done=(lambda: bool(state.get("satisfied"))) if mode == "change" else None,
              dispute=make_dispute(t, test_path, stack, hidden, engine, referee, mode) if engine and referee else None)]
 
 
@@ -372,7 +417,11 @@ just built, tested and merged. Update the pages for this change and keep everyth
 
 The user asked for: {request}
 What changes: {summary}
-Modules this change touched: {touched}"""
+Modules this change touched: {touched}
+
+Some of the project's own tests in tests/unit/ may still expect the behavior this change replaced (the full test
+run in the check below will show them). Update those expectations to the new behavior; never delete a test of
+behavior that stays."""
 
 
 def integration_task(plan: dict, description: str, stack: PythonStack, agent=None, change: dict | None = None) -> Task:

@@ -183,6 +183,10 @@ class Engine:
         agent = task.agent or self.agent
         disputes, last_fixed = 0, False
         try:
+            if task.already_done is not None and task.already_done() and self._holds_on_main(task):
+                emit("task_status", task.id, status="already_done")
+                res.status = "merged"                 # nothing to merge: main already does it, and we checked
+                return res
             attempts = _Attempts(task.max_attempts or self.max_attempts)
             for n in attempts:
                 t0 = time.time()
@@ -242,6 +246,16 @@ class Engine:
         except Exception as e:                                  # infra problems are reported, not hidden
             res.status, res.error = "error", f"{type(e).__name__}: {e}"
         return res
+
+    def _holds_on_main(self, task: Task) -> bool:
+        """QA said a change already holds (its tests all pass on the current code). Don't take its word for it:
+        run the task's own checks, hidden tests included, on a fresh sandbox of main."""
+        with self._open_sandbox(task, 0) as box:
+            for path, body in task.hidden_tests.items():
+                box.write_file(path, body)
+            r = box.exec(task.test_cmd)
+            box.exec("rm -f " + " ".join(shlex.quote(p) for p in task.hidden_tests))
+        return r.code == 0
 
     def _run_agent(self, agent: Agent, task: Task, box: Sandbox, n: int, feedback: str | None):
         """Run the agent, streaming what it is doing as throttled `agent_activity` events when it can report
