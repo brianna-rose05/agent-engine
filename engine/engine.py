@@ -26,6 +26,12 @@ TECH_LEAD_FAILED_QUESTION = ("The tech lead couldn't review this feature after t
                              "try again as it is, or should the feature be described differently or dropped?")
 RETRY_FAILED_QUESTION = ("The dev still couldn't finish this feature after the tech lead's guidance. How exactly "
                          "should it work, or should it be simplified or dropped?")
+# The code reviewer (docs/reviewer.md): reviews a feature's passing attempt before it merges.
+REVIEW_CHANGES = "the reviewer requested changes"   # the reason on an attempt the reviewer sent back
+MAX_REVIEW_COMMENTS = 8
+SECOND_REVIEW_NOTE = "Only a security problem can hold a feature back a second time, so these comments don't block it."
+REVIEW_ERROR_NOTE = "The reviewer couldn't review this attempt, so it merges on its passing tests."
+SCRUBBED_NOTE = "Its comments pointed at the hidden tests, which the dev never sees, so they were dropped."
 OK = ("merged", "passed")      # statuses that let dependent tasks start
 
 
@@ -193,6 +199,7 @@ class Engine:
         agent = task.agent or self.agent
         disputes, last_fixed = 0, False
         review, last_diff = None, ""                 # the tech lead's verdict (once per task), the last failed diff
+        code_changes = 0                             # the code reviewer's "changes" verdicts so far (docs/reviewer.md)
         try:
             verdict = task.already_done() if task.already_done is not None else None
             if verdict == "unconfirmed" and self._out_of_budget(res):
@@ -211,6 +218,7 @@ class Engine:
                 if self._out_of_budget(res):          # no new attempt once the project's limit is reached
                     return res
                 t0 = time.time()
+                to_review = None                      # a passing attempt, published, waiting for its code review
                 with self._open_sandbox(task, n, attempts) as box:
                     for path, body in task.setup_files.items():
                         box.write_file(path, body)
@@ -230,27 +238,45 @@ class Engine:
                     ok, reason, changed, out = self.verify(task, box)
                     if not ok and reason == "made no changes" and rep.claim.startswith("error"):
                         reason = rep.claim.removeprefix("error: ")   # say why: the agent itself failed
-                    a = Attempt(n, rep.claim, ok, reason, changed, out,
-                                round(time.time() - t0, 1), rep.cost_usd, rep.turns)
-                    res.attempts.append(a)
-                    # The failure itself travels with the event, so the app (and a person deciding what to
-                    # do with a failed task) can see why. Regression: the first live build lost this.
-                    emit("attempt_finished", task.id, n=n, passed=ok, claim=rep.claim, reason=reason,
-                         cost_usd=a.cost_usd, seconds=a.seconds, turns=a.turns, files_changed=changed,
-                         output="" if ok else out[-3000:])
-                    if ok:
-                        if not task.merge:
-                            res.status = "passed"
-                            return res
-                        emit("task_status", task.id, status="merging", attempt=n)
+                    if ok and task.merge and task.review_code is not None:
+                        # A different model reviews it before it merges. The work is published now and this sandbox
+                        # closes, so a task never holds two sandboxes while its review runs.
+                        to_review = (self._attempt_diff(box), changed, out, round(time.time() - t0, 1))
                         box.publish(f"{task.id}: {task.title}")
-                        res.status = self.merge(box.branch, task.id)
-                        return res
-                    feedback = f"Your previous attempt was rejected: {reason}." + (f"\nTest output:\n{out}" if out else "")
-                    if task.review_failure is not None:      # for the tech lead, before the sandbox is gone
-                        last_diff = self._attempt_diff(box)
+                        branch = box.branch
+                    else:
+                        self._attempt(res, task, n, rep, ok, reason, changed, out, round(time.time() - t0, 1))
+                        if ok:
+                            if not task.merge:
+                                res.status = "passed"
+                                return res
+                            emit("task_status", task.id, status="merging", attempt=n)
+                            box.publish(f"{task.id}: {task.title}")
+                            res.status = self.merge(box.branch, task.id)
+                            return res
+                        feedback = f"Your previous attempt was rejected: {reason}." + (f"\nTest output:\n{out}" if out else "")
+                        if task.review_failure is not None:      # for the tech lead, before the sandbox is gone
+                            last_diff = self._attempt_diff(box)
                 if attempts.redo:                    # the sandbox dropped mid-attempt: run that attempt again
                     continue
+                if to_review is not None:
+                    # The code review (docs/reviewer.md). Its verdict decides the attempt: approve merges it; changes
+                    # makes it a failed attempt whose feedback is the reviewer's comments.
+                    diff, changed, out, seconds = to_review
+                    v = self._code_review(task, n, diff, second=code_changes > 0)
+                    if v["verdict"] == "approve":
+                        self._attempt(res, task, n, rep, True, "", changed, out, seconds)
+                        emit("task_status", task.id, status="merging", attempt=n)
+                        res.status = self.merge(branch, task.id)
+                        return res
+                    code_changes += 1
+                    ok, reason = False, REVIEW_CHANGES
+                    listed = "\n".join(f"- {c}" for c in v["comments"])
+                    self._attempt(res, task, n, rep, False, reason, changed, listed, seconds)
+                    feedback = ("Your previous attempt passed the acceptance tests, but the code reviewer (a different "
+                                "model) requested changes. Fix these, and keep everything that already works:\n" + listed)
+                    if task.review_failure is not None:      # for the tech lead, if every try ends up failing
+                        last_diff = diff
                 # One review per task, plus a second when the first found and fixed bad tests (they often come in
                 # batches). Regression: Pawfect build 6, the referee fixed one batch and the dev then lost the
                 # feature to two more tests whose setup the schema refused.
@@ -293,6 +319,42 @@ class Engine:
         except Exception as e:                                  # infra problems are reported, not hidden
             res.status, res.error = "error", f"{type(e).__name__}: {e}"
         return res
+
+    def _attempt(self, res: Result, task: Task, n: int, rep, ok: bool, reason: str, changed: list[str], out: str,
+                 seconds: float) -> Attempt:
+        """Record a finished attempt and tell the app. The failure itself travels with the event, so the app (and a
+        person deciding what to do with a failed task) can see why. Regression: the first live build lost this."""
+        a = Attempt(n, rep.claim, ok, reason, changed, out, seconds, rep.cost_usd, rep.turns)
+        res.attempts.append(a)
+        self.events.emit("attempt_finished", task.id, n=n, passed=ok, claim=rep.claim, reason=reason,
+                         cost_usd=a.cost_usd, seconds=a.seconds, turns=a.turns, files_changed=changed,
+                         output="" if ok else out[-3000:])
+        return a
+
+    def _code_review(self, task: Task, n: int, diff: str, second: bool) -> dict:
+        """The code reviewer's verdict on a passing attempt (docs/reviewer.md), normalized: {verdict, comments, note?,
+        review_error?, skipped?}. A passing feature is never lost to the review itself: a crashed or unusable review
+        approves (review_error), and so does a spending limit that doesn't allow one (skipped). After one "changes"
+        verdict (`second`), only a security problem may block again."""
+        emit = self.events.emit
+        if self.budget is not None and not self.budget.allows_start():
+            emit("code_review", task.id, verdict="approve", comments=[], attempt=n, skipped=True)
+            return {"verdict": "approve", "comments": [], "skipped": True}
+        emit("task_status", task.id, status="reviewing_code", attempt=n)
+        try:
+            v = task.review_code(diff, second)
+        except Exception as e:
+            v = {"review_error": True, "note": f"{type(e).__name__}: {e}"}
+        v = normalize_code_review(v, task.hidden_tests)
+        if second and v["verdict"] == "changes" and not any(_security(c) for c in v["comments"]):
+            v = {**v, "verdict": "approve", "note": SECOND_REVIEW_NOTE}
+        event = {"verdict": v["verdict"], "comments": v["comments"], "attempt": n}
+        if v.get("note"):
+            event["note"] = v["note"]
+        if v.get("review_error"):
+            event["review_error"] = True
+        emit("code_review", task.id, **event)
+        return v
 
     def _attempt_diff(self, box: Sandbox) -> str:
         """The failed attempt's changes against the commit it started from, new files included, for the tech
@@ -502,6 +564,36 @@ def normalize_review(v) -> dict:
         question = TECH_LEAD_FAILED_QUESTION
     out["question"] = question[:280]                  # "Needs you: " + question fits Result.error's 300
     return out
+
+
+def normalize_code_review(v, hidden_tests=()) -> dict:
+    """A code review the engine can act on, whatever came back: {verdict: approve | changes, comments, note?,
+    review_error?}. Comments are one plain line each, at most MAX_REVIEW_COMMENTS, and any line naming a hidden test
+    file (its path or its file name) is dropped: comments reach the dev as feedback, and the dev never sees the hidden
+    tests. Anything unusable approves with review_error, so a broken review never loses a passing feature."""
+    if not isinstance(v, dict) or v.get("verdict") not in ("approve", "changes") or v.get("review_error"):
+        why = " ".join(str(v.get("note") or "").split())[:200] if isinstance(v, dict) else ""
+        return {"verdict": "approve", "comments": [], "review_error": True,
+                "note": REVIEW_ERROR_NOTE + (f" ({why})" if why else "")}
+    raw = v.get("comments")
+    raw = [raw] if isinstance(raw, str) else raw if isinstance(raw, list) else []
+    hidden = [h for p in hidden_tests for h in {p, p.rsplit("/", 1)[-1]} if h]
+    comments = []
+    for c in raw:
+        lines = [ln for ln in str(c).splitlines() if not any(h in ln for h in hidden)]
+        text = " ".join(" ".join(lines).split())[:500]
+        if text:
+            comments.append(text)
+    comments = comments[:MAX_REVIEW_COMMENTS]
+    if v["verdict"] == "changes" and not comments:
+        if not any(str(c).strip() for c in raw):        # "changes" with nothing to change: not a usable review
+            return {"verdict": "approve", "comments": [], "review_error": True, "note": REVIEW_ERROR_NOTE}
+        return {"verdict": "approve", "comments": [], "note": SCRUBBED_NOTE}
+    return {"verdict": v["verdict"], "comments": comments}
+
+
+def _security(comment: str) -> bool:
+    return comment.strip().lower().startswith("security:")
 
 
 def _strongest(agent) -> bool:

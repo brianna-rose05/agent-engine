@@ -5,10 +5,11 @@ import { useState } from "react";
 import { AnimatePresence, LayoutGroup, motion } from "motion/react";
 import { ArrowRight, CircleCheck, Clock3, RefreshCw, X } from "lucide-react";
 import { useProject } from "@/lib/project-store";
-import { COLUMNS, INTEGRATION, features, money, type Column, type Feature } from "@/lib/reduce";
+import { COLUMNS, INTEGRATION, REVIEW_CHANGES, features, money, type Column, type Feature } from "@/lib/reduce";
 import type { TaskState } from "@/lib/types";
 import { Avatar, Mono, TaskStatusPill } from "@/components/ui";
 import { RetriedOn, TechLeadThread } from "@/components/TechLead";
+import { ReviewerMessage, ReviewerReading } from "@/components/Reviewer";
 import { Feed } from "@/components/Feed";
 import { ChangeRequestBox } from "@/components/ChangeRequest";
 import { QuickChangeBox } from "@/components/QuickChange";
@@ -141,6 +142,7 @@ function Card({ f, now, onOpen, titles }: { f: Feature; now: number; onOpen: () 
     : f.column === "tests" ? `Writing tests · ${since(now, f.qa)}s`
     : f.column === "building" ? `Building · ${since(now, f.dev)}s`
     : f.reviewing ? "Tech lead reviewing the failed tries"
+    : f.code_reviewing ? "In code review: a different model reads the changes"
     : f.column === "checking" ? (integ ? "Building the app and opening every page" : "Running hidden tests")
     : f.column === "done" ? `Verified · ${money(f.cost_usd)}`
     : f.question ? `Tech lead asks: ${f.question}`
@@ -168,7 +170,8 @@ function Card({ f, now, onOpen, titles }: { f: Feature; now: number; onOpen: () 
             <CircleCheck size={14} strokeWidth={1.8} />
           </span>
         ) : (
-          <Avatar who={f.column === "saved" ? "PM" : f.reviewing || f.question ? "tech lead" : f.active ?? (f.column === "attention" ? "engine" : testsDone ? "dev" : "qa")}
+          <Avatar who={f.column === "saved" ? "PM" : f.reviewing || f.question ? "tech lead" : f.code_reviewing ? "reviewer"
+            : f.active ?? (f.column === "attention" ? "engine" : testsDone ? "dev" : "qa")}
             size={24} active={!!f.active} />
         )}
         <span className="text-[11px] font-medium text-faint">{f.id}</span>
@@ -201,24 +204,36 @@ function Card({ f, now, onOpen, titles }: { f: Feature; now: number; onOpen: () 
 }
 
 function Drawer({ f, onClose }: { f: Feature; onClose: () => void }) {
-  const row = (label: string, t?: TaskState) => (
+  const row = (label: string, t?: TaskState) => {
+    // The thread of the build: each try, then what the code reviewer said about it (docs/reviewer.md), in order.
+    const reviews = label === "Build" ? t?.code_reviews ?? [] : [];
+    const tries = [...new Set([...(t?.attempts ?? []).map((a) => a.n), ...reviews.map((r) => r.attempt)])].sort((x, y) => x - y);
+    const reading = label === "Build" && t?.status === "reviewing_code" && !reviews.some((r) => r.attempt === t.attempt)
+      ? t.attempt : null;
+    return (
     <div className="rounded-xl border border-line p-3">
       <p className="mb-2 flex items-center gap-2 text-sm font-medium">
         <Avatar who={label === "Tests" ? "qa" : "dev"} size={22} /> {label}
         <span className="ml-auto"><TaskStatusPill status={t?.status} /></span>
       </p>
-      {t?.attempts.length ? (
+      {t && (tries.length || reading) ? (
         <ol className="flex flex-col gap-1.5">
-          {t.attempts.map((a) => (
-            <li key={a.n} className="flex items-start gap-2 text-[13px]">
+          {tries.flatMap((n) => {
+            const a = t.attempts.find((x) => x.n === n);
+            const review = reviews.find((r) => r.attempt === n);
+            const items = [];
+            if (a) items.push(
+            <li key={`try-${a.n}`} className="flex items-start gap-2 text-[13px]">
               <span className={`mt-1.5 size-1.5 shrink-0 rounded-full ${a.passed ? "bg-dev" : "bg-check"}`} />
               <span className="flex-1">
-                Try {a.n}: {a.passed ? "passed the engine's checks" : `rejected (${a.reason})`}
+                Try {a.n}: {a.passed ? "passed the engine's checks"
+                  : a.reason === REVIEW_CHANGES ? "passed the engine's checks, but the reviewer asked for changes"
+                  : `rejected (${a.reason})`}
                 <span className="block text-xs text-faint">
                   {a.seconds}s · {a.turns} turns · {money(a.cost_usd)}
                   {a.files_changed.length ? ` · ${a.files_changed.join(", ")}` : ""}
                 </span>
-                {!a.passed && a.output ? (
+                {!a.passed && a.output && a.reason !== REVIEW_CHANGES ? (
                   <details className="mt-1">
                     <summary className="cursor-pointer text-xs text-muted hover:text-ink">See what failed</summary>
                     <pre className="mt-1 max-h-64 overflow-auto rounded-lg bg-canvas p-2 font-mono text-[11px] leading-snug whitespace-pre-wrap text-ink/80 scroll-thin">
@@ -227,8 +242,11 @@ function Drawer({ f, onClose }: { f: Feature; onClose: () => void }) {
                   </details>
                 ) : null}
               </span>
-            </li>
-          ))}
+            </li>);
+            if (review) items.push(<li key={`review-${n}`}><ReviewerMessage review={review} /></li>);
+            return items;
+          })}
+          {reading !== null && <li key="reading"><ReviewerReading attempt={reading} /></li>}
         </ol>
       ) : (
         <p className="flex items-center gap-1.5 text-[13px] text-faint">
@@ -236,7 +254,8 @@ function Drawer({ f, onClose }: { f: Feature; onClose: () => void }) {
         </p>
       )}
     </div>
-  );
+    );
+  };
   return (
     <>
       <motion.div className="fixed inset-0 z-30 bg-ink/10" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} />

@@ -446,24 +446,123 @@ def owner_feedback(answer: str, question: str = "") -> str:
     return f"The project owner answered the tech lead's question{asked}: {str(answer).strip()[:2000]}"
 
 
+# ------------------------------------------------------------------ code reviewer
+# docs/reviewer.md. When a feature's dev attempt passes every check, a different model from the dev reviews its diff
+# before it merges, for what the tests can't catch. The engine runs it (Task.review_code) and acts on the verdict.
+REVIEWER_SPEC = """A dev agent finished task {tid} ({title}) and its work passed every automated check, including the
+hidden acceptance tests. You are the code reviewer, a different model from the dev. Read the change and decide whether
+it can merge.
+
+What the dev had to do ({module}):
+{spec}
+
+Shared contracts (read-only): {contracts}.
+The hidden acceptance tests are in {test_path}, so you can see what is already tested. {module} in this repo is
+{base}; the dev's work is not in this repo, only in the diff below.
+
+The dev's changes (git diff):
+{diff}
+{second}
+Write {verdict} with exactly this JSON and nothing else:
+{{"verdict": "approve" or "changes",
+  "comments": ["<one short, specific, plain-English comment: what is wrong, where, and what to do>", ...]}}
+- "changes" ONLY for a real problem the tests didn't catch:
+  - behavior the spec requires that is missing or wrong
+  - a security problem: a missing sign-in, role or ownership check; one user's data reachable by another user;
+    a secret in the code; SQL built from input. Start each such comment with "Security:".
+  - data loss: deleting or overwriting data the spec says to keep
+  - code that is a stub or a placeholder instead of the real behavior
+- Never ask for changes over style, naming, formatting, structure or preferences. When unsure, approve.
+- "approve" may carry comments as notes; they don't block anything. Keep comments few (at most 8).
+- Never quote, name or describe the hidden tests or their file: your comments go to the dev, who must not see them.
+  Point at the spec and the code instead.
+Don't change any other file. End with DONE."""
+
+REVIEWER_SECOND = """
+This is your second review of this feature in this run: you already asked for changes once. Now ask for changes ONLY
+for a security problem, with each such comment starting "Security:". For anything else, approve; you may still note
+it in the comments.
+"""
+
+
+def parse_code_review(text: str) -> dict | None:
+    """The reviewer's verdict file, read leniently (code fences, text around the JSON, a single comment as a string),
+    or None when it isn't usable: no JSON object, an unknown verdict, or "changes" without a comment."""
+    m = re.search(r"\{.*\}", text or "", re.S)
+    if not m:
+        return None
+    try:
+        v = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(v, dict):
+        return None
+    verdict = str(v.get("verdict", "")).strip().lower()
+    raw = v.get("comments")
+    raw = [raw] if isinstance(raw, str) else raw if isinstance(raw, list) else []
+    comments = [c for c in (" ".join(str(x).split()) for x in raw if isinstance(x, (str, int, float))) if c]
+    if verdict == "approve" or (verdict == "changes" and comments):
+        return {"verdict": verdict, "comments": comments}
+    return None
+
+
+def make_reviewer(t: dict, test_path: str, hidden: dict[str, str], contracts: str, engine: Engine, reviewer,
+                  mode: str = "new"):
+    """Task.review_code for a feature's dev task: runs the code reviewer as its own task (on main, the hidden tests
+    written in so it can read them, nothing merged) and returns its verdict. A review that doesn't finish, or writes
+    no usable verdict, comes back as review_error (the engine then approves: a broken review never loses a feature)."""
+    verdict = f"review/{t['id']}-review.json"
+    reviews = [0]
+
+    def review(diff: str, second: bool = False) -> dict:
+        found: dict = {}
+
+        def check(box: Sandbox) -> tuple[bool, str, str]:
+            said = box.exec(f"cat {shlex.quote(verdict)} 2>/dev/null").output
+            v = parse_code_review(said)
+            if v is None:
+                return False, "the reviewer's verdict is missing or not valid", said[-500:]
+            found.update(v)
+            return True, "", said[-500:]
+
+        reviews[0] += 1                                   # each review needs its own sandbox branch name
+        rid = f"{t['id']}-codereview" + (str(reviews[0]) if reviews[0] > 1 else "")
+        spec = REVIEWER_SPEC.format(
+            tid=t["id"], title=t["title"], module=t["module"], spec=t["spec"], contracts=contracts,
+            test_path=test_path, verdict=verdict, diff=diff.strip() or "(no changes)",
+            second=REVIEWER_SECOND if second else "",
+            base=("the code before this change (the change's doc comments describe the new behavior)"
+                  if mode == "change" else "the planner's stub (its doc comments are the spec)"))
+        task = Task(rid, f"Code review: {t['title']}", spec, ["*"], "", role="reviewer", merge=False, max_attempts=1,
+                    agent=reviewer, setup_files=dict(hidden), check=check)
+        r = engine.run_task(task)
+        if r.status == "passed" and found:
+            return found
+        why = r.error or (r.attempts[-1].reason if r.attempts else r.status)
+        return {"review_error": True, "note": f"The review didn't finish: {why}"[:300]}
+    return review
+
+
 # ------------------------------------------------------------------ tasks
 def tasks_from_plan(plan: dict, python_or_stack: "str | PythonStack" = "python3",
                     engine: Engine | None = None, referee=None, tech_lead=None, stronger_dev=None,
-                    retro: str = "") -> list[Task]:
+                    retro: str = "", reviewer=None) -> list[Task]:
     stack = python_or_stack if isinstance(python_or_stack, PythonStack) else default_stack(python_or_stack)
     by_id = {t["id"]: t for t in plan["tasks"]}
     contracts = ", ".join(plan["contracts"]) or "none"
     return [task for t in plan["tasks"]
             for task in feature_tasks(t, by_id, contracts, stack, engine, referee,
-                                      tech_lead=tech_lead, stronger_dev=stronger_dev, retro=retro)]
+                                      tech_lead=tech_lead, stronger_dev=stronger_dev, retro=retro, reviewer=reviewer)]
 
 
 def feature_tasks(t: dict, by_id: dict[str, dict], contracts: str, stack: PythonStack, engine: Engine | None,
-                  referee, mode: str = "new", tech_lead=None, stronger_dev=None, retro: str = "") -> list[Task]:
+                  referee, mode: str = "new", tech_lead=None, stronger_dev=None, retro: str = "",
+                  reviewer=None) -> list[Task]:
     """A feature's QA task and dev task. mode "new" builds a stub; mode "change" changes a module that already
     works, so its tests and the dev's instructions say what may stay and what must change. With a `tech_lead`, a
     dev task that fails every try is reviewed before it gives up (docs/tech-lead.md); `stronger_dev` makes the
-    tech lead's extra tries when it asks for a stronger model."""
+    tech lead's extra tries when it asks for a stronger model. With a `reviewer`, a dev attempt that passes every
+    check is code reviewed by it before it merges (docs/reviewer.md)."""
     test_path = stack.qa_test_path(t["module"])
     hidden: dict[str, str] = {}                      # filled by the QA check, read by the dev's verify
     state: dict = {}                                 # QA check: does the change already hold on main?
@@ -509,7 +608,9 @@ def feature_tasks(t: dict, by_id: dict[str, dict], contracts: str, stack: Python
              dispute=make_dispute(t, test_path, stack, hidden, engine, referee, mode) if engine and referee else None,
              review_failure=make_tech_lead(t, test_path, hidden, contracts, engine, tech_lead, mode, retro)
              if engine and tech_lead and mode in ("new", "change") else None,
-             stronger_agent=stronger_dev if engine and tech_lead and mode in ("new", "change") else None)]
+             stronger_agent=stronger_dev if engine and tech_lead and mode in ("new", "change") else None,
+             review_code=make_reviewer(t, test_path, hidden, contracts, engine, reviewer, mode)
+             if engine and reviewer and mode in ("new", "change") else None)]
 
 
 # ------------------------------------------------------------- integration
@@ -609,10 +710,11 @@ def run_project(description: str, repo: Path, engine: Engine, python: str = "pyt
                 parallel: int = 4, approve: Approver = auto_approve,
                 stack: PythonStack | None = None, save_tests: Path | None = None,
                 referee=None, integrator=None, tech_lead=None, stronger_dev=None,
-                deferred=()) -> tuple[dict | None, list[Result]]:
+                deferred=(), reviewer=None) -> tuple[dict | None, list[Result]]:
     """Plan, then pause for approval, then QA + build. `approve(plan)` returns (approved, note); in the
     app it waits for the user's click, offline it approves automatically. `referee` is the agent that settles
     test disputes; a different model from QA's, so work is never graded only by the model that wrote it.
+    `reviewer` code reviews each feature's passing attempt before it merges (docs/reviewer.md).
     `deferred`: task ids the owner saved for later (docs/pm.md), or a function of the plan that returns them,
     called after approval (the owner picks them on the approval screen). They are not built."""
     emit = engine.events.emit
@@ -631,7 +733,7 @@ def run_project(description: str, repo: Path, engine: Engine, python: str = "pyt
     saved = saved_ids(plan, deferred(plan) if callable(deferred) else deferred)
     emit_deferred(engine, plan, saved)
     tasks = tasks_from_plan(without(plan, saved), stack, engine=engine, referee=referee, tech_lead=tech_lead,
-                            stronger_dev=stronger_dev)
+                            stronger_dev=stronger_dev, reviewer=reviewer)
     if stack.integration:
         tasks.append(integration_task(plan, description, stack, agent=integrator, deferred=saved))
     return plan, [plan_result, *build(tasks, engine, parallel, save_tests)]
@@ -660,7 +762,7 @@ def build(tasks: list[Task], engine: Engine, parallel: int, save_tests: Path | N
 def resume_tasks(plan: dict, description: str, stack: PythonStack, merged: set[str], engine: Engine | None = None,
                  referee=None, integrator=None, change: dict | None = None, tech_lead=None, stronger_dev=None,
                  answers: dict[str, str] | None = None, questions: dict[str, str] | None = None,
-                 deferred=(), retro: str = "") -> list[Task]:
+                 deferred=(), retro: str = "", reviewer=None) -> list[Task]:
     """The tasks still to do after a stopped build: every feature (its QA and dev task) and the integration
     that hadn't merged. Merged work stays as it is in the repo; nothing depends on it any more.
     `change` is the latest approved change (changes/{n}.json on main): its tasks that didn't merge are redone as
@@ -673,10 +775,10 @@ def resume_tasks(plan: dict, description: str, stack: PythonStack, merged: set[s
     saved = [i for i in saved_ids(plan, deferred) if i not in merged]
     tasks = tasks_from_plan(dict(plan, tasks=[t for t in plan["tasks"] if t["id"] not in ids and t["id"] not in saved]),
                             stack, engine=engine, referee=referee, tech_lead=tech_lead, stronger_dev=stronger_dev,
-                            retro=retro)
+                            retro=retro, reviewer=reviewer)
     if change:
         tasks += tasks_from_change(change, plan, stack, engine=engine, referee=referee, tech_lead=tech_lead,
-                                   stronger_dev=stronger_dev, retro=retro)
+                                   stronger_dev=stronger_dev, retro=retro, reviewer=reviewer)
     feature = lambda tid: tid.removesuffix("-qa")                      # noqa: E731
     if stack.integration:
         integ = integration_task(plan, description, stack, agent=integrator, change=change, deferred=saved)
@@ -715,15 +817,16 @@ def latest_change(repo: Path) -> dict | None:
 def resume_project(plan: dict, description: str, repo: Path, engine: Engine, merged: set[str],
                    stack: PythonStack | None = None, parallel: int = 4, save_tests: Path | None = None,
                    referee=None, integrator=None, tech_lead=None, stronger_dev=None,
-                   answers: dict[str, str] | None = None, deferred=()) -> list[Result]:
+                   answers: dict[str, str] | None = None, deferred=(), reviewer=None) -> list[Result]:
     """Retry only what didn't finish, in the same repo, without planning or approval again. `answers` are the
     owner's answers to the tech lead's questions, by task id (docs/tech-lead.md). `deferred`: features still saved
-    for later (docs/pm.md), skipped again; the tech lead reads the end of docs/retro.md."""
+    for later (docs/pm.md), skipped again; the tech lead reads the end of docs/retro.md. `reviewer`: the code
+    reviewer (docs/reviewer.md)."""
     stack = stack or default_stack()
     saved = [i for i in saved_ids(plan, deferred) if i not in merged]
     todo = resume_tasks(plan, description, stack, merged, engine=engine, referee=referee, integrator=integrator,
                         change=latest_change(repo), tech_lead=tech_lead, stronger_dev=stronger_dev, answers=answers,
-                        deferred=saved, retro=read_retro(repo))
+                        deferred=saved, retro=read_retro(repo), reviewer=reviewer)
     engine.events.emit("build_resumed", merged=sorted(merged),
                        retrying=sorted({t.id.removesuffix("-qa") for t in todo}))
     emit_deferred(engine, plan, saved)
@@ -978,13 +1081,13 @@ def change_planning_task(n: int, request: str, plan: dict, stack: PythonStack, d
 
 
 def tasks_from_change(change: dict, plan: dict, stack: PythonStack, engine: Engine | None = None,
-                      referee=None, tech_lead=None, stronger_dev=None, retro: str = "") -> list[Task]:
+                      referee=None, tech_lead=None, stronger_dev=None, retro: str = "", reviewer=None) -> list[Task]:
     """QA + dev tasks for a change. Dependencies stay inside the change: earlier work is already merged."""
     by_id = {t["id"]: t for t in change["tasks"]}
     contracts = ", ".join(dict.fromkeys([*plan.get("contracts", []), *change.get("contracts", [])])) or "none"
     return [task for t in change["tasks"]
             for task in feature_tasks(t, by_id, contracts, stack, engine, referee, mode=t["kind"],
-                                      tech_lead=tech_lead, stronger_dev=stronger_dev, retro=retro)]
+                                      tech_lead=tech_lead, stronger_dev=stronger_dev, retro=retro, reviewer=reviewer)]
 
 
 def apply_change(plan: dict, change: dict) -> dict:
@@ -1044,11 +1147,12 @@ def undo_merge(engine: Engine, task_id: str) -> bool:
 def change_project(n: int, request: str, description: str, repo: Path, engine: Engine,
                    approve: Approver = auto_approve, stack: PythonStack | None = None, parallel: int = 4,
                    save_tests: Path | None = None, referee=None, integrator=None, tech_lead=None,
-                   stronger_dev=None, deferred=()) -> tuple[dict | None, list[Result]]:
+                   stronger_dev=None, deferred=(), reviewer=None) -> tuple[dict | None, list[Result]]:
     """Plan change n, pause for approval, record it in plan.json, then QA + build it in the same repo (and
     integrate again for web apps). Returns (change, results): change is None if planning failed; results is just
     the planner's if the change was rejected (its merge is reverted then). The planner and the tech lead read the
-    end of docs/retro.md; `deferred` features (still saved for later, docs/pm.md) are named to the integrator."""
+    end of docs/retro.md; `deferred` features (still saved for later, docs/pm.md) are named to the integrator.
+    `reviewer`: the code reviewer of each change task's passing attempt (docs/reviewer.md)."""
     emit = engine.events.emit
     stack = stack or default_stack()
     repo = Path(repo)
@@ -1072,7 +1176,7 @@ def change_project(n: int, request: str, description: str, repo: Path, engine: E
     commit_on_main(engine, {"plan.json": json.dumps(apply_change(plan, change), indent=2) + "\n"},
                    f"plan.json: change {n}")
     tasks = tasks_from_change(change, plan, stack, engine=engine, referee=referee, tech_lead=tech_lead,
-                              stronger_dev=stronger_dev, retro=retro)
+                              stronger_dev=stronger_dev, retro=retro, reviewer=reviewer)
     if stack.integration:
         changed = {t["module"] for t in change["tasks"]}            # a change to a saved feature's module builds it
         saved = [i for i in saved_ids(plan, deferred)

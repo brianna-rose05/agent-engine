@@ -47,7 +47,7 @@ type Store = {
 };
 
 /** A task agent is busy right now (the demo has no project row to ask). */
-const RUNNING = new Set(["working", "checking", "merging", "disputing", "reviewing"]);
+const RUNNING = new Set(["working", "checking", "merging", "disputing", "reviewing", "reviewing_code"]);
 export const anyRunning = (s: ProjectState) => Object.values(s.tasks).some((t) => RUNNING.has(t.status));
 
 /** Message of a Convex error (ConvexError's data is the friendly text), or a generic one. */
