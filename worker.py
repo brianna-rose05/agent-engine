@@ -130,7 +130,8 @@ def checkpoint_label(change: dict | None, resume: bool, quick: dict | None = Non
     for kind, item in (("Change", change), ("Quick change", quick)):
         if item:
             text = " ".join(str(item.get("text", "")).split())
-            return f"{kind} {item['n']}: {text[:60]}{'…' if len(text) > 60 else ''}"
+            # Convex numbers arrive as floats (2.0): labels show the whole number
+            return f"{kind} {int(item['n'])}: {text[:60]}{'…' if len(text) > 60 else ''}"
     return "Retry finished" if resume else "Build finished"
 
 
