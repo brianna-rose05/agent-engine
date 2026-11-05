@@ -244,6 +244,12 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
                   `Agents already at work finish; nothing new starts. Raise the limit on the plan page, then retry what's left.` });
       break;
     }
+    case "template_updated": {
+      const files = (e.data as { files?: string[] }).files ?? [];
+      say({ who: "engine", channel: "build",
+            text: `Updated ${files.length} template file${files.length === 1 ? "" : "s"} to the current version (the app's own pages and code are unchanged).` });
+      break;
+    }
     case "build_resumed": {
       const d = e.data as { merged: string[]; retrying: string[] };
       status = "building";

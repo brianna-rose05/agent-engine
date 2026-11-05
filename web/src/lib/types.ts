@@ -19,6 +19,7 @@ export type EngineEvent = {
     | "change_plan_ready"
     | "budget_reached"
     | "checkpoint_created" | "rollback_started" | "rollback_done" | "rollback_failed" // docs/checkpoints.md
+    | "template_updated"
     | "quick_started"
     | "quick_blocked";
   task_id: string | null;

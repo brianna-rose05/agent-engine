@@ -26,7 +26,7 @@ from engine.engine import Engine, Result
 from engine.events import Emitter, JsonlSink
 from engine.project import change_project, resume_project, run_project
 from engine.quick import quick_blocked, quick_project
-from engine.stacks import NextSupabaseStack
+from engine.stacks import NextSupabaseStack, upgrade_template
 from run_benchmark import load_env
 
 ROOT = Path(__file__).parent
@@ -165,6 +165,7 @@ def main():
         raise SystemExit("change run without a change request")
     if quick is not None and not quick.get("text"):
         raise SystemExit("quick run without a quick change request")
+    template_updated: list[str] = []
     if resume or change or rollback_to or quick:   # retry, change, rollback or quick change: the project's own repo
         if not project.get("repo"):
             raise SystemExit("nothing to retry or change: this project has no repo yet")
@@ -172,6 +173,8 @@ def main():
         out.mkdir(parents=True, exist_ok=True)
         subprocess.run(["git", "-c", f"credential.helper={CREDENTIALS}", "clone", "-q", repo_url, str(repo)], check=True)
         subprocess.run(["git", "config", "credential.helper", CREDENTIALS], cwd=repo, check=True)
+        if not rollback_to:                     # a rollback restores old files first; it updates them after
+            template_updated = upgrade_template(repo, stack)
     else:
         repo = stack.build_repo(out / "repo")
         repo_url = create_repo(repo_name(project["name"], a.project_id), token, project["name"])
@@ -182,13 +185,18 @@ def main():
     from engine.agents.claude_cli import ClaudeCLIAgent
     from engine.sandboxes.daytona_sandbox import DaytonaSandbox
     events = Emitter(backend, JsonlSink(out / "events.jsonl"))
+    if template_updated:
+        events.emit("template_updated", files=template_updated)
     if rollback_to:                             # no agents: one commit on main, a new checkpoint, a redeploy
         status = run_rollback(repo, int(rollback_to["n"]), events, merged=project.get("merged") or [])
         events.emit("project_finished", status=status, repo=repo_url)
         print(f"project {a.project_id}: rollback {status} ({repo_url})")
         if status != "done":
             sys.exit(1)
-        # the restored tree is a finished app (checkpoints are only made when a run is done): redeploy it
+        # the restored tree is a finished app (checkpoints are only made when a run is done): redeploy it, with
+        # the current template's files (the checkpoint may predate a template fix)
+        if files := upgrade_template(repo, stack):
+            events.emit("template_updated", files=files)
         publish_preview([Result("INT", "rollback", "merged")], repo, repo_url, events)
         return
     opts = stack.daytona_options()

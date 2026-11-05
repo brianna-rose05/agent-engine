@@ -897,3 +897,22 @@ def test_web_change_adds_a_migration_and_never_edits_an_old_one(tmp_path):
     assert "petName.length > 40" in git(repo, "show", "main:src/server/bookings.ts")
     plan = json.loads(git(repo, "show", "main:plan.json"))
     assert "supabase/migrations/0002_pet_name_40.sql" in plan["contracts"] and plan["tasks"][1]["spec"] == change["tasks"][0]["spec"]
+
+
+def test_old_web_projects_get_current_template_files_but_keep_their_pages(tmp_path):
+    """Regression (first live preview): Pawfect predated the template's serverless fix, so every page failed on
+    Vercel and no agent may edit template files. Continuing a project now updates them in one commit."""
+    from engine.stacks import NextSupabaseStack, upgrade_template
+    stack = NextSupabaseStack(link_node_modules=False)
+    repo = build_project_repo(tmp_path / "r", stack)
+    (repo / "next.config.ts").write_text("export default {};\n")              # the old config
+    (repo / "src/app/page.tsx").write_text("export default function Home() { return <p>ours</p>; }\n")
+    git(repo, "add", "-A")
+    git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "old project")
+    before = git(repo, "rev-parse", "HEAD").strip()
+    assert upgrade_template(repo, stack) == ["next.config.ts"]
+    assert "outputFileTracingIncludes" in (repo / "next.config.ts").read_text()
+    assert "ours" in (repo / "src/app/page.tsx").read_text()                  # the project's pages stay
+    assert git(repo, "rev-parse", "HEAD~1").strip() == before                  # exactly one new commit
+    assert upgrade_template(repo, stack) == []                                 # nothing to do the second time
+    assert default_stack().template_files() == {}

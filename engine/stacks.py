@@ -106,6 +106,10 @@ Use Python 3.11+ standard library only. Every file must import cleanly."""
 
     integration = False      # web apps get a final integrator task that wires pages (NextSupabaseStack)
 
+    def template_files(self) -> dict[str, bytes]:
+        """Files the template owns in every project (agents may not edit them). Python projects have none."""
+        return {}
+
     def is_ui_module(self, module: str) -> bool:
         return False
 
@@ -179,6 +183,17 @@ class NextSupabaseStack(PythonStack):
             # Local runs share the template's installed packages; cloud sandboxes run `npm ci` instead.
             (dest / "node_modules").symlink_to(self.template / "node_modules")
         return dest
+
+    # Template files a project later owns: the integrator rewrites the pages and layout.
+    PROJECT_OWNED = ("src/app/",)
+
+    def template_files(self) -> dict[str, bytes]:
+        out = {"AGENTS.md": AGENTS_MD.encode()}
+        listed = subprocess.run(["git", "ls-files"], cwd=self.template, capture_output=True, text=True).stdout.split()
+        for rel in listed:
+            if not rel.startswith(self.PROJECT_OWNED) and (self.template / rel).is_file():
+                out[rel] = (self.template / rel).read_bytes()
+        return out
 
     def slug(self, module: str) -> str:
         stem = re.sub(r"\.tsx?$", "", module.split("src/", 1)[-1])
@@ -286,3 +301,28 @@ AGENTS_MD = """# Team rules (Next.js + Supabase)
 """
 
 STACKS = {"python": PythonStack, "next-supabase": NextSupabaseStack}
+
+
+def upgrade_template(repo: Path, stack: PythonStack) -> list[str]:
+    """Bring an existing project's template files up to the current template, in one commit on main (pushed when
+    the repo has a remote). Returns the files changed. Regression (first live preview): Pawfect was built before the
+    template shipped its migrations with serverless builds, so its preview failed with ENOENT on every page, and no
+    agent may edit template files to fix it."""
+    repo = Path(repo)
+    changed = []
+    for rel, body in stack.template_files().items():
+        dest = repo / rel
+        if not dest.exists() or dest.read_bytes() != body:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(body)
+            changed.append(rel)
+    if not changed:
+        return []
+    run = lambda *a: subprocess.run(["git", *a], cwd=repo, capture_output=True, text=True)  # noqa: E731
+    run("add", "--", *changed)
+    if run("commit", "-qm", "Update template files\n\n" + "\n".join(changed)).returncode:
+        run("checkout", "--", *changed)
+        return []
+    if run("remote").stdout.strip():
+        run("push", "-q", "origin", "main")
+    return changed
