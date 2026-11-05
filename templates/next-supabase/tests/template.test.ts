@@ -82,7 +82,7 @@ describe("template sign-in (local mode)", () => {
     const b = await openPglite(dir);                                      // would fail if migrations ran twice
     expect((await b.db.query("select * from auth.users")).rows).toHaveLength(1);
     await b.pg.close();
-  });
+  }, 90_000);   // opens a database on disk twice; regression (first ship of Pawfect): over 20s in a busy sandbox
 });
 
 describe("template migrations (shared by local mode and production Postgres)", () => {
