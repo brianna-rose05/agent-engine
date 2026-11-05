@@ -10,6 +10,7 @@ import { api, useOwner } from "@/lib/convex";
 import { anyRunning, useProject } from "@/lib/project-store";
 import { shipChecks, shipRunning, versionNotes } from "@/lib/ship";
 import { savedForLater } from "@/lib/pm";
+import { OwnerSetup } from "@/components/OwnerSetup";
 import { shortSha } from "@/lib/history";
 import type { ShipCheckState, ShipRun, VersionState } from "@/lib/types";
 import { commitUrl } from "../../../../../convex/checkpoints";
@@ -137,6 +138,8 @@ function ShipScreen({ onShip, onRollback }: { onShip?: () => Promise<void>; onRo
       </header>
 
       <RunBanner run={run} queued={Boolean(shipQueued) && !shipRunning(state)} production={production} celebrating={celebrating} />
+
+      <OwnerSetup />
 
       <section aria-labelledby="checks-title" className="rounded-2xl border border-line bg-surface p-4">
         <h3 id="checks-title" className="text-sm font-medium">Checks</h3>

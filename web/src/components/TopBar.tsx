@@ -4,7 +4,8 @@ import { useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useMutation } from "convex/react";
-import { ExternalLink, RefreshCw, Rocket, RotateCcw } from "lucide-react";
+import { ExternalLink, KeyRound, RefreshCw, Rocket, RotateCcw } from "lucide-react";
+import { isSetupCode } from "../../convex/setup";
 import { api, useOwner } from "@/lib/convex";
 import { motion } from "motion/react";
 import { useProject } from "@/lib/project-store";
@@ -14,7 +15,7 @@ import { StatusPill } from "./ui";
 const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
 export function TopBar() {
-  const { project, state, mode, speed, setSpeed, restart, clock: t, duration, liveStatus, canRetry, previewUrl, durableDb, production } = useProject();
+  const { project, state, mode, speed, setSpeed, restart, clock: t, duration, liveStatus, canRetry, previewUrl, durableDb, production, setupCodes } = useProject();
   const path = usePathname();
   const preview = previewUrl ?? state.preview_url;
   const live = state.ship?.production ?? production ?? null; // production (convex/ship.ts), once a version is live
@@ -54,6 +55,12 @@ export function TopBar() {
               className="flex items-center gap-1.5 rounded-lg bg-dev-bg px-3 py-1 text-xs font-medium text-dev ring-1 ring-dev/20 hover:ring-dev/40">
               <span className="size-1.5 rounded-full bg-current" /> Live · v{live.version}
             </a>
+          )}
+          {mode === "live" && preview && isSetupCode(setupCodes?.preview) && !path.endsWith("/ship") && (
+            <Link href={`/p/${project.id}/ship#owner-setup`} title="Become the admin of your app with its setup code"
+              className="flex items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-medium text-ink ring-1 ring-line hover:bg-surface">
+              <KeyRound size={12} /> Owner setup
+            </Link>
           )}
           {mode === "live" && (state.status === "done" || state.status === "shipping") && !path.endsWith("/ship") && (
             <Link href={`/p/${project.id}/ship`}
