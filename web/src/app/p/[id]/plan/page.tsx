@@ -12,13 +12,17 @@ import { ChangeRequestBox } from "@/components/ChangeRequest";
 import { BudgetLine } from "@/components/Budget";
 import { estimateBuild } from "@/lib/estimate";
 import { QuickChangeBox } from "@/components/QuickChange";
+import { PmCard } from "@/components/PM";
+import { pmSuggestion, priorityName } from "@/lib/pm";
+import { priorityOf } from "../../../../../convex/pm";
 
 export default function PlanPage() {
-  const { state, approve, sendBack, project, liveStatus, liveError } = useProject();
+  const { state, approve, sendBack, project, liveStatus, liveError, budgetUsd, spentUsd } = useProject();
   const router = useRouter();
   const [note, setNote] = useState("");
   const [replying, setReplying] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [approveError, setApproveError] = useState<string | null>(null);
   const plan = state.plan;
   useEffect(() => { if (liveStatus === "draft") router.replace(`/p/${project.id}/setup`); }, [liveStatus, project.id, router]);
 
@@ -55,6 +59,21 @@ export default function PlanPage() {
   const parallelNow = layers(plan)[0]?.length ?? 0;
   // the planner has already run (its cost is in "spent so far"): estimate only what approving starts
   const estimate = waiting ? estimateBuild(changeWaiting ? changeWaiting.tasks : plan.tasks) : undefined;
+  // the PM's budget guard (first plan only: a change's tasks are all Musts, the owner asked for them)
+  const pm = estimate && !changeWaiting && budgetUsd !== undefined
+    ? pmSuggestion(plan.tasks, estimate, spentUsd ?? state.cost_usd, budgetUsd) : null;
+  const pmCard = pm && pm.kind !== "fits" ? pm : null;
+  const decide = async (deferred?: string[]) => {
+    setBusy(true);
+    setApproveError(null);
+    try {
+      await approve(deferred);
+      router.push(`/p/${project.id}/board`);
+    } catch (e) {
+      setApproveError(e instanceof Error ? e.message : "Couldn't approve the plan.");
+      setBusy(false);
+    }
+  };
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-6 md:px-6 md:py-8">
@@ -135,6 +154,9 @@ export default function PlanPage() {
                 <div className="basis-full">
                   <BudgetLine estimate={estimate} what={changeWaiting ? `change ${changeWaiting.n}` : "the build"} />
                 </div>
+                {pmCard && budgetUsd !== undefined && (
+                  <div className="basis-full"><PmCard suggestion={pmCard} budget={budgetUsd} /></div>
+                )}
                 <ShieldCheck className="text-you" size={20} strokeWidth={1.6} />
                 <p className="mr-auto text-sm">
                   <span className="font-medium">{changeWaiting ? `Nothing changes until you approve change ${changeWaiting.n}.` : "Nothing is built until you approve."}</span>{" "}
@@ -146,17 +168,35 @@ export default function PlanPage() {
                 >
                   <MessageSquareReply size={15} strokeWidth={1.6} /> Send back
                 </button>
-                <button
-                  disabled={busy}
-                  onClick={async () => {
-                    setBusy(true);
-                    await approve();
-                    router.push(`/p/${project.id}/board`);
-                  }}
-                  className="flex items-center gap-2 rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white transition-transform duration-150 hover:-translate-y-px"
-                >
-                  <Check size={15} strokeWidth={2} /> {changeWaiting ? "Approve the change" : "Approve and build"}
-                </button>
+                {pmCard?.kind === "defer" ? (
+                  <>
+                    <button
+                      disabled={busy}
+                      onClick={() => decide()}
+                      title="Approve every feature. The team still stops at your limit."
+                      className="rounded-lg px-3 py-2 text-sm text-muted ring-1 ring-line hover:text-ink disabled:opacity-40"
+                    >
+                      Build everything
+                    </button>
+                    <button
+                      disabled={busy}
+                      onClick={() => decide(pmCard.tasks)}
+                      className="flex items-center gap-2 rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white transition-transform duration-150 hover:-translate-y-px disabled:opacity-40"
+                    >
+                      <Check size={15} strokeWidth={2} /> Save these for later
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    disabled={busy}
+                    onClick={() => decide()}
+                    className="flex items-center gap-2 rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white transition-transform duration-150 hover:-translate-y-px"
+                  >
+                    <Check size={15} strokeWidth={2} />{" "}
+                    {changeWaiting ? "Approve the change" : pmCard ? "Build everything" : "Approve and build"}
+                  </button>
+                )}
+                {approveError && <p role="alert" className="basis-full text-xs text-bad">{approveError}</p>}
               </div>
             )}
           </motion.div>
@@ -266,7 +306,10 @@ function PlanMap({ plan }: { plan: Plan }) {
                   className="relative rounded-2xl border border-line bg-surface p-4 shadow-[0_1px_2px_rgba(0,0,0,0.03)]"
                 >
                   <div className="mb-1.5 flex items-center justify-between gap-2">
-                    <span className="text-[11px] font-medium text-faint">{t.id}</span>
+                    <span className="flex items-center gap-1.5 text-[11px] font-medium text-faint">
+                      {t.id}
+                      {t.priority && <PriorityPill priority={priorityOf(t)} />}
+                    </span>
                     <Mono>{t.module}</Mono>
                   </div>
                   <p className="text-[15px] font-medium leading-snug">{t.title}</p>
@@ -284,6 +327,12 @@ function PlanMap({ plan }: { plan: Plan }) {
       </div>
     </div>
   );
+}
+
+/** Must / Should / Could on a plan card (shown when the plan has priorities). */
+function PriorityPill({ priority }: { priority: ReturnType<typeof priorityOf> }) {
+  const tone = priority === "must" ? "bg-ink/5 text-ink" : priority === "should" ? "bg-pm-bg text-pm" : "bg-canvas text-muted ring-1 ring-line";
+  return <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${tone}`}>{priorityName(priority)}</span>;
 }
 
 const clockText = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;

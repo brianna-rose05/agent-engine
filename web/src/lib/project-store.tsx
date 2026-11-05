@@ -15,7 +15,7 @@ type Store = {
   project: Project;
   state: ProjectState;
   mode: "demo" | "live";
-  approve: () => Promise<void>;
+  approve: (deferred?: string[]) => Promise<void>; // deferred: plan task ids the PM saves for the next version
   sendBack: (note: string) => Promise<void>;
   // demo controls
   speed: number;
@@ -42,6 +42,8 @@ type Store = {
   answers: Record<string, string>; // your answers to the tech lead so far, {taskId: text} (convex/answers.ts)
   // answer the tech lead's question on a failed feature, then retry what failed; throws with a message to show
   answerAndRetry: (taskId: string, text: string) => Promise<void>;
+  canBuildSaved?: boolean;      // live: features were saved for later and the team can build them now (convex/pm.ts)
+  buildSaved?: () => Promise<void>; // live: build the saved features; throws with a message to show when it can't
 };
 
 /** A task agent is busy right now (the demo has no project row to ask). */
@@ -136,7 +138,7 @@ type LiveData = {
   project: Project & { status: string; error: string | null; wizard: Wizard | null; canRetry?: boolean; previewUrl?: string | null; durableDb?: boolean;
                       canShip?: boolean; shipping?: boolean; production?: { url: string; version: number; at: number } | null;
                       canChange?: boolean; changes?: ChangeRequest[]; budgetUsd?: number; costUsd?: number;
-                      answers?: Record<string, string> };
+                      answers?: Record<string, string>; canBuildSaved?: boolean };
   events: { kind: EngineEvent["kind"]; task_id: string | null; data: Record<string, unknown>; ts: number }[];
 } | null;
 
@@ -148,6 +150,7 @@ function LiveProvider({ id, children }: { id: string; children: React.ReactNode 
   const askChange = useMutation(api.projects.requestChange);
   const saveBudget = useMutation(api.projects.setBudget);
   const answer = useMutation(api.projects.answerAndRetry);
+  const buildSavedNow = useMutation(api.projects.buildSaved);
   const t0 = data?.events[0]?.ts;
   const state = useMemo(() => {
     if (!data) return initialState();
@@ -161,7 +164,13 @@ function LiveProvider({ id, children }: { id: string; children: React.ReactNode 
                                                description: "", model: "haiku", created_at: "" };
   const value: Store = {
     project, state, mode: "live",
-    approve: async () => { await decide({ key: key!, id, approved: true }); },
+    approve: async (deferred?: string[]) => {
+      try {
+        await decide({ key: key!, id, approved: true, ...(deferred?.length ? { deferred } : {}) });
+      } catch (e) {
+        throw new Error(errorText(e, "Couldn't approve the plan. Try again in a moment."));
+      }
+    },
     sendBack: async (note: string) => { await decide({ key: key!, id, approved: false, note }); },
     speed: 1, setSpeed: () => {}, restart: () => {}, clock: state.now, duration: state.now, t0,
     liveStatus: data?.project.status, liveError: data?.project.error ?? null, wizard: data?.project.wizard ?? null, canRetry: Boolean(data?.project.canRetry),
@@ -199,6 +208,14 @@ function LiveProvider({ id, children }: { id: string; children: React.ReactNode 
         await answer({ key: key!, id, taskId, text: checked.text });
       } catch (e) {
         throw new Error(errorText(e, "Couldn't send your answer. Try again in a moment."));
+      }
+    },
+    canBuildSaved: Boolean(data?.project.canBuildSaved),
+    buildSaved: async () => {
+      try {
+        await buildSavedNow({ key: key!, id });
+      } catch (e) {
+        throw new Error(errorText(e, "Couldn't start building the saved features. Try again in a moment."));
       }
     },
   };

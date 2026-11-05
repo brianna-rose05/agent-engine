@@ -495,10 +495,10 @@ export function composeSpec(name: string, description: string, w: Wizard | undef
   if (!w?.locked?.design || !w.design) return description;
   const out: string[] = [`# ${name}`, "", description.trim(), "", "## Decisions", answersText(w), "",
     "## Assumptions", ...(w.assumptions ?? []).map((a) => `- ${a.text}`), ...(w.requirements?.assumptions ?? []).map((a) => `- ${a}`), "",
-    "## Requirements (build Must and Should; skip Could and Out)"];
+    "## Requirements (build Must, Should and Could; skip Out)"];
   for (const f of w.requirements?.features ?? []) {
     out.push(`### ${f.name}`, f.summary);
-    for (const s of f.stories.filter((x) => x.priority === "must" || x.priority === "should")) {
+    for (const s of f.stories.filter((x) => x.priority !== "out")) {
       out.push(`- [${s.priority.toUpperCase()}] ${s.id}: ${s.text}`, ...s.criteria.map((c) => `  - Test: ${c}`));
     }
   }
@@ -513,6 +513,8 @@ export function composeSpec(name: string, description: string, w: Wizard | undef
   const look = d.looks.find((l) => l.id === w.look) ?? d.looks[0];
   if (look) out.push("", `## Look and feel: ${look.name}`, look.description,
                      `Palette: ${look.palette.map((c) => `${c.name} ${c.hex}`).join(", ")}; font ${look.font}; corners ${look.radius}.`);
-  out.push("", "Plan tasks so every Must story above is built and its Test lines become acceptance tests.");
+  out.push("", "Plan tasks for every Must, Should and Could story. Give each task the story ids it serves and its priority " +
+               "(the highest priority among those stories).",
+           "Every story's Test lines become acceptance tests. Musts come first: Shoulds and Coulds may be saved for a later version.");
   return out.join("\n");
 }

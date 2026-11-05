@@ -1,13 +1,14 @@
-import { Bot, ClipboardCheck, Code2, Cog, Compass, Sparkles, User } from "lucide-react";
+import { Bot, ClipboardCheck, ClipboardList, Code2, Cog, Compass, Sparkles, User } from "lucide-react";
 import type { Role } from "@/lib/types";
 
-export type Who = Role | "engine" | "you" | "tech lead";
+export type Who = Role | "engine" | "you" | "tech lead" | "PM";
 
 export const WHO: Record<Who, { label: string; bg: string; fg: string; Icon: typeof Bot }> = {
   planner: { label: "Planner", bg: "bg-planner-bg", fg: "text-planner", Icon: Sparkles },
   qa: { label: "QA agent", bg: "bg-qa-bg", fg: "text-qa", Icon: ClipboardCheck },
   dev: { label: "Dev agent", bg: "bg-dev-bg", fg: "text-dev", Icon: Code2 },
   "tech lead": { label: "Tech lead", bg: "bg-lead-bg", fg: "text-lead", Icon: Compass },
+  PM: { label: "PM", bg: "bg-pm-bg", fg: "text-pm", Icon: ClipboardList },
   engine: { label: "Engine", bg: "bg-engine-bg", fg: "text-engine", Icon: Cog },
   you: { label: "You", bg: "bg-you-bg", fg: "text-you", Icon: User },
 };

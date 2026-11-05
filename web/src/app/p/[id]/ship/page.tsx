@@ -9,6 +9,7 @@ import {
 import { api, useOwner } from "@/lib/convex";
 import { anyRunning, useProject } from "@/lib/project-store";
 import { shipChecks, shipRunning, versionNotes } from "@/lib/ship";
+import { savedForLater } from "@/lib/pm";
 import { shortSha } from "@/lib/history";
 import type { ShipCheckState, ShipRun, VersionState } from "@/lib/types";
 import { commitUrl } from "../../../../../convex/checkpoints";
@@ -152,6 +153,7 @@ function ShipScreen({ onShip, onRollback }: { onShip?: () => Promise<void>; onRo
       </section>
 
       <WhatsIn />
+      <SavedForNext />
 
       <section className="flex flex-col gap-2">
         <div className="flex flex-wrap items-center gap-3">
@@ -331,6 +333,30 @@ function WhatsIn() {
           {changes.length > 0 && <Notes title="Changes" items={changes} />}
         </div>
       )}
+    </section>
+  );
+}
+
+/** Should and Could features that aren't in this version: saved by the PM, or not merged yet. Never block shipping. */
+function SavedForNext() {
+  const { state, project } = useProject();
+  const saved = savedForLater(state);
+  if (!saved.length) return null;
+  return (
+    <section aria-labelledby="saved-next-title" className="rounded-2xl border border-pm/20 bg-pm-bg/40 p-4">
+      <h3 id="saved-next-title" className="text-sm font-medium">Saved for the next version</h3>
+      <p className="mb-3 text-xs text-muted">
+        Should and Could features don&apos;t block shipping. Build them from the{" "}
+        <Link href={`/p/${project.id}/board`} className="underline-offset-2 hover:text-ink hover:underline">board</Link> when you&apos;re ready.
+      </p>
+      <ul className="flex flex-col gap-1.5">
+        {saved.map((x) => (
+          <li key={x.id} className="flex gap-2 text-sm">
+            <Circle size={14} strokeWidth={1.8} className="mt-0.5 shrink-0 text-pm" />
+            <span className="min-w-0">{x.title}</span>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }

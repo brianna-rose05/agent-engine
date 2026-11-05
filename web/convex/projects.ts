@@ -6,6 +6,7 @@ import { checkOwner } from "./owner";
 import { canRequestChange, checkChangeText, nextChangeNumber, type ChangeRequest } from "./changes";
 import { budgetOf, canSpendMore, checkBudget } from "./budget";
 import { canShip } from "./ship";
+import { BUILD_SAVED_PATCH, buildSavedBlocker, decisionDeferred } from "./pm";
 import { RETRY_PATCH, checkAnswer, failedTasks, retryBlocker, withAnswer, type Answers } from "./answers";
 
 const owner = { key: v.string() };
@@ -54,7 +55,9 @@ export const get = queryGeneric({
                  // ship to production (convex/ship.ts): the screen reduces the events, the row says what's queued
                  canShip: canShip(p.status, false, Boolean(p.repo)), shipping: p.mode === "ship" && ["queued", "starting", "shipping"].includes(p.status),
                  production: p.production ?? null,
-                 answers: p.answers ?? {} }, // your answers to the tech lead, {taskId: text} (convex/answers.ts)
+                 answers: p.answers ?? {}, // your answers to the tech lead, {taskId: text} (convex/answers.ts)
+                 // features saved for the next version at approval (convex/pm.ts), and whether they can be built now
+                 deferred: p.deferred ?? [], canBuildSaved: buildSavedBlocker(p) === null },
       events: events.map((e) => ({ kind: e.kind, task_id: e.taskId, data: e.data, ts: e.ts })),
     };
   },
@@ -178,16 +181,43 @@ export const setBudget = mutationGeneric({
   },
 });
 
+/**
+ * Approve or send back the plan (or a planned change). Approving the first plan may save features for the next
+ * version (`deferred`, the PM's suggestion on the plan page): checked by convex/pm.ts checkDeferred, stored on the
+ * row, read by the worker after approval. Approving without it builds everything (and clears any earlier list).
+ */
 export const decide = mutationGeneric({
-  args: { ...owner, id: v.id("projects"), approved: v.boolean(), note: v.optional(v.string()) },
-  handler: async (ctx, { key, id, approved, note }) => {
+  args: { ...owner, id: v.id("projects"), approved: v.boolean(), note: v.optional(v.string()),
+          deferred: v.optional(v.array(v.string())) },
+  handler: async (ctx, { key, id, approved, note, deferred }) => {
     checkOwner(key);
     const p = await ctx.db.get(id);
     // the first plan and a planned change (pendingChange) wait for the same decision
     if (!p || p.status !== "awaiting_approval") {
       throw new ConvexError(p?.mode === "change" ? "This change isn't waiting for a decision." : "This plan isn't waiting for a decision.");
     }
-    await ctx.db.patch(id, { status: approved ? "approved" : "rejected", planNote: (note ?? "").slice(0, 2000) });
+    const patch: Record<string, unknown> = { status: approved ? "approved" : "rejected", planNote: (note ?? "").slice(0, 2000) };
+    const checked = decisionDeferred(approved, p.mode === "change", p.plan, deferred);
+    if (!checked.ok) throw new ConvexError(checked.message);
+    if (checked.ids) patch.deferred = checked.ids.length ? checked.ids : undefined;
+    await ctx.db.patch(id, patch);
+  },
+});
+
+/**
+ * Build the features saved for later at approval: clears `deferred` and runs a resume in the same repo (merged
+ * features stay; the worker builds the saved ones and puts the app together again). Allowed once the team has
+ * finished (done, failed or stopped) and the limit has room.
+ */
+export const buildSaved = mutationGeneric({
+  args: { ...owner, id: v.id("projects") },
+  handler: async (ctx, { key, id }) => {
+    checkOwner(key);
+    const p = await ctx.db.get(id);
+    const blocker = buildSavedBlocker(p);
+    if (blocker) throw new ConvexError(blocker);
+    await ctx.db.patch(id, BUILD_SAVED_PATCH);
+    await ctx.scheduler.runAfter(0, anyApi.projects.startWorker, { projectId: id });
   },
 });
 

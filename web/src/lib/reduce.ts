@@ -1,5 +1,7 @@
 import { withHistory } from "./history";
 import { withShip } from "./ship";
+import { listText } from "./pm";
+import { priorityOf, type TaskPriority } from "../../convex/pm";
 import type { Attempt, ChangeState, ChangeTask, EngineEvent, FeedItem, Plan, PlanTask, ProjectState, QuickState, Role, TaskState,
               TechLeadReview } from "./types";
 
@@ -16,6 +18,9 @@ export const initialState = (): ProjectState => ({
   change: null,
   budget_reached: null,
   quicks: [],
+  deferred: [],
+  ready_to_ship: null,
+  retros: [],
 });
 
 export const money = (c: number) => (c > 0 && c < 0.01 ? `$${c.toFixed(4)}` : `$${c.toFixed(2)}`);
@@ -76,6 +81,10 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
   let durable_db = Boolean(s.durable_db);
   let changes = s.changes;
   let quicks = s.quicks;
+  // the PM: features saved for the next version, the latest ship gate, retro notes
+  let deferred = s.deferred ?? [];
+  let ready_to_ship = s.ready_to_ship ?? null;
+  let retros = s.retros ?? [];
   const setQuick = (n: number, next: Partial<QuickState>) => {
     quicks = quicks.map((q) => (q.n === n ? { ...q, ...next } : q));
   };
@@ -134,6 +143,9 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
         next.notes = []; // a new try starts with a clean slate
       }
       if (d.status === "working" || d.status === "reviewing") delete next.question; // a question is only open once it failed
+      if (d.status === "working" && deferred.includes(featureId(task.id))) {
+        deferred = deferred.filter((id) => id !== featureId(task.id)); // a saved feature is being built now
+      }
       tasks[task.id] = next;
       const ch = channelFor(task.role);
       if (d.status === "working" && task.role !== "planner") {
@@ -284,6 +296,7 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
     case "plan_decision": {
       const d = e.data as { approved: boolean; note?: string };
       status = d.approved ? "building" : "rejected";
+      if (d.approved) ready_to_ship = null; // a new run: its own ship gate
       if (latest?.decision === "pending") {
         setChange(latest.n, { decision: d.approved ? "approved" : "rejected" });
         say({ who: "you", channel: "planning",
@@ -313,6 +326,9 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
       const d = e.data as { merged: string[]; retrying: string[] };
       status = "building";
       budget_reached = null;
+      ready_to_ship = null;
+      const retrying = new Set((d.retrying ?? []).map(featureId));
+      deferred = deferred.filter((id) => !retrying.has(id)); // "Build saved features": they're being built now
       const kept = d.merged.filter((id) => id !== "PLAN").length;
       say({ who: "engine", channel: "build",
             text: `Retrying ${d.retrying.length} unfinished task${d.retrying.length === 1 ? "" : "s"} in the same repo. ` +
@@ -362,9 +378,42 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
       status = d.status as ProjectState["status"];
       const devs = Object.values(tasks).filter((t) => t.role === "dev" && !isQuick(t.id));
       const ok = devs.filter((t) => t.status === "merged").length;
+      const later = deferred.length ? `, ${deferred.length} saved for the next version` : "";
       say({ who: "engine", channel: "build", tone: d.status === "done" ? "good" : d.status === "stopped" ? "warn" : "bad",
             text: `${d.status === "done" ? "Finished" : d.status === "stopped" ? "Stopped at the spending limit" : "Stopped"}: ` +
-                  `${ok} of ${devs.length} features verified and merged, ${money(cost_usd)} in total.` });
+                  `${ok} of ${devs.length} features verified and merged${later}, ${money(cost_usd)} in total.` });
+      break;
+    }
+    case "pm_deferred": {
+      // the owner approved with "Save these for later": these features aren't built in this run
+      const d = e.data as { tasks?: unknown; titles?: unknown };
+      const ids = Array.isArray(d.tasks) ? d.tasks.filter((x): x is string => typeof x === "string") : [];
+      if (!ids.length) break;
+      deferred = [...new Set([...deferred, ...ids])];
+      const given = Array.isArray(d.titles) ? d.titles.filter((x): x is string => typeof x === "string") : [];
+      const titles = given.length === ids.length ? given : ids.map((id) => plan?.tasks.find((p) => p.id === id)?.title ?? id);
+      say({ who: "PM", channel: "build",
+            text: `Saving ${ids.length} feature${ids.length === 1 ? "" : "s"} for the next version, as you chose: ` +
+                  `${listText(titles)}. Every Must feature is built now; build the saved ones later from the board.` });
+      break;
+    }
+    case "ready_to_ship": {
+      const d = e.data as { saved?: unknown; musts?: unknown };
+      const saved = Array.isArray(d.saved) ? d.saved.filter((x): x is string => typeof x === "string") : [];
+      const musts = Number(d.musts ?? 0);
+      ready_to_ship = { saved, musts, t: e.t };
+      const titles = saved.map((id) => plan?.tasks.find((p) => p.id === id)?.title ?? id);
+      say({ who: "PM", channel: "build", tone: "good",
+            text: `Ready to ship: every Must feature passes${musts > 0 ? ` (${musts} of ${musts})` : ""}.` +
+                  (titles.length ? ` Saved for the next version: ${listText(titles)}.` : "") +
+                  " Ship it from the Ship page when you're ready." });
+      break;
+    }
+    case "retro_written": {
+      const summary = String((e.data as { summary?: unknown }).summary ?? "").trim().slice(0, 600);
+      if (!summary) break;
+      retros = [...retros, { summary, t: e.t }];
+      say({ who: "PM", channel: "build", text: `Retro notes for the next run: ${summary}` });
       break;
     }
     case "preview_ready": {
@@ -408,11 +457,12 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
     }
   }
   return { status, plan, tasks, feed, cost_usd, now: Math.max(s.now, e.t), preview_url, durable_db, changes, change: changes.at(-1) ?? null,
-           budget_reached, quicks };
+           budget_reached, quicks, deferred, ready_to_ship, retros };
 }
 
 /* --------------------------------------------------------------- board columns */
-export type Column = "queued" | "tests" | "building" | "checking" | "done" | "attention";
+export type Column = "queued" | "tests" | "building" | "checking" | "done" | "attention"
+  | "saved"; // saved for the next version by the PM: shown apart from COLUMNS, never "needs you"
 
 export const COLUMNS: { id: Column; label: string; hint: string }[] = [
   { id: "queued", label: "Up next", hint: "Waiting for its turn" },
@@ -436,12 +486,15 @@ export type Feature = {
   waitingOn: string[];
   active: Role | null;
   tries: number;
+  priority: TaskPriority;  // must (also when the plan has none), should or could
   reviewing: boolean;      // the tech lead is reviewing its failed tries
   question?: string;       // the tech lead's open question for you (a failed dev task)
   retry_model?: string;    // the tech lead moved its extra tries to this model ("sonnet")
 };
 
 const BAD = new Set(["failed", "blocked", "error", "merge_conflict", "stopped"]);
+/** A task agent at work, or about to merge: a saved feature in one of these is being built after all. */
+const ACTIVE = new Set(["working", "checking", "merging", "disputing", "reviewing"]);
 
 /** One card per planned feature, combining its QA task and its dev task, then the cards of approved changes
  *  (C1T1, C1T2, ...), then the integration card, then quick changes the engine has queued (Q1, Q2, ...). */
@@ -458,21 +511,26 @@ export function features(s: ProjectState): Feature[] {
     id: quickId(q.n), title: `Quick change ${q.n}`, module: "src/app, src/components",
     spec: `${q.text}\n\nOne agent edits only the pages and components; the whole app is checked (types, tests, a ` +
           "production build, every page) before it merges. No plan or approval.", depends_on: [] as string[] }));
+  const deferred = new Set(s.deferred ?? []);
   return [...cards, ...quickCards].map((p) => {
     const qa = s.tasks[`${p.id}-qa`];
     const dev = s.tasks[p.id];
     let column: Column = "queued";
     let active: Role | null = null;
-    if ((qa && BAD.has(qa.status)) || (dev && BAD.has(dev.status))) column = "attention";
+    if (deferred.has(p.id) && dev?.status !== "merged" && !(dev && ACTIVE.has(dev.status)) && !(qa && ACTIVE.has(qa.status))) {
+      column = "saved"; // not built in this run: not a failure, never "needs you"
+    } else if ((qa && BAD.has(qa.status)) || (dev && BAD.has(dev.status))) column = "attention";
     else if (dev?.status === "merged") column = "done";
     else if (dev && ["checking", "merging", "disputing", "reviewing"].includes(dev.status)) { column = "checking"; active = "dev"; }
     else if (dev?.status === "working") { column = "building"; active = "dev"; }
     else if (qa && ["working", "checking"].includes(qa.status)) { column = "tests"; active = "qa"; }
-    const waitingOn = p.depends_on.filter((d) => s.tasks[d]?.status !== "merged");
+    // saved features aren't waited for (the integrator goes ahead without them)
+    const waitingOn = p.depends_on.filter((d) => s.tasks[d]?.status !== "merged" && !deferred.has(d));
     return {
       id: p.id, title: p.title, module: p.module, spec: p.spec, depends_on: p.depends_on, column, qa, dev,
       cost_usd: round((qa?.cost_usd ?? 0) + (dev?.cost_usd ?? 0)), waitingOn, active,
       tries: Math.max(dev?.attempts.length ?? 0, dev?.attempt ?? 0),
+      priority: priorityOf(p),
       reviewing: dev?.status === "reviewing",
       ...(dev?.status === "failed" && dev.question ? { question: dev.question } : {}),
       ...(dev?.retry_model ? { retry_model: dev.retry_model } : {}),

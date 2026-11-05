@@ -5,6 +5,7 @@ import { useMutation } from "convex/react";
 import { api, useOwner } from "@/lib/convex";
 import { anyRunning, useProject } from "@/lib/project-store";
 import { CheckpointList } from "@/components/Checkpoints";
+import { Avatar } from "@/components/ui";
 import { canRollback } from "../../../../../convex/checkpoints";
 
 /** Message of a Convex error (ConvexError's data is the friendly text), or a generic one. */
@@ -51,6 +52,25 @@ export default function HistoryPage() {
         </p>
       </div>
       {mode === "live" ? <LiveHistory /> : <CheckpointList history={state.history} />}
+      {(state.retros ?? []).length > 0 && (
+        <section aria-labelledby="retro-title" className="mt-6 flex flex-col gap-2">
+          <div>
+            <h3 id="retro-title" className="text-sm font-medium">Retro notes</h3>
+            <p className="text-xs text-muted">
+              After each run the PM writes down what failed and why (docs/retro.md in the repo). The planner reads them
+              before the next one.
+            </p>
+          </div>
+          <ol className="flex flex-col gap-2">
+            {[...(state.retros ?? [])].reverse().map((r) => (
+              <li key={`${r.t}-${r.summary}`} className="flex gap-3 rounded-2xl border border-line bg-surface p-3">
+                <Avatar who="PM" size={24} />
+                <p className="min-w-0 flex-1 text-sm leading-relaxed text-ink/85">{r.summary}</p>
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
     </div>
   );
 }

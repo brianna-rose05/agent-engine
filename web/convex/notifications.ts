@@ -11,7 +11,7 @@ import { checkOwner } from "./owner";
  * set in Convex; without them, nothing is sent and nothing is logged.
  */
 
-export type NotificationKind = "needs_approval" | "needs_you" | "finished" | "budget_reached" | "preview_ready";
+export type NotificationKind = "needs_approval" | "needs_you" | "finished" | "budget_reached" | "preview_ready" | "ready_to_ship";
 export type Note = { kind: NotificationKind; title: string; body: string; email: boolean };
 
 const dollars = (x: unknown) => `$${Number(x ?? 0).toFixed(2)}`;
@@ -46,6 +46,14 @@ export function notificationFor(kind: string, data: Record<string, unknown> | nu
                body: q ? (q.length > 300 ? `${q.slice(0, 297)}...` : q)
                        : "A feature failed and the tech lead has a question for you. Answer it on the board to retry." };
     }
+    case "ready_to_ship": {
+      // the PM's ship gate: every Must feature merged (and the app put together); Shoulds and Coulds never block it
+      const saved = Array.isArray(d.saved) ? d.saved.length : 0;
+      return { kind: "ready_to_ship", title: `${project}: ready to ship`, email: true,
+               body: "Ready to ship: every Must feature passes." +
+                     (saved ? ` ${saved} feature${saved === 1 ? " is" : "s are"} saved for the next version.` : "") +
+                     " Ship it to production when you're ready." };
+    }
     case "preview_ready":
       return typeof d.url === "string" && d.url.startsWith("https://")
         ? { kind: "preview_ready", title: `${project}: preview is live`, body: d.url, email: false }
@@ -55,9 +63,9 @@ export function notificationFor(kind: string, data: Record<string, unknown> | nu
   }
 }
 
-/** Where a notification takes the owner: the plan for approvals (and the limit), the board otherwise. */
+/** Where a notification takes the owner: the plan for approvals (and the limit), Ship when it's ready, else the board. */
 export const notificationPath = (projectId: string, kind: string) =>
-  `/p/${projectId}/${kind === "needs_approval" || kind === "budget_reached" ? "plan" : "board"}`;
+  `/p/${projectId}/${kind === "needs_approval" || kind === "budget_reached" ? "plan" : kind === "ready_to_ship" ? "ship" : "board"}`;
 
 /** Whether email is set up (both settings present). Never exposes the key. */
 export const emailEnabled = () => Boolean(process.env.RESEND_API_KEY && process.env.NOTIFY_EMAIL);
