@@ -166,6 +166,9 @@ def test_save_checkpoint_never_raises(tmp_path):
 def test_worker_checkpoint_labels():
     from worker import checkpoint_label
     assert checkpoint_label(None, False) == "Build finished"
+    # Regression (first live quick change): it was saved as "Build finished"
+    assert checkpoint_label(None, False, {"n": 1, "text": "Rename the button to Join"}) == \
+        "Quick change 1: Rename the button to Join"
     assert checkpoint_label(None, True) == "Retry finished"
     long = "Keep the groomer when the date changes, store times in the salon's time zone, please"
     assert checkpoint_label({"n": 2, "text": long}, False) == f"Change 2: {long[:60]}…"

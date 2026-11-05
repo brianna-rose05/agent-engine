@@ -126,10 +126,11 @@ def with_fresh_budget(approve, get_project, budget: Budget):
     return wrapped
 
 
-def checkpoint_label(change: dict | None, resume: bool) -> str:
-    if change:
-        text = " ".join(str(change.get("text", "")).split())
-        return f"Change {change['n']}: {text[:60]}{'…' if len(text) > 60 else ''}"
+def checkpoint_label(change: dict | None, resume: bool, quick: dict | None = None) -> str:
+    for kind, item in (("Change", change), ("Quick change", quick)):
+        if item:
+            text = " ".join(str(item.get("text", "")).split())
+            return f"{kind} {item['n']}: {text[:60]}{'…' if len(text) > 60 else ''}"
     return "Retry finished" if resume else "Build finished"
 
 
@@ -234,7 +235,7 @@ def main():
             status = STOPPED
         if status == "done":                    # a save point the owner can roll back to (docs/checkpoints.md)
             merged = {*(project.get("merged") or []), *(r.task for r in results if r.status == "merged")}
-            save_checkpoint(repo, checkpoint_label(change, resume), events, merged)
+            save_checkpoint(repo, checkpoint_label(change, resume, quick), events, merged)
         events.emit("project_finished", status=status, repo=repo_url)
         print(f"project {a.project_id}: {status} ({repo_url})")
         # a rejected change merged (and reverted) only its plan: nothing new to deploy
