@@ -28,6 +28,9 @@ Event kinds and their data:
     ship_check       {name, label, status, detail?}   running | passed | failed (detail: end of the output, scrubbed)
     ship_live        {url, version, tag, sha, rollback, database}   production is on version `tag` (docs/ship.md)
     ship_failed      {reason, check?}   plain English, scrubbed; nothing new is live
+    pm_deferred      {tasks, titles}   features saved for later at the start of a build or retry (docs/pm.md)
+    ready_to_ship    {saved, musts}    every Must feature merged and the app integrated; after project_finished
+    retro_written    {summary}         the run's notes were appended to docs/retro.md and pushed (≤600 chars)
 A sink must never break a run: errors inside a sink are swallowed by `emit`.
 """
 from __future__ import annotations

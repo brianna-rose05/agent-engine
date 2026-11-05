@@ -25,6 +25,7 @@ from engine.checkpoints import run_rollback, save_checkpoint
 from engine.convex_sink import ConvexBackend
 from engine.engine import Engine, Result
 from engine.events import Emitter, JsonlSink
+from engine.pm import saved_ids, ship_ready, write_retro
 from engine.project import change_project, resume_project, run_project
 from engine.quick import quick_blocked, quick_project
 from engine.stacks import NextSupabaseStack, upgrade_template
@@ -122,10 +123,12 @@ def publish_preview(results, repo: Path, repo_url: str, events, deploy=None, mer
         events.emit("preview_failed", reason=f"{type(e).__name__}: {e}"[:300])
 
 
-def finished(results) -> str:
+def finished(results, deferred=()) -> str:
     """Done when everything merged, or when the integration merged: then the app works, and any screen whose
     own feature failed was rebuilt by the integrator (the board still shows that feature as needing you).
+    Features saved for later (`deferred`, docs/pm.md) are never failures.
     Stopped when the spending limit kept work from starting: raise it and retry what's left."""
+    results = [r for r in results if r.task.removesuffix("-qa") not in set(deferred or ())]
     if all(r.status in ("merged", "passed") for r in results):
         return "done"
     if any(r.task == "INT" and r.status == "merged" for r in results):
@@ -176,6 +179,61 @@ def owner_answers(project: dict) -> dict[str, str]:
     if not isinstance(raw, dict):
         return {}
     return {str(k): v.strip()[:2000] for k, v in raw.items() if isinstance(v, str) and v.strip()}
+
+
+def project_deferred(project: dict | None) -> list[str]:
+    """Task ids the owner saved for later on the project row (`deferred`, docs/pm.md); anything else is ignored."""
+    raw = (project or {}).get("deferred")
+    return [str(d) for d in raw if isinstance(d, str) and d.strip()] if isinstance(raw, list) else []
+
+
+def fresh_deferred(get_project, chosen: list):
+    """run_project's `deferred`: read after approval (the owner picks them on the approval screen), like the
+    budget in with_fresh_budget. Records what it read in `chosen`; a failed read saves nothing for later."""
+    def read(plan: dict) -> list[str]:
+        try:
+            ids = project_deferred(get_project())
+        except Exception:
+            ids = []
+        chosen[:] = ids
+        return ids
+    return read
+
+
+def read_plan(repo: Path) -> dict | None:
+    try:
+        plan = json.loads((Path(repo) / "plan.json").read_text())
+    except (OSError, ValueError):
+        return None
+    return plan if isinstance(plan, dict) and isinstance(plan.get("tasks"), list) else None
+
+
+def pm_after_run(repo: Path, label: str, results, events, *, deferred=(), merged_before=(), cost_usd=None,
+                 retro: bool = True) -> list[str]:
+    """The PM's deterministic notes once a run's status is known and it isn't rejected (docs/pm.md): the retro
+    section (build, retry and change runs; never fails the run). Returns the ids still saved for later."""
+    try:
+        plan = read_plan(repo)
+        merged = set(merged_before) | {r.task for r in results if r.status == "merged"}
+        saved = [i for i in saved_ids(plan, deferred) if i not in merged] if plan else []
+    except Exception as e:                       # a malformed plan.json: note the run without titles
+        print(f"pm: plan unreadable ({type(e).__name__})")
+        plan, saved = None, []
+    if retro:
+        write_retro(repo, label, results, events, plan=plan, deferred=saved, cost_usd=cost_usd)
+    return saved
+
+
+def emit_ready_to_ship(repo: Path, results, events, merged_before=(), needs_int: bool = True) -> dict | None:
+    """ready_to_ship {saved, musts} once per finished run when every Must feature is merged (docs/pm.md)."""
+    try:
+        ready = ship_ready(read_plan(repo), results, merged_before, needs_int)
+    except Exception as e:
+        print(f"pm: ship gate not checked ({type(e).__name__})")
+        return None
+    if ready is not None:
+        events.emit("ready_to_ship", **ready)
+    return ready
 
 
 def ship_sandbox(repo_url: str, token: str, run_id: str, stack):
@@ -304,6 +362,11 @@ def main():
     approve = with_fresh_budget(wait_for_decision(backend.project), backend.project, engine.budget)
     status = "failed"
     results = []
+    # Features the owner saved for later (docs/pm.md): a new build reads them after approval; a retry, "Build saved
+    # features" (the app clears the list first) and a change read them from the row.
+    deferred = project_deferred(project)
+    merged_before = set(project.get("merged") or [])
+    spent_before = engine.budget.spent
     try:
         if quick:                               # one UI task, the whole-app check, no plan or approval
             agent = ClaudeCLIAgent(model=project["model"], max_turns=QUICK_TURNS, budget_usd=min(QUICK_BUDGET_USD, a.budget))
@@ -315,36 +378,44 @@ def main():
                                               approve=approve, stack=stack,
                                               parallel=stack.parallel, save_tests=out / "hidden_tests",
                                               referee=referee, integrator=integrator,
-                                              tech_lead=tech_lead, stronger_dev=stronger_dev)
-            status = "failed" if planned is None else "rejected" if len(results) == 1 else finished(results)
+                                              tech_lead=tech_lead, stronger_dev=stronger_dev, deferred=deferred)
+            status = "failed" if planned is None else "rejected" if len(results) == 1 else finished(results, deferred)
             return
         if resume:
             plan = json.loads((repo / "plan.json").read_text())
-            results = resume_project(plan, project["description"], repo, engine, set(project.get("merged") or []),
+            results = resume_project(plan, project["description"], repo, engine, merged_before,
                                      stack=stack, parallel=stack.parallel, save_tests=out / "hidden_tests",
                                      referee=referee, integrator=integrator,
                                      tech_lead=tech_lead, stronger_dev=stronger_dev,
-                                     answers=owner_answers(project))
-            status = finished(results)
+                                     answers=owner_answers(project), deferred=deferred)
+            status = finished(results, deferred)
             return
+        deferred = []                           # filled after approval, when the owner has chosen
         plan, results = run_project(project["description"], repo, engine, "python3",
                                     parallel=stack.parallel, approve=approve, stack=stack,
                                     save_tests=out / "hidden_tests", referee=referee, integrator=integrator,
-                                    tech_lead=tech_lead, stronger_dev=stronger_dev)
+                                    tech_lead=tech_lead, stronger_dev=stronger_dev,
+                                    deferred=fresh_deferred(backend.project, deferred))
         if plan is None:
             status = "failed"
         elif len(results) == 1:
             status = "rejected"
         else:
-            status = finished(results)
+            status = finished(results, deferred)
     finally:
         if status == "failed" and engine.budget.stopped:   # e.g. the planner itself was stopped by the limit
             status = STOPPED
+        label = checkpoint_label(change, resume, quick)
+        if status != "rejected" and not quick:  # retro notes (docs/pm.md), in the checkpoint below; never fail the run
+            pm_after_run(repo, label, results, events, deferred=deferred, merged_before=merged_before,
+                         cost_usd=engine.budget.spent - spent_before)
         if status == "done":                    # a save point the owner can roll back to (docs/checkpoints.md)
-            merged = {*(project.get("merged") or []), *(r.task for r in results if r.status == "merged")}
-            save_checkpoint(repo, checkpoint_label(change, resume, quick), events, merged)
+            merged = {*merged_before, *(r.task for r in results if r.status == "merged")}
+            save_checkpoint(repo, label, events, merged)
         events.emit("project_finished", status=status, repo=repo_url)
         print(f"project {a.project_id}: {status} ({repo_url})")
+        if status == "done":                    # the ship gate: every Must feature passes (docs/pm.md)
+            emit_ready_to_ship(repo, results, events, merged_before, needs_int=stack.integration)
         # a rejected change merged (and reverted) only its plan: nothing new to deploy
         publish_preview(results if status != "rejected" else [], repo, repo_url, events,
                         merged_before=set(project.get("merged") or []))

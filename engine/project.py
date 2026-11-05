@@ -27,6 +27,7 @@ from typing import Callable
 from engine.engine import Engine, GraphError, Result, SetupError, check_graph, failure_excerpt, git
 from engine.gitlock import repo_lock
 from engine.interfaces import Sandbox, Task
+from engine.pm import PRIORITIES, priority_problems, read_retro, retro_block, saved_ids, saved_note
 from engine.stacks import PythonStack, plain
 
 MAX_TASKS = 10
@@ -41,10 +42,16 @@ plan.json, exactly this shape:
    {{"project": "<name>",
      "contracts": ["<contract file>", ...],
      "tasks": [{{"id": "T1", "title": "<short>", "module": "<the one file this task owns>",
-                "spec": "<what to build, precise enough to test>", "depends_on": []}}]}}
+                "spec": "<what to build, precise enough to test>", "depends_on": [],
+                "stories": ["S1"], "priority": "must"}}]}}
    - 2 to {max_tasks} tasks. Ids are short (T1, T2...). Each task owns exactly one module and
      no module is shared. depends_on lists task ids whose code this task calls; no cycles.
    - Prefer tasks that can run in parallel. Only add a dependency when one task calls another's code.
+   - "stories": the ids of the user stories the task serves (if the description has stories like S1).
+     "priority": "must", "should" or "could", the highest priority among those stories (default "must").
+     A UI component or page task gets the priority of the stories it shows.
+   - A task may only depend on tasks of the same or a higher priority: a "must" task never depends on a
+     "should" or "could" task, and a "should" task never depends on a "could" task.
    - Every file you create must be listed in plan.json as a contract or a task module.
 
 Project description:
@@ -101,6 +108,11 @@ def plan_problems(plan, stack: PythonStack | None = None) -> list[str]:
         deps = t.get("depends_on", [])
         if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
             p.append(f"{tid}: depends_on must be a list of task ids")
+        if "priority" in t and t["priority"] not in PRIORITIES:
+            p.append(f'{tid}: "priority" must be "must", "should" or "could"')
+        stories = t.get("stories", [])
+        if not isinstance(stories, list) or not all(isinstance(s, str) for s in stories):
+            p.append(f'{tid}: "stories" must be a list of story ids, like ["S1"]')
     pages = plan.get("pages", [])
     if not isinstance(pages, list) or not all(isinstance(r, str) and re.match(r"^/[A-Za-z0-9_\-/]*$", r) for r in pages):
         p.append('"pages" must be a list of routes like "/book" (no dynamic segments)')
@@ -113,7 +125,12 @@ def plan_problems(plan, stack: PythonStack | None = None) -> list[str]:
         check_graph([Task(t["id"], t["title"], "", [], "", depends_on=t.get("depends_on", [])) for t in tasks])
     except GraphError as e:
         p.append(str(e))
-    return p
+    return p + priority_problems(tasks)
+
+
+def without(plan: dict, ids) -> dict:
+    ids = set(ids)
+    return dict(plan, tasks=[t for t in plan["tasks"] if t["id"] not in ids])
 
 
 def plan_check(stack: PythonStack):
@@ -346,7 +363,7 @@ End of the last attempt's test output:
 
 The last attempt's changes (git diff):
 {diff}
-
+{retro}
 Write {verdict} with exactly this JSON and nothing else:
 {{"decision": "retry" or "escalate",
   "note": "<for the dev, in plain English: what went wrong and exactly what to do instead>",
@@ -385,9 +402,10 @@ def parse_tech_lead_verdict(text: str) -> dict | None:
 
 
 def make_tech_lead(t: dict, test_path: str, hidden: dict[str, str], contracts: str, engine: Engine, tech_lead,
-                   mode: str = "new"):
+                   mode: str = "new", retro: str = ""):
     """Task.review_failure for a feature's dev task: runs the tech lead as its own task (on main, the hidden tests
-    written in so it can read them, nothing merged) and returns its verdict. Any failure is an escalation with
+    written in so it can read them, nothing merged) and returns its verdict. `retro` is the end of docs/retro.md
+    (notes from earlier runs, docs/pm.md). Any failure is an escalation with
     tech_lead_error, so the owner is never left without a question."""
     verdict = f"review/{t['id']}-techlead.json"
 
@@ -411,7 +429,7 @@ def make_tech_lead(t: dict, test_path: str, hidden: dict[str, str], contracts: s
             base=("the code before this change (the change's doc comments describe the new behavior)"
                   if mode == "change" else "the planner's stub (its doc comments are the spec)"),
             output=(last.test_output[-3000:] if last and last.test_output else "(none)"),
-            diff=diff.strip() or "(no changes)")
+            diff=diff.strip() or "(no changes)", retro=retro_block(retro))
         task = Task(f"{t['id']}-techlead", f"Tech lead review: {t['title']}", spec, ["*"], "", role="tech_lead",
                     merge=False, max_attempts=1, agent=tech_lead, setup_files=dict(hidden), check=check)
         r = engine.run_task(task)
@@ -430,17 +448,18 @@ def owner_feedback(answer: str, question: str = "") -> str:
 
 # ------------------------------------------------------------------ tasks
 def tasks_from_plan(plan: dict, python_or_stack: "str | PythonStack" = "python3",
-                    engine: Engine | None = None, referee=None, tech_lead=None, stronger_dev=None) -> list[Task]:
+                    engine: Engine | None = None, referee=None, tech_lead=None, stronger_dev=None,
+                    retro: str = "") -> list[Task]:
     stack = python_or_stack if isinstance(python_or_stack, PythonStack) else default_stack(python_or_stack)
     by_id = {t["id"]: t for t in plan["tasks"]}
     contracts = ", ".join(plan["contracts"]) or "none"
     return [task for t in plan["tasks"]
             for task in feature_tasks(t, by_id, contracts, stack, engine, referee,
-                                      tech_lead=tech_lead, stronger_dev=stronger_dev)]
+                                      tech_lead=tech_lead, stronger_dev=stronger_dev, retro=retro)]
 
 
 def feature_tasks(t: dict, by_id: dict[str, dict], contracts: str, stack: PythonStack, engine: Engine | None,
-                  referee, mode: str = "new", tech_lead=None, stronger_dev=None) -> list[Task]:
+                  referee, mode: str = "new", tech_lead=None, stronger_dev=None, retro: str = "") -> list[Task]:
     """A feature's QA task and dev task. mode "new" builds a stub; mode "change" changes a module that already
     works, so its tests and the dev's instructions say what may stay and what must change. With a `tech_lead`, a
     dev task that fails every try is reviewed before it gives up (docs/tech-lead.md); `stronger_dev` makes the
@@ -488,7 +507,7 @@ def feature_tasks(t: dict, by_id: dict[str, dict], contracts: str, stack: Python
              already_done=already_done(state, hidden, test_path, make_confirm(t, test_path, engine, referee))
              if mode == "change" and engine and referee else None,
              dispute=make_dispute(t, test_path, stack, hidden, engine, referee, mode) if engine and referee else None,
-             review_failure=make_tech_lead(t, test_path, hidden, contracts, engine, tech_lead, mode)
+             review_failure=make_tech_lead(t, test_path, hidden, contracts, engine, tech_lead, mode, retro)
              if engine and tech_lead and mode in ("new", "change") else None,
              stronger_agent=stronger_dev if engine and tech_lead and mode in ("new", "change") else None)]
 
@@ -501,7 +520,7 @@ Project brief and design:
 
 Built and tested modules (read their doc comments; you cannot edit them):
 {modules}
-
+{saved}
 Pages the app must have: {pages}
 
 How to wire it (read AGENTS.md first):
@@ -549,20 +568,25 @@ run in the check below will show them). Update those expectations to the new beh
 behavior that stays."""
 
 
-def integration_task(plan: dict, description: str, stack: PythonStack, agent=None, change: dict | None = None) -> Task:
+def integration_task(plan: dict, description: str, stack: PythonStack, agent=None, change: dict | None = None,
+                     deferred=()) -> Task:
     """The last task: pages, sign-in and server actions that connect every merged feature. It needs every
     server module, but only waits for UI components: if one never passed its tests, the integrator builds that
     screen itself inside src/app/, still checked by the build and page checks. Regression (Pawfect builds 6-7):
     one screen component that kept failing its tests blocked the whole app every time.
     With a `change`, it runs again after the change's tasks (and waits only for those): the pages are updated
-    for the change, and its check runs the whole test suite, so a change that broke earlier work fails here."""
+    for the change, and its check runs the whole test suite, so a change that broke earlier work fails here.
+    `deferred`: features saved for later (docs/pm.md). They aren't built, so it neither waits for them nor
+    imports their modules; its spec names them."""
     current = apply_change(plan, change) if change else plan
+    saved = set(deferred or ())
     pages = [r for r in current.get("pages", []) if isinstance(r, str)] or ["/"]
-    waits_on = change["tasks"] if change else plan["tasks"]
+    waits_on = [t for t in (change["tasks"] if change else plan["tasks"]) if t["id"] not in saved]
     ui = [t["id"] for t in waits_on if stack.is_ui_module(t["module"])]
-    modules = "\n".join(f"- {t['module']}: {t['title']}" for t in current["tasks"])
+    modules = "\n".join(f"- {t['module']}: {t['title']}" for t in current["tasks"] if t["id"] not in saved)
     spec = INTEGRATION_SPEC.format(description=description.strip(), modules=modules, pages=", ".join(pages),
-                                   check=stack.integration_check_cmd(pages))
+                                   check=stack.integration_check_cmd(pages),
+                                   saved=saved_note([t for t in current["tasks"] if t["id"] in saved]))
     if change:
         touched = ", ".join(t["module"] for t in change["tasks"])
         spec = CHANGE_INTEGRATION_NOTE.format(request=change.get("request", ""), summary=change.get("summary", ""),
@@ -584,10 +608,13 @@ def auto_approve(plan: dict) -> tuple[bool, str]:
 def run_project(description: str, repo: Path, engine: Engine, python: str = "python3",
                 parallel: int = 4, approve: Approver = auto_approve,
                 stack: PythonStack | None = None, save_tests: Path | None = None,
-                referee=None, integrator=None, tech_lead=None, stronger_dev=None) -> tuple[dict | None, list[Result]]:
+                referee=None, integrator=None, tech_lead=None, stronger_dev=None,
+                deferred=()) -> tuple[dict | None, list[Result]]:
     """Plan, then pause for approval, then QA + build. `approve(plan)` returns (approved, note); in the
     app it waits for the user's click, offline it approves automatically. `referee` is the agent that settles
-    test disputes; a different model from QA's, so work is never graded only by the model that wrote it."""
+    test disputes; a different model from QA's, so work is never graded only by the model that wrote it.
+    `deferred`: task ids the owner saved for later (docs/pm.md), or a function of the plan that returns them,
+    called after approval (the owner picks them on the approval screen). They are not built."""
     emit = engine.events.emit
     stack = stack or default_stack(python)
     planner = planning_task(description, stack)
@@ -601,10 +628,20 @@ def run_project(description: str, repo: Path, engine: Engine, python: str = "pyt
     emit("plan_decision", approved=approved, note=note)
     if not approved:
         return plan, [plan_result]
-    tasks = tasks_from_plan(plan, stack, engine=engine, referee=referee, tech_lead=tech_lead, stronger_dev=stronger_dev)
+    saved = saved_ids(plan, deferred(plan) if callable(deferred) else deferred)
+    emit_deferred(engine, plan, saved)
+    tasks = tasks_from_plan(without(plan, saved), stack, engine=engine, referee=referee, tech_lead=tech_lead,
+                            stronger_dev=stronger_dev)
     if stack.integration:
-        tasks.append(integration_task(plan, description, stack, agent=integrator))
+        tasks.append(integration_task(plan, description, stack, agent=integrator, deferred=saved))
     return plan, [plan_result, *build(tasks, engine, parallel, save_tests)]
+
+
+def emit_deferred(engine: Engine, plan: dict, saved: list[str]) -> None:
+    """pm_deferred {tasks, titles} at the start of a build that leaves features for later (only then)."""
+    if saved:
+        title = {t["id"]: t.get("title", t["id"]) for t in plan["tasks"]}
+        engine.events.emit("pm_deferred", tasks=list(saved), titles=[title[i] for i in saved])
 
 
 def build(tasks: list[Task], engine: Engine, parallel: int, save_tests: Path | None) -> list[Result]:
@@ -622,26 +659,34 @@ def build(tasks: list[Task], engine: Engine, parallel: int, save_tests: Path | N
 
 def resume_tasks(plan: dict, description: str, stack: PythonStack, merged: set[str], engine: Engine | None = None,
                  referee=None, integrator=None, change: dict | None = None, tech_lead=None, stronger_dev=None,
-                 answers: dict[str, str] | None = None, questions: dict[str, str] | None = None) -> list[Task]:
+                 answers: dict[str, str] | None = None, questions: dict[str, str] | None = None,
+                 deferred=(), retro: str = "") -> list[Task]:
     """The tasks still to do after a stopped build: every feature (its QA and dev task) and the integration
     that hadn't merged. Merged work stays as it is in the repo; nothing depends on it any more.
     `change` is the latest approved change (changes/{n}.json on main): its tasks that didn't merge are redone as
     it planned them. Its "change" tasks have to come from there: plan.json only holds the new spec under the
-    owning task's id (T2), which merged long ago."""
+    owning task's id (T2), which merged long ago.
+    `deferred`: features still saved for later (docs/pm.md); they stay unbuilt. When the integration merged in an
+    earlier run but features are built now (the owner's "Build saved features"), it runs again to wire them in.
+    `retro`: the end of docs/retro.md, for the tech lead."""
     ids = {t["id"] for t in change["tasks"]} if change else set()
-    tasks = tasks_from_plan(dict(plan, tasks=[t for t in plan["tasks"] if t["id"] not in ids]), stack,
-                            engine=engine, referee=referee, tech_lead=tech_lead, stronger_dev=stronger_dev)
+    saved = [i for i in saved_ids(plan, deferred) if i not in merged]
+    tasks = tasks_from_plan(dict(plan, tasks=[t for t in plan["tasks"] if t["id"] not in ids and t["id"] not in saved]),
+                            stack, engine=engine, referee=referee, tech_lead=tech_lead, stronger_dev=stronger_dev,
+                            retro=retro)
     if change:
         tasks += tasks_from_change(change, plan, stack, engine=engine, referee=referee, tech_lead=tech_lead,
-                                   stronger_dev=stronger_dev)
+                                   stronger_dev=stronger_dev, retro=retro)
+    feature = lambda tid: tid.removesuffix("-qa")                      # noqa: E731
     if stack.integration:
-        integ = integration_task(plan, description, stack, agent=integrator, change=change)
+        integ = integration_task(plan, description, stack, agent=integrator, change=change, deferred=saved)
         devs = [t.id for t in tasks if not t.id.endswith("-qa")]
         modules = {t.id: t.can_edit[0] for t in tasks}
         integ.depends_on = [d for d in devs if not stack.is_ui_module(modules[d])]
         integ.waits_for = [d for d in devs if stack.is_ui_module(modules[d])]
         tasks.append(integ)
-    feature = lambda tid: tid.removesuffix("-qa")                      # noqa: E731
+        if "INT" in merged and any(d not in merged for d in devs):
+            merged = set(merged) - {"INT"}                              # new features to wire in: integrate again
     todo = [t for t in tasks if feature(t.id) not in merged]
     for t in todo:
         t.depends_on = [d for d in t.depends_on if feature(d) not in merged]
@@ -670,14 +715,18 @@ def latest_change(repo: Path) -> dict | None:
 def resume_project(plan: dict, description: str, repo: Path, engine: Engine, merged: set[str],
                    stack: PythonStack | None = None, parallel: int = 4, save_tests: Path | None = None,
                    referee=None, integrator=None, tech_lead=None, stronger_dev=None,
-                   answers: dict[str, str] | None = None) -> list[Result]:
+                   answers: dict[str, str] | None = None, deferred=()) -> list[Result]:
     """Retry only what didn't finish, in the same repo, without planning or approval again. `answers` are the
-    owner's answers to the tech lead's questions, by task id (docs/tech-lead.md)."""
+    owner's answers to the tech lead's questions, by task id (docs/tech-lead.md). `deferred`: features still saved
+    for later (docs/pm.md), skipped again; the tech lead reads the end of docs/retro.md."""
     stack = stack or default_stack()
+    saved = [i for i in saved_ids(plan, deferred) if i not in merged]
     todo = resume_tasks(plan, description, stack, merged, engine=engine, referee=referee, integrator=integrator,
-                        change=latest_change(repo), tech_lead=tech_lead, stronger_dev=stronger_dev, answers=answers)
+                        change=latest_change(repo), tech_lead=tech_lead, stronger_dev=stronger_dev, answers=answers,
+                        deferred=saved, retro=read_retro(repo))
     engine.events.emit("build_resumed", merged=sorted(merged),
                        retrying=sorted({t.id.removesuffix("-qa") for t in todo}))
+    emit_deferred(engine, plan, saved)
     return build(todo, engine, parallel, save_tests)
 
 
@@ -720,7 +769,7 @@ Write changes/{n}.json, exactly this shape:
    - "contracts": every contract file this change adds or edits ({contract_rule}). Contract edits must be
      additive: existing code must keep working with them.{migration_rule}
    - Every file you create or edit must be listed in changes/{n}.json, as a contract or a task module.{pages_rule}
-
+{retro}
 Project brief:
 {description}"""
 
@@ -909,12 +958,14 @@ def change_check(n: int, request: str, plan: dict, stack: PythonStack):
     return check
 
 
-def change_planning_task(n: int, request: str, plan: dict, stack: PythonStack, description: str = "") -> Task:
+def change_planning_task(n: int, request: str, plan: dict, stack: PythonStack, description: str = "",
+                         retro: str = "") -> Task:
+    """`retro`: the end of docs/retro.md (what failed in earlier runs and why, docs/pm.md)."""
     web = stack.integration
     rx = stack.migration_re
     return Task(f"C{n}PLAN", "Plan the change",
                 CHANGE_GUIDE.format(
-                    n=n, request=request.strip(), layout=stack.plan_layout, max_tasks=MAX_TASKS,
+                    n=n, request=request.strip(), layout=stack.plan_layout, max_tasks=MAX_TASKS, retro=retro_block(retro),
                     stub_marker=stack.stub_marker, contract_rule=stack.contract_rule,
                     description=(description or plan.get("project", "")).strip(),
                     migration_rule=("\n     Migrations: add new ones only, numbered after the last existing one; "
@@ -927,13 +978,13 @@ def change_planning_task(n: int, request: str, plan: dict, stack: PythonStack, d
 
 
 def tasks_from_change(change: dict, plan: dict, stack: PythonStack, engine: Engine | None = None,
-                      referee=None, tech_lead=None, stronger_dev=None) -> list[Task]:
+                      referee=None, tech_lead=None, stronger_dev=None, retro: str = "") -> list[Task]:
     """QA + dev tasks for a change. Dependencies stay inside the change: earlier work is already merged."""
     by_id = {t["id"]: t for t in change["tasks"]}
     contracts = ", ".join(dict.fromkeys([*plan.get("contracts", []), *change.get("contracts", [])])) or "none"
     return [task for t in change["tasks"]
             for task in feature_tasks(t, by_id, contracts, stack, engine, referee, mode=t["kind"],
-                                      tech_lead=tech_lead, stronger_dev=stronger_dev)]
+                                      tech_lead=tech_lead, stronger_dev=stronger_dev, retro=retro)]
 
 
 def apply_change(plan: dict, change: dict) -> dict:
@@ -993,16 +1044,18 @@ def undo_merge(engine: Engine, task_id: str) -> bool:
 def change_project(n: int, request: str, description: str, repo: Path, engine: Engine,
                    approve: Approver = auto_approve, stack: PythonStack | None = None, parallel: int = 4,
                    save_tests: Path | None = None, referee=None, integrator=None, tech_lead=None,
-                   stronger_dev=None) -> tuple[dict | None, list[Result]]:
+                   stronger_dev=None, deferred=()) -> tuple[dict | None, list[Result]]:
     """Plan change n, pause for approval, record it in plan.json, then QA + build it in the same repo (and
     integrate again for web apps). Returns (change, results): change is None if planning failed; results is just
-    the planner's if the change was rejected (its merge is reverted then)."""
+    the planner's if the change was rejected (its merge is reverted then). The planner and the tech lead read the
+    end of docs/retro.md; `deferred` features (still saved for later, docs/pm.md) are named to the integrator."""
     emit = engine.events.emit
     stack = stack or default_stack()
     repo = Path(repo)
     emit("change_started", n=n, text=request)
     plan = json.loads((repo / "plan.json").read_text())
-    planner = change_planning_task(n, request, plan, stack, description)
+    retro = read_retro(repo)
+    planner = change_planning_task(n, request, plan, stack, description, retro=retro)
     emit("task_queued", planner.id, title=planner.title, role="planner", depends_on=[])
     plan_result = engine.run_task(planner)
     if plan_result.status != "merged":
@@ -1019,7 +1072,10 @@ def change_project(n: int, request: str, description: str, repo: Path, engine: E
     commit_on_main(engine, {"plan.json": json.dumps(apply_change(plan, change), indent=2) + "\n"},
                    f"plan.json: change {n}")
     tasks = tasks_from_change(change, plan, stack, engine=engine, referee=referee, tech_lead=tech_lead,
-                              stronger_dev=stronger_dev)
+                              stronger_dev=stronger_dev, retro=retro)
     if stack.integration:
-        tasks.append(integration_task(plan, description, stack, agent=integrator, change=change))
+        changed = {t["module"] for t in change["tasks"]}            # a change to a saved feature's module builds it
+        saved = [i for i in saved_ids(plan, deferred)
+                 if not any(t["id"] == i and t["module"] in changed for t in plan["tasks"])]
+        tasks.append(integration_task(plan, description, stack, agent=integrator, change=change, deferred=saved))
     return change, [plan_result, *build(tasks, engine, parallel, save_tests)]
