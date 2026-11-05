@@ -4,6 +4,7 @@ import { anyApi } from "convex/server";
 
 import { checkOwner } from "./owner";
 import { canRequestChange, checkChangeText, nextChangeNumber, type ChangeRequest } from "./changes";
+import { budgetOf, canSpendMore, checkBudget } from "./budget";
 
 const owner = { key: v.string() };
 
@@ -42,7 +43,8 @@ export const get = queryGeneric({
       .collect();
     return {
       project: { id: p._id, name: p.name, description: p.description, model: p.model, status: p.status,
-                 canRetry: p.status === "failed" && Boolean(p.plan),
+                 canRetry: (p.status === "failed" || p.status === "stopped") && Boolean(p.plan),
+                 budgetUsd: budgetOf(p), costUsd: p.costUsd,
                  canChange: Boolean(p.repo) && canRequestChange(p.status, Boolean(p.plan), false),
                  changes: ((p.changes ?? []) as ChangeRequest[]).map((c) => ({ n: c.n, text: c.text, at: c.at })),
                  createdAt: p._creationTime, error: p.error ?? null, wizard: p.wizard ?? null, previewUrl: p.previewUrl ?? null },
@@ -53,9 +55,11 @@ export const get = queryGeneric({
 
 export const create = mutationGeneric({
   args: { ...owner, name: v.string(), description: v.string(), model: v.union(v.literal("haiku"), v.literal("sonnet")),
-          setup: v.optional(v.boolean()) },
-  handler: async (ctx, { key, name, description, model, setup }) => {
+          setup: v.optional(v.boolean()), budgetUsd: v.optional(v.number()) },
+  handler: async (ctx, { key, name, description, model, setup, budgetUsd }) => {
     checkOwner(key);
+    const budget = checkBudget(budgetUsd ?? budgetOf({}));
+    if (!budget.ok) throw new ConvexError(budget.message);
     const n = name.trim();
     const d = description.trim();
     if (n.length < 1 || n.length > 120) throw new ConvexError("Give the project a name (up to 120 characters).");
@@ -63,11 +67,11 @@ export const create = mutationGeneric({
     if (setup) {
       // Setup wizard first (Questions -> Requirements -> Stack -> Design); the team starts when Design is locked.
       const id = await ctx.db.insert("projects", { name: n, description: d, model, status: "draft", costUsd: 0,
-                                                    wizard: { step: "questions", busy: "questions" } });
+                                                    budgetUsd: budget.usd, wizard: { step: "questions", busy: "questions" } });
       await ctx.scheduler.runAfter(0, anyApi.wizard.generateQuestions, { key, id });
       return id;
     }
-    const id = await ctx.db.insert("projects", { name: n, description: d, model, status: "queued", costUsd: 0 });
+    const id = await ctx.db.insert("projects", { name: n, description: d, model, status: "queued", costUsd: 0, budgetUsd: budget.usd });
     await ctx.scheduler.runAfter(0, anyApi.projects.startWorker, { projectId: id });
     return id;
   },
@@ -79,7 +83,11 @@ export const retryFailed = mutationGeneric({
   handler: async (ctx, { key, id }) => {
     checkOwner(key);
     const p = await ctx.db.get(id);
-    if (!p || p.status !== "failed" || !p.plan) throw new ConvexError("Only a build that stopped after planning can be retried.");
+    // stopped at the spending limit retries like failed, once the limit has room again
+    if (!p || !["failed", "stopped"].includes(p.status) || !p.plan) throw new ConvexError("Only a build that stopped after planning can be retried.");
+    if (!canSpendMore(p.costUsd, budgetOf(p))) {
+      throw new ConvexError("This project has spent its limit. Raise the spending limit on the plan page, then retry.");
+    }
     // mode back to a plain build/retry, so projectForWorker doesn't take this retry for a change request
     await ctx.db.patch(id, { status: "queued", resume: true, mode: undefined, error: undefined });
     await ctx.scheduler.runAfter(0, anyApi.projects.startWorker, { projectId: id });
@@ -101,6 +109,9 @@ export const requestChange = mutationGeneric({
     if (!p.repo) throw new ConvexError("This project has no repo yet, so there's nothing to change. Build it again instead.");
     const checked = checkChangeText(text);
     if (!checked.ok) throw new ConvexError(checked.message);
+    if (!canSpendMore(p.costUsd, budgetOf(p))) {
+      throw new ConvexError("This project has spent its limit. Raise the spending limit on the plan page first.");
+    }
     const changes = (p.changes ?? []) as ChangeRequest[];
     const entry: ChangeRequest = { n: nextChangeNumber(changes), text: checked.text, at: Date.now() };
     await ctx.db.patch(id, { status: "queued", mode: "change", resume: false, error: undefined, changeFrom: p.status,
@@ -116,14 +127,31 @@ export const rebuild = mutationGeneric({
   handler: async (ctx, { key, id }) => {
     checkOwner(key);
     const p = await ctx.db.get(id);
-    if (!p || !["failed", "done", "rejected"].includes(p.status)) throw new ConvexError("Only a stopped project can be built again.");
+    if (!p || !["failed", "done", "rejected", "stopped"].includes(p.status)) throw new ConvexError("Only a stopped project can be built again.");
     const copies = (await ctx.db.query("projects").collect()).filter((x) => x.name.startsWith(p.name.replace(/ \(\d+\)$/, ""))).length;
     const nid = await ctx.db.insert("projects", {
       name: `${p.name.replace(/ \(\d+\)$/, "")} (${copies + 1})`, description: p.description, model: p.model,
-      status: "queued", costUsd: 0, ...(p.wizard ? { wizard: p.wizard } : {}),
+      status: "queued", costUsd: 0, budgetUsd: budgetOf(p), ...(p.wizard ? { wizard: p.wizard } : {}),
     });
     await ctx.scheduler.runAfter(0, anyApi.projects.startWorker, { projectId: nid });
     return nid;
+  },
+});
+
+/**
+ * Change a project's spending limit (plan page). A run waiting for approval uses the limit as it stands when you
+ * decide (worker.py with_fresh_budget); a build already running keeps its limit; the next run (retry, change) reads it.
+ */
+export const setBudget = mutationGeneric({
+  args: { ...owner, id: v.id("projects"), budgetUsd: v.number() },
+  handler: async (ctx, { key, id, budgetUsd }) => {
+    checkOwner(key);
+    const p = await ctx.db.get(id);
+    if (!p) throw new ConvexError("This project doesn't exist any more.");
+    const checked = checkBudget(budgetUsd);
+    if (!checked.ok) throw new ConvexError(checked.message);
+    await ctx.db.patch(id, { budgetUsd: checked.usd });
+    return checked.usd;
   },
 });
 

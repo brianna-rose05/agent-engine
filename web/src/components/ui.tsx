@@ -33,6 +33,7 @@ const PILL: Record<string, string> = {
   done: "bg-dev-bg text-dev",
   rejected: "bg-canvas text-muted",
   failed: "bg-bad-bg text-bad",
+  stopped: "bg-you-bg text-you",
 };
 const PILL_TEXT: Record<string, string> = {
   draft: "Setting up",
@@ -43,6 +44,7 @@ const PILL_TEXT: Record<string, string> = {
   done: "Done",
   rejected: "Plan sent back",
   failed: "Needs attention",
+  stopped: "Spending limit reached",
 };
 
 export function StatusPill({ status }: { status: string }) {

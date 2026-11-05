@@ -10,7 +10,7 @@ export default defineSchema({
     name: v.string(),
     description: v.string(),
     model: v.union(v.literal("haiku"), v.literal("sonnet")),
-    status: v.string(), // draft (setup wizard) | queued | starting | planning | awaiting_approval | approved | rejected | building | done | failed
+    status: v.string(), // draft (setup wizard) | queued | starting | planning | awaiting_approval | approved | rejected | building | done | failed | stopped (spending limit)
     plan: v.optional(v.any()),
     planNote: v.optional(v.string()),
     costUsd: v.number(),
@@ -23,6 +23,7 @@ export default defineSchema({
     changes: v.optional(v.array(v.any())), // change requests, oldest first: {n, text, at} (convex/changes.ts)
     pendingChange: v.optional(v.any()), // the latest planned change (changes/{n}.json) from change_plan_ready
     changeFrom: v.optional(v.string()), // status before the running change, restored if the change is sent back
+    budgetUsd: v.optional(v.number()), // spending limit in $, enforced by the engine (convex/budget.ts, engine/budget.py)
   }),
   events: defineTable({
     projectId: v.id("projects"),
@@ -31,4 +32,13 @@ export default defineSchema({
     data: v.any(),
     ts: v.number(), // seconds since epoch, as the engine reports it
   }).index("by_project_ts", ["projectId", "ts"]),
+  // written by engine:record (convex/notifications.ts); ts in milliseconds since epoch
+  notifications: defineTable({
+    projectId: v.id("projects"),
+    kind: v.string(), // needs_approval | finished | budget_reached | preview_ready
+    title: v.string(),
+    body: v.string(),
+    ts: v.number(),
+    read: v.boolean(),
+  }).index("by_ts", ["ts"]).index("by_read", ["read"]),
 });

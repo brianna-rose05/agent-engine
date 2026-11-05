@@ -47,7 +47,7 @@ export function TopBar() {
           <span className="rounded-md bg-surface px-2 py-0.5 text-xs ring-1 ring-line">{project.model}</span>
           {preview && <OpenPreview url={preview} />}
           {mode === "live" && canRetry && <RetryFailed id={project.id} />}
-          {mode === "live" && ["failed", "done", "rejected"].includes(liveStatus ?? "") && <Rebuild id={project.id} quiet={canRetry || Boolean(preview)} />}
+          {mode === "live" && ["failed", "done", "rejected", "stopped"].includes(liveStatus ?? "") && <Rebuild id={project.id} quiet={canRetry || Boolean(preview)} />}
 
           {mode === "demo" && (
             <div className="flex items-center gap-1 rounded-lg bg-surface p-0.5 ring-1 ring-line" title="Replay speed">

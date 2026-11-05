@@ -9,6 +9,7 @@ import { Shell } from "@/components/Shell";
 import { useMutation } from "convex/react";
 import { api, liveEnabled, useOwner } from "@/lib/convex";
 import { OwnerGate } from "@/components/OwnerGate";
+import { BUDGET_DEFAULT, BUDGET_MAX, BUDGET_MIN, checkBudget } from "../../convex/budget";
 
 const MODELS = [
   { id: "haiku", name: "Haiku", note: "Fast and cheap. About $0.10 for a small project.", recommended: true },
@@ -28,13 +29,13 @@ function LiveForm() {
   const create = useMutation(api.projects.create);
   return (
     <NewProject
-      create={async (name, description, model) =>
-        (await create({ key: key!, name, description, model, setup: true })) as string}
+      create={async (name, description, model, budgetUsd) =>
+        (await create({ key: key!, name, description, model, setup: true, budgetUsd })) as string}
     />
   );
 }
 
-type Create = ((name: string, description: string, model: "haiku" | "sonnet") => Promise<string>) | null;
+type Create = ((name: string, description: string, model: "haiku" | "sonnet", budgetUsd: number) => Promise<string>) | null;
 
 function NewProject({ create }: { create: Create }) {
   const router = useRouter();
@@ -43,7 +44,9 @@ function NewProject({ create }: { create: Create }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [model, setModel] = useState("haiku");
-  const ready = name.trim().length > 0 && description.trim().length >= 20;
+  const [budget, setBudget] = useState(String(BUDGET_DEFAULT));
+  const budgetCheck = checkBudget(Number(budget));
+  const ready = name.trim().length > 0 && description.trim().length >= 20 && budgetCheck.ok;
 
   const useSample = () => {
     setName(demo.project.name);
@@ -55,7 +58,7 @@ function NewProject({ create }: { create: Create }) {
     setBusy(true);
     setError("");
     try {
-      const id = await create(name, description, model as "haiku" | "sonnet");
+      const id = await create(name, description, model as "haiku" | "sonnet", budgetCheck.ok ? budgetCheck.usd : BUDGET_DEFAULT);
       router.push(`/p/${id}/setup`);
     } catch (e) {
       setError(e instanceof Error ? e.message.replace(/^.*ConvexError: /, "").split("\n")[0] : "Couldn't start the project.");
@@ -121,6 +124,30 @@ function NewProject({ create }: { create: Create }) {
               ))}
             </div>
           </fieldset>
+
+          <label className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium">Spending limit</span>
+            <span className="flex flex-wrap items-center gap-3">
+              <span className="flex items-center gap-1.5 rounded-xl border border-line bg-canvas px-3 py-2 focus-within:ring-2 focus-within:ring-planner/25">
+                <span className="text-muted" aria-hidden>$</span>
+                <input
+                  type="number"
+                  min={BUDGET_MIN}
+                  max={BUDGET_MAX}
+                  step={1}
+                  value={budget}
+                  onChange={(e) => setBudget(e.target.value)}
+                  aria-invalid={!budgetCheck.ok}
+                  className="w-20 bg-transparent text-[15px] tabular-nums outline-none"
+                />
+              </span>
+              <span className={`text-xs ${budgetCheck.ok ? "text-muted" : "text-bad"}`}>
+                {budgetCheck.ok
+                  ? `The team stops starting new work once the project has spent this. You'll see an estimate before approving the plan, and can change the limit there ($${BUDGET_MIN} to $${BUDGET_MAX}).`
+                  : budgetCheck.message}
+              </span>
+            </span>
+          </label>
 
           <div className="flex flex-wrap items-center gap-3 border-t border-line pt-5">
             <p className={`mr-auto text-xs ${error ? "text-bad" : "text-muted"}`}>

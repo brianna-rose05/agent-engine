@@ -16,7 +16,8 @@ export type EngineEvent = {
     | "preview_skipped"
     | "agent_activity"
     | "change_started"
-    | "change_plan_ready";
+    | "change_plan_ready"
+    | "budget_reached";
   task_id: string | null;
   data: Record<string, unknown>;
 };
@@ -56,7 +57,7 @@ export type TaskState = {
   title: string;
   role: Role;
   depends_on: string[];
-  status: string; // queued | working | checking | merging | merged | passed | failed | blocked | error
+  status: string; // queued | working | checking | merging | merged | passed | failed | blocked | error | stopped
   attempt: number;
   attempts: Attempt[];
   cost_usd: number;
@@ -73,7 +74,8 @@ export type ProjectStatus =
   | "rejected"
   | "building"
   | "done"
-  | "failed";
+  | "failed"
+  | "stopped"; // the spending limit stopped the build (engine/budget.py): raise it and retry what's left
 
 export type FeedItem = {
   t: number;
@@ -94,6 +96,7 @@ export type ProjectState = {
   preview_url: string | null; // live preview of the finished app, once deployed
   changes: ChangeState[];      // change requests, oldest first
   change: ChangeState | null;  // the latest one (the same object as changes.at(-1))
+  budget_reached: { spent: number; budget: number } | null; // the latest run hit its spending limit
 };
 
 export type Project = {
