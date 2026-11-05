@@ -2,6 +2,7 @@ import { withHistory } from "./history";
 import { withShip } from "./ship";
 import { listText } from "./pm";
 import { ARCHITECT_CHANGES, architectFeed, architectReview } from "./architect";
+import { DESIGN_CHANGES, designFeed, designReview, designReviewFor, withDesignReview } from "./designer";
 import { priorityOf, type TaskPriority } from "../../convex/pm";
 import type { ArchitectReview, Attempt, ChangeState, ChangeTask, CodeReview, EngineEvent, FeedItem, Plan, PlanTask, ProjectState, QuickState, Role,
               TaskState, TechLeadReview } from "./types";
@@ -166,6 +167,9 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
         } else if ((d.attempt ?? 1) > 1 && codeReviewFor(task, d.attempt! - 1)?.verdict === "changes") {
           say({ who: task.role, channel: ch, task_id: task.id, tone: "warn",
                 text: `${name(task)}: trying again with the reviewer's comments (try ${d.attempt}).` });
+        } else if ((d.attempt ?? 1) > 1 && designReviewFor(task, d.attempt! - 1)?.verdict === "changes") {
+          say({ who: task.role, channel: ch, task_id: task.id, tone: "warn",
+                text: `Fixing the designer's comments on the pages (try ${d.attempt}, the one extra try they get).` });
         } else if ((d.attempt ?? 1) > 1) {
           say({ who: task.role, channel: ch, task_id: task.id, tone: "warn", text: `${name(task)}: trying again (try ${d.attempt}).` });
         } else {
@@ -177,6 +181,10 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
         say({ who: "architect", channel: "planning", task_id: task.id,
               text: `The plan${n ? ` for change ${n}` : ""} passed its checks. The architect (a different model) is reviewing ` +
                     "its contracts, migrations and security before it comes to you." });
+      } else if (d.status === "design_review") {
+        say({ who: "designer", channel: ch, task_id: task.id,
+              text: "The app passed its whole-app check. The designer (a different model) is looking at screenshots of " +
+                    "every page, on desktop and phone, before it merges." });
       } else if (d.status === "disputing") {
         say({ who: "engine", channel: "tests", task_id: task.id, tone: "warn",
               text: `${name(task)} keeps failing a few hidden tests, so a referee (a different model) is checking whether the tests match the spec.` });
@@ -215,7 +223,8 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
       }
       tasks[task.id] = { ...task, attempts: [...task.attempts, a], cost_usd: round(task.cost_usd + a.cost_usd) };
       cost_usd = round(cost_usd + a.cost_usd);
-      if (!a.passed && a.reason !== REVIEW_CHANGES && a.reason !== ARCHITECT_CHANGES && !(isQuick(task.id) && a.reason.startsWith(NEEDS_CHANGE))) {
+      if (!a.passed && a.reason !== REVIEW_CHANGES && a.reason !== ARCHITECT_CHANGES && a.reason !== DESIGN_CHANGES &&
+          !(isQuick(task.id) && a.reason.startsWith(NEEDS_CHANGE))) {
         const claimed = a.claim.toLowerCase().startsWith("done");
         say({ who: "engine", channel: channelFor(task.role), task_id: task.id, tone: "warn",
               text: claimed
@@ -303,6 +312,14 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
       } else {
         say({ who: "reviewer", channel: ch, task_id: task.id, text: `Reviewer approved ${name(task)}.${note ? ` ${note}` : ""}` });
       }
+      break;
+    }
+    case "design_review": {
+      // docs/designer.md: on the integrator's task (INT), after its whole-app check and before it merges
+      if (!task) break;
+      const review = designReview(e.data ?? {}, e.t, task.attempt);
+      tasks[task.id] = withDesignReview(task, review);
+      say({ who: "designer", channel: channelFor(task.role), task_id: task.id, ...designFeed(review) });
       break;
     }
     case "architect_review": {
@@ -554,13 +571,14 @@ export type Feature = {
   priority: TaskPriority;  // must (also when the plan has none), should or could
   reviewing: boolean;      // the tech lead is reviewing its failed tries
   code_reviewing: boolean; // the code reviewer is reading a passing try before it merges
+  design_reviewing: boolean; // the designer is looking at screenshots of a passing integration try before it merges
   question?: string;       // the tech lead's open question for you (a failed dev task)
   retry_model?: string;    // the tech lead moved its extra tries to this model ("sonnet")
 };
 
 const BAD = new Set(["failed", "blocked", "error", "merge_conflict", "stopped"]);
 /** A task agent at work, or about to merge: a saved feature in one of these is being built after all. */
-const ACTIVE = new Set(["working", "checking", "merging", "disputing", "reviewing", "reviewing_code"]);
+const ACTIVE = new Set(["working", "checking", "merging", "disputing", "reviewing", "reviewing_code", "design_review"]);
 
 /** One card per planned feature, combining its QA task and its dev task, then the cards of approved changes
  *  (C1T1, C1T2, ...), then the integration card, then quick changes the engine has queued (Q1, Q2, ...). */
@@ -587,7 +605,7 @@ export function features(s: ProjectState): Feature[] {
       column = "saved"; // not built in this run: not a failure, never "needs you"
     } else if ((qa && BAD.has(qa.status)) || (dev && BAD.has(dev.status))) column = "attention";
     else if (dev?.status === "merged") column = "done";
-    else if (dev && ["checking", "merging", "disputing", "reviewing", "reviewing_code"].includes(dev.status)) {
+    else if (dev && ["checking", "merging", "disputing", "reviewing", "reviewing_code", "design_review"].includes(dev.status)) {
       column = "checking"; active = "dev";
     }
     else if (dev?.status === "working") { column = "building"; active = "dev"; }
@@ -601,6 +619,7 @@ export function features(s: ProjectState): Feature[] {
       priority: priorityOf(p),
       reviewing: dev?.status === "reviewing",
       code_reviewing: dev?.status === "reviewing_code",
+      design_reviewing: dev?.status === "design_review",
       ...(dev?.status === "failed" && dev.question ? { question: dev.question } : {}),
       ...(dev?.retry_model ? { retry_model: dev.retry_model } : {}),
     };

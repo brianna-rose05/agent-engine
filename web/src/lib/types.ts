@@ -12,6 +12,7 @@ export type EngineEvent = {
     | "tech_lead_review" | "escalated" // the tech lead reviews a feature that failed its tries (dev -> tech lead -> you)
     | "code_review" // the code reviewer's verdict on a passing try, before it merges (docs/reviewer.md)
     | "architect_review" // the architect's verdict on a plan's contracts, before you approve it (docs/architect.md)
+    | "design_review" // the designer's verdict on screenshots of every page, before the integration merges (docs/designer.md)
     | "build_resumed"
     | "project_finished"
     | "preview_ready"
@@ -93,7 +94,7 @@ export type TaskState = {
   title: string;
   role: Role;
   depends_on: string[];
-  status: string; // queued | working | checking | disputing | reviewing | reviewing_code | merging | merged | passed | failed | blocked | error | stopped
+  status: string; // queued | working | checking | disputing | reviewing | reviewing_code | design_review | merging | merged | passed | failed | blocked | error | stopped
   attempt: number;
   attempts: Attempt[];
   cost_usd: number;
@@ -105,6 +106,19 @@ export type TaskState = {
   question?: string;       // the tech lead's open question for you (escalated): answer it to retry
   retry_model?: string;    // the model the tech lead's extra tries ran on ("sonnet"), when it moved to a stronger one
   code_reviews?: CodeReview[]; // the code reviewer's verdicts this run, one per try it reviewed, oldest first
+  design_reviews?: DesignReview[]; // the designer's verdicts this run (the integration only), one per try, oldest first
+};
+
+/** The designer's verdict on screenshots of a passing integration try, before it merges (design_review, docs/designer.md). */
+export type DesignReview = {
+  attempt: number;
+  verdict: "approve" | "changes"; // changes: that try counts as failed and the integrator gets one more, with the comments
+  comments: string[];      // "<page> (<width>): <problem and fix>"
+  warnings?: boolean;      // it still asked for changes after the fix (or the fix didn't pass): merged, comments kept
+  error?: boolean;         // the designer's run failed: merged as it was
+  skipped?: boolean;       // no review: no screenshots (reason), or the spending limit
+  reason?: string;         // why it was skipped, or how a reviewed try merged after a failed fix
+  t: number;
 };
 
 /** The code reviewer's verdict on one passing try, before it merges (code_review, docs/reviewer.md). */
@@ -142,7 +156,7 @@ export type ProjectStatus =
 
 export type FeedItem = {
   t: number;
-  who: Role | "engine" | "you" | "tech lead" | "PM" | "reviewer" | "architect";
+  who: Role | "engine" | "you" | "tech lead" | "PM" | "reviewer" | "architect" | "designer";
   channel: "planning" | "tests" | "build";
   text: string;
   tone?: "good" | "warn" | "bad";

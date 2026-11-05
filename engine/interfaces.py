@@ -48,6 +48,11 @@ class Task:
     # "comments": [...]}. `files` are the planner's files ({path: contents}); `round` is 1, then 2 for the plan the
     # planner wrote with the architect's comments. None: no architect review (merge as before).
     review_plan: Callable[[dict, int], dict] | None = field(default=None, repr=False)
+    # review_design(box, round, previous_comments) -> the designer's verdict on an attempt that passed its checks,
+    # before it merges (docs/designer.md, the integrator only): {"verdict": "approve" | "changes", "comments": [...],
+    # "cost_usd", ...}. Runs in the attempt's own sandbox (where the production build is) after its work is committed.
+    # `round` is 1, then 2 for the one extra attempt the designer's comments get. None: no design review.
+    review_design: Callable[..., dict] | None = field(default=None, repr=False)
 
 
 class SandboxUnavailable(RuntimeError):

@@ -140,6 +140,7 @@ class NextSupabaseStack(PythonStack):
     # The check scripts (the integration check's and the Ship screen's): template files, never a task's.
     reserved |= {"scripts/app-server.mjs", "scripts/check-app.mjs", "scripts/check-security.mjs",
                  "scripts/check-a11y.mjs", "scripts/check-speed.mjs"}
+    reserved |= {"scripts/screenshots.mjs"}       # the designer's screenshots (docs/designer.md)
 
     # ---------------------------------------------------------------- integration
     integration = True

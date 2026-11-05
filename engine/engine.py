@@ -14,6 +14,7 @@ from threading import Lock
 from typing import Callable
 
 from engine.budget import STOPPED, Budget
+from engine.designer import BUDGET_REASON, DESIGN_CHANGES, normalize_design_review
 from engine.events import Emitter
 from engine.gitlock import repo_lock
 from engine.interfaces import Agent, Sandbox, SandboxLost, SandboxUnavailable, Task
@@ -206,6 +207,9 @@ class Engine:
         code_changes = 0                             # the code reviewer's "changes" verdicts so far (docs/reviewer.md)
         architect_rounds = 0                         # the architect's reviews of this plan so far (docs/architect.md)
         architect_said = ""                          # its comments when it sent the plan back
+        design_rounds = 0                            # the designer's reviews of this task so far (docs/designer.md)
+        design_said: list[str] = []                  # its comments when it sent the first passing attempt back
+        design_fallback = None                       # (branch, attempt) of that attempt: it merges if the fix fails
         try:
             verdict = task.already_done() if task.already_done is not None else None
             if verdict == "unconfirmed" and self._out_of_budget(res):
@@ -222,10 +226,14 @@ class Engine:
             attempts = _Attempts(task.max_attempts or self.max_attempts)
             for n in attempts:
                 if self._out_of_budget(res):          # no new attempt once the project's limit is reached
+                    if design_fallback is not None:   # the app the designer sent back still works: merge it
+                        return self._merge_design_fallback(res, task, design_fallback, design_said,
+                                                           "was stopped by the spending limit")
                     return res
                 t0 = time.time()
                 to_review = None                      # a passing attempt, published, waiting for its code review
                 to_architect = None                   # a passing plan, published, waiting for the architect
+                to_design = None                      # a passing attempt, published and reviewed by the designer
                 with self._open_sandbox(task, n, attempts) as box:
                     for path, body in task.setup_files.items():
                         box.write_file(path, body)
@@ -257,6 +265,16 @@ class Engine:
                         to_architect = (self._plan_files(box), changed, out, round(time.time() - t0, 1))
                         box.publish(f"{task.id}: {task.title}")
                         branch = box.branch
+                    elif ok and task.merge and task.review_design is not None:
+                        # The designer (docs/designer.md) looks at screenshots of the production build, so it runs in
+                        # this sandbox. The work is committed first: nothing the screenshots or the designer write
+                        # (review/) is ever merged.
+                        seconds = round(time.time() - t0, 1)
+                        box.publish(f"{task.id}: {task.title}")
+                        branch = box.branch
+                        design_rounds += 1
+                        to_design = (self._design_review(task, n, box, design_rounds, design_said), changed, out,
+                                     seconds)
                     else:
                         self._attempt(res, task, n, rep, ok, reason, changed, out, round(time.time() - t0, 1))
                         if ok:
@@ -273,6 +291,24 @@ class Engine:
                         if task.review_failure is not None:      # for the tech lead, before the sandbox is gone
                             last_diff = self._attempt_diff(box)
                 if attempts.redo:                    # the sandbox dropped mid-attempt: run that attempt again
+                    continue
+                if to_design is not None:
+                    # Approve merges. "changes" on the first review: this attempt counts as failed and the dev gets
+                    # exactly one more try, with the comments. "changes" again (warnings): it merges anyway, and the
+                    # comments stay with it as design warnings for the owner. The designer never loses a working app.
+                    v, changed, out, seconds = to_design
+                    if v["verdict"] == "approve" or v.get("warnings"):
+                        self._attempt(res, task, n, rep, True, "", changed, out, seconds)
+                        emit("task_status", task.id, status="merging", attempt=n)
+                        res.status = self.merge(branch, task.id)
+                        return res
+                    design_said, design_fallback = list(v["comments"]), (branch, n)
+                    listed = "\n".join(f"- {c}" for c in design_said)
+                    self._attempt(res, task, n, rep, False, DESIGN_CHANGES, changed, listed, seconds)
+                    feedback = ("Your previous attempt passed the whole-app check, but the designer (a different model) "
+                                "looked at screenshots of every page, at desktop and phone width, and found visual "
+                                "problems. Fix these, and keep everything that already works:\n" + listed)
+                    attempts.limit = n + 1            # one more try for the fix, whatever tries were left
                     continue
                 if to_architect is not None:
                     # The architect (docs/architect.md). Approve merges the plan. Changes on the first review sends
@@ -337,7 +373,8 @@ class Engine:
                                     "they have been corrected. Implement the task exactly as the doc comments say.")
                     else:
                         feedback += "\nA reviewer checked these tests against the spec and confirmed they are right."
-                if n == attempts.limit and task.review_failure is not None and review is None:
+                if (n == attempts.limit and task.review_failure is not None and review is None
+                        and design_fallback is None):          # a reviewed, working attempt merges instead
                     # Every try failed. Before giving up, the tech lead (a stronger model than a Haiku dev) reviews
                     # the attempts once: up to two more tries with its guidance, or one question for the owner.
                     # Regression: Pawfect build 7 ended 24/25 with a failed feature and no explanation.
@@ -349,11 +386,66 @@ class Engine:
                     attempts.limit += EXTRA_ATTEMPTS     # attempt numbers go on: 4, 5
                     agent = review.get("agent") or agent
                     feedback = f"Your tech lead reviewed the failed attempts: {review['note']}\n{feedback}"
+            if design_fallback is not None:              # the designer's fix try failed its checks
+                return self._merge_design_fallback(res, task, design_fallback, design_said,
+                                                   "didn't pass the whole-app check")
             if review is not None:                       # the tech lead's extra tries failed too: no second review
                 return self._escalate(res, review.get("question") or RETRY_FAILED_QUESTION)
             res.status = "failed"
         except Exception as e:                                  # infra problems are reported, not hidden
             res.status, res.error = "error", f"{type(e).__name__}: {e}"
+            if design_fallback is not None:              # the passing attempt the designer sent back still merges
+                try:
+                    return self._merge_design_fallback(res, task, design_fallback, design_said, "hit an error")
+                except Exception:
+                    pass
+        return res
+
+    def _design_review(self, task: Task, n: int, box: Sandbox, rnd: int, previous: list[str]) -> dict:
+        """The designer's verdict on a passing attempt (docs/designer.md), normalized: {verdict, comments, warnings?,
+        designer_error?, skipped?, reason?}, told to the app as design_review. A crashed or unusable review approves
+        (designer_error); the spending limit, or screenshots that couldn't be taken, skip it (skipped, reason). On
+        round 2, "changes" carries warnings: the app merges with the comments. The designer's run is its own cost
+        (attempt_finished on <task>-design), so the board's tries stay the dev's."""
+        emit = self.events.emit
+        if self.budget is not None and not self.budget.allows_start():
+            v = {"verdict": "approve", "comments": [], "skipped": True, "reason": BUDGET_REASON}
+            emit("design_review", task.id, attempt=n, **v)
+            return v
+        emit("task_status", task.id, status="design_review", attempt=n)
+        try:
+            raw = task.review_design(box, rnd, list(previous))
+        except Exception as e:
+            raw = {"designer_error": True, "note": f"{type(e).__name__}: {e}"}
+        raw = raw if isinstance(raw, dict) else {"designer_error": True, "note": f"unusable verdict: {raw!r}"[:200]}
+        cost = float(raw.get("cost_usd") or 0.0)
+        if self.budget is not None:
+            self.budget.add(cost)
+        if cost or raw.get("turns"):
+            emit("attempt_finished", f"{task.id}-design", n=rnd, passed=not raw.get("designer_error"),
+                 claim=str(raw.get("claim") or ""), reason="", cost_usd=round(cost, 4),
+                 seconds=float(raw.get("seconds") or 0.0), turns=int(raw.get("turns") or 0), files_changed=[],
+                 output="")
+        v = normalize_design_review(raw)
+        if rnd > 1 and v["verdict"] == "changes":
+            v["warnings"] = True
+        emit("design_review", task.id, attempt=n, **v)
+        return v
+
+    def _merge_design_fallback(self, res: Result, task: Task, fallback: tuple[str, int], comments: list[str],
+                               why: str) -> Result:
+        """The designer sent a passing attempt back, and the one extra try didn't get through (`why`: its checks, an
+        error, the spending limit). That earlier attempt passed every check: it merges, and the designer's comments
+        stay with it as design warnings."""
+        branch, n = fallback
+        tried = res.attempts[-1].n if res.attempts and res.attempts[-1].n != n else None
+        reason = (f"The fix ({f'try {tried}' if tried else 'the next try'}) {why}, so try {n} merges as "
+                  "it was, with the designer's comments as design warnings.")
+        self.events.emit("design_review", task.id, verdict="changes", comments=list(comments), attempt=n,
+                         warnings=True, reason=reason)
+        self.events.emit("task_status", task.id, status="merging", attempt=n)
+        res.error = ""
+        res.status = self.merge(branch, task.id)
         return res
 
     def _attempt(self, res: Result, task: Task, n: int, rep, ok: bool, reason: str, changed: list[str], out: str,
