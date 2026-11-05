@@ -18,7 +18,9 @@ export type EngineEvent = {
     | "change_started"
     | "change_plan_ready"
     | "budget_reached"
-    | "checkpoint_created" | "rollback_started" | "rollback_done" | "rollback_failed"; // docs/checkpoints.md
+    | "checkpoint_created" | "rollback_started" | "rollback_done" | "rollback_failed" // docs/checkpoints.md
+    | "quick_started"
+    | "quick_blocked";
   task_id: string | null;
   data: Record<string, unknown>;
 };
@@ -40,6 +42,15 @@ export type ChangeState = {
   decision: "planning" | "pending" | "approved" | "rejected";
   before: ProjectStatus;   // status before the change started, restored if it is sent back
   rolled_back?: boolean;   // its work was rolled away by a rollback to an earlier checkpoint (off the board)
+};
+
+/** One quick change (engine/quick.py): one UI task Q{n}, checked like the whole app, merged without approval. */
+export type QuickState = {
+  n: number;
+  text: string;
+  result: "running" | "done" | "failed" | "blocked";
+  reason?: string;         // why it needs a change request (quick_blocked)
+  before: ProjectStatus;   // status before it started, restored if it didn't merge
 };
 
 export type Attempt = {
@@ -100,6 +111,7 @@ export type ProjectState = {
   change: ChangeState | null;  // the latest one (the same object as changes.at(-1))
   budget_reached: { spent: number; budget: number } | null; // the latest run hit its spending limit
   history?: HistoryState;      // checkpoints and rollbacks (lib/history.ts); absent until the first one
+  quicks: QuickState[];        // quick changes, oldest first
 };
 
 /** A save point (checkpoint_created): a `checkpoint-<n>` tag on main in the project's repo. */

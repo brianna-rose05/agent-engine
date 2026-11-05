@@ -210,6 +210,14 @@ class Engine:
                     rep = self._run_agent(agent, task, box, n, feedback)
                     if self.budget is not None:
                         self.budget.add(rep.cost_usd)
+                    if task.stop_when is not None and (why := task.stop_when(rep.claim)):
+                        # Stopping is safe to take on the agent's word: nothing is merged, and nothing is retried.
+                        a = Attempt(n, rep.claim, False, why, [], "", round(time.time() - t0, 1), rep.cost_usd, rep.turns)
+                        res.attempts.append(a)
+                        emit("attempt_finished", task.id, n=n, passed=False, claim=rep.claim, reason=why,
+                             cost_usd=a.cost_usd, seconds=a.seconds, turns=a.turns, files_changed=[], output="")
+                        res.status, res.error = "blocked", why
+                        return res
                     emit("task_status", task.id, status="checking", attempt=n)
                     ok, reason, changed, out = self.verify(task, box)
                     if not ok and reason == "made no changes" and rep.claim.startswith("error"):

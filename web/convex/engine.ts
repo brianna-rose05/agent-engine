@@ -5,6 +5,7 @@ import type { ChangeRequest } from "./changes";
 import { budgetOf } from "./budget";
 import { notifyFor } from "./notifications";
 import { checkpointPatch, mergedTasks } from "./checkpoints";
+import { quickForWorker, quickPatch } from "./quick";
 
 /*
  * What the engine (worker.py in GitHub Actions) calls. Authenticated with ENGINE_SECRET, which both sides
@@ -25,7 +26,8 @@ export const projectForWorker = queryGeneric({
     const rollingBack = p.mode === "rollback"; // docs/checkpoints.md
     let merged: string[] = [];
     let repo = p.repo ?? null;
-    if (p.resume || change || rollingBack) {
+    const quick = quickForWorker(p); // mode "quick": {n, text} (convex/quick.ts)
+    if (p.resume || change || rollingBack || quick) {
       // what a retry or a change keeps: every task whose latest status is merged
       const events = await ctx.db.query("events").withIndex("by_project_ts", (q) => q.eq("projectId", projectId)).collect();
       for (const e of events) {
@@ -36,9 +38,10 @@ export const projectForWorker = queryGeneric({
       if (rollingBack) merged = (p.checkpoints ?? []).find((c: { n: number }) => c.n === p.rollback?.n)?.merged ?? merged;
     }
     const latest = change ? ((p.changes ?? []) as ChangeRequest[]).at(-1) : undefined;
-    return { resume: Boolean(p.resume), mode: change ? "change" : rollingBack ? "rollback" : p.resume ? "resume" : "build",
+    return { resume: Boolean(p.resume),
+             mode: change ? "change" : rollingBack ? "rollback" : quick ? "quick" : p.resume ? "resume" : "build",
              rollback: rollingBack ? { n: p.rollback?.n } : null,
-             change: latest ? { n: latest.n, text: latest.text } : null,
+             change: latest ? { n: latest.n, text: latest.text } : null, quick,
              repo, merged, plan: p.resume || change ? p.plan ?? null : null, name: p.name,
              description: composeSpec(p.name, p.description, p.wizard), model: p.model, status: p.status, planNote: p.planNote ?? "",
              budgetUsd: budgetOf(p), costUsd: p.costUsd };
@@ -93,6 +96,7 @@ export const record = mutationGeneric({
       patch.resume = false;
     }
     Object.assign(patch, checkpointPatch(p, kind, data, ts)); // checkpoints and rollback (docs/checkpoints.md)
+    Object.assign(patch, quickPatch(p, kind, data)); // quick changes: status and the entry's result (convex/quick.ts)
     if (Object.keys(patch).length) await ctx.db.patch(projectId, patch);
   },
 });

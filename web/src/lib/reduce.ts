@@ -1,5 +1,5 @@
 import { withHistory } from "./history";
-import type { Attempt, ChangeState, ChangeTask, EngineEvent, FeedItem, Plan, PlanTask, ProjectState, Role, TaskState } from "./types";
+import type { Attempt, ChangeState, ChangeTask, EngineEvent, FeedItem, Plan, PlanTask, ProjectState, QuickState, Role, TaskState } from "./types";
 
 export const initialState = (): ProjectState => ({
   status: "queued",
@@ -12,6 +12,7 @@ export const initialState = (): ProjectState => ({
   changes: [],
   change: null,
   budget_reached: null,
+  quicks: [],
 });
 
 export const money = (c: number) => (c > 0 && c < 0.01 ? `$${c.toFixed(4)}` : `$${c.toFixed(2)}`);
@@ -34,6 +35,12 @@ export function currentPlanner(s: ProjectState): TaskState | undefined {
   }
   return s.tasks.PLAN ?? Object.values(s.tasks).find((t) => t.role === "planner" && !isChangePlanner(t.id));
 }
+
+/** Task id of quick change n ("Q1"), and whether a task id is a quick change. */
+export const quickId = (n: number) => `Q${n}`;
+export const isQuick = (taskId: string) => /^Q\d+$/.test(taskId);
+/** How the engine says a quick change needs a change request (engine/quick.py blocked_reason). */
+const NEEDS_CHANGE = "needs a change request";
 
 /** Change tasks that belong on the board: those of approved changes, or any the engine has queued. */
 export function boardChangeTasks(s: ProjectState): ChangeTask[] {
@@ -60,6 +67,11 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
   const feed = [...s.feed];
   let { status, plan, cost_usd, preview_url, budget_reached } = s;
   let changes = s.changes;
+  let quicks = s.quicks;
+  const setQuick = (n: number, next: Partial<QuickState>) => {
+    quicks = quicks.map((q) => (q.n === n ? { ...q, ...next } : q));
+  };
+  const runningQuick = quicks.at(-1)?.result === "running" ? quicks.at(-1) : undefined;
   const task = e.task_id ? tasks[e.task_id] : undefined;
   const say = (item: Omit<FeedItem, "t">) => feed.push({ t: e.t, ...item });
   const setChange = (n: number, next: Partial<ChangeState>) => {
@@ -72,7 +84,8 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
   };
   const changeKind = (t: TaskState) => (lookup(t) as ChangeTask | undefined)?.kind;
   const name = (t: TaskState) => lookup(t)?.title ?? t.title.replace(/^Acceptance tests for /, "");
-  const mod = (t: TaskState) => (t.id === INTEGRATION ? "the pages, sign-in and server actions" : lookup(t)?.module ?? "its module");
+  const mod = (t: TaskState) => (t.id === INTEGRATION ? "the pages, sign-in and server actions"
+    : isQuick(t.id) ? "the pages and components" : lookup(t)?.module ?? "its module");
 
   switch (e.kind) {
     case "task_queued": {
@@ -131,11 +144,14 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
               text: changeKind(task) === "change"
                 ? `Accepted the tests for ${name(task)}. At least one fails on the current code, as it should until the change is made, and they stay hidden from the dev agent.`
                 : `Accepted the tests for ${name(task)}. They all fail on the empty code, as they should, and stay hidden from the dev agent.` });
+      } else if (d.status === "blocked" && isQuick(task.id)) {
+        // quick_blocked says it, with the way forward
       } else if (d.status === "blocked") {
         say({ who: "engine", channel: ch, task_id: task.id, tone: "bad", text: `Paused ${name(task)}: ${d.error ?? "a dependency didn't finish"}.` });
       } else if (d.status === "failed" || d.status === "error") {
         say({ who: "engine", channel: ch, task_id: task.id, tone: "bad",
-              text: `${name(task)} needs you: ${d.status === "error" ? d.error ?? "infrastructure error" : "3 tries, still not passing"}.` });
+              text: `${name(task)} needs you: ${d.status === "error" ? d.error ?? "infrastructure error"
+                : isQuick(task.id) ? "2 tries, still not passing the whole-app check" : "3 tries, still not passing"}.` });
       }
       break;
     }
@@ -148,7 +164,7 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
       }
       tasks[task.id] = { ...task, attempts: [...task.attempts, a], cost_usd: round(task.cost_usd + a.cost_usd) };
       cost_usd = round(cost_usd + a.cost_usd);
-      if (!a.passed) {
+      if (!a.passed && !(isQuick(task.id) && a.reason.startsWith(NEEDS_CHANGE))) {
         const claimed = a.claim.toLowerCase().startsWith("done");
         say({ who: "engine", channel: channelFor(task.role), task_id: task.id, tone: "warn",
               text: claimed
@@ -238,8 +254,40 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
                   `The ${kept} feature${kept === 1 ? "" : "s"} that merged stay as they are.` });
       break;
     }
+    case "quick_started": {
+      const d = e.data as { n: number; text: string };
+      const prev = quicks.find((q) => q.n === d.n);
+      quicks = [...quicks.filter((q) => q.n !== d.n), { n: d.n, text: d.text, result: "running", before: prev?.before ?? status }];
+      status = "building";
+      say({ who: "you", channel: "build", task_id: quickId(d.n), text: `Quick change ${d.n} requested: ${d.text}` });
+      break;
+    }
+    case "quick_blocked": {
+      const d = e.data as { n: number; reason?: string };
+      const reason = d.reason ?? NEEDS_CHANGE;
+      setQuick(d.n, { result: "blocked", reason });
+      say({ who: "engine", channel: "build", task_id: quickId(d.n), tone: "warn",
+            text: `Quick change ${d.n} is bigger than a quick change (${reason.replace(/^needs a change request:?\s*/, "") || "it needs new data or a feature"}). ` +
+                  "Nothing was changed. Send it as a change request instead, and the planner will plan it." });
+      break;
+    }
     case "project_finished": {
-      const d = e.data as { status: "done" | "failed" | "rejected" | "stopped" };
+      const d = e.data as { status: "done" | "failed" | "rejected" | "stopped" | "blocked" };
+      if (runningQuick || (quicks.at(-1)?.result === "blocked" && d.status === "blocked")) {
+        // a quick change's run: one that didn't merge left the app as it was (Convex record does the same)
+        const q = (runningQuick ?? quicks.at(-1))!;
+        const result = q.result === "blocked" || d.status === "blocked" ? "blocked" : d.status === "done" ? "done" : "failed";
+        setQuick(q.n, { result });
+        status = result === "done" ? "done" : q.before;
+        if (result === "done") {
+          say({ who: "engine", channel: "build", tone: "good", task_id: quickId(q.n),
+                text: `Quick change ${q.n} is live in the repo: types, tests, a production build and every page checked, then merged.` });
+        } else if (result === "failed") {
+          say({ who: "engine", channel: "build", tone: "bad", task_id: quickId(q.n),
+                text: `Quick change ${q.n} didn't pass the whole-app check, so nothing was merged. The app is as it was.` });
+        }
+        break;
+      }
       if (d.status === "rejected" && latest?.decision === "rejected") {
         // a sent-back change built nothing: the project is as it was (Convex record does the same)
         status = latest.before;
@@ -247,7 +295,7 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
         break;
       }
       status = d.status as ProjectState["status"];
-      const devs = Object.values(tasks).filter((t) => t.role === "dev");
+      const devs = Object.values(tasks).filter((t) => t.role === "dev" && !isQuick(t.id));
       const ok = devs.filter((t) => t.status === "merged").length;
       say({ who: "engine", channel: "build", tone: d.status === "done" ? "good" : d.status === "stopped" ? "warn" : "bad",
             text: `${d.status === "done" ? "Finished" : d.status === "stopped" ? "Stopped at the spending limit" : "Stopped"}: ` +
@@ -276,7 +324,7 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
     }
   }
   return { status, plan, tasks, feed, cost_usd, now: Math.max(s.now, e.t), preview_url, changes, change: changes.at(-1) ?? null,
-           budget_reached };
+           budget_reached, quicks };
 }
 
 /* --------------------------------------------------------------- board columns */
@@ -309,7 +357,7 @@ export type Feature = {
 const BAD = new Set(["failed", "blocked", "error", "merge_conflict", "stopped"]);
 
 /** One card per planned feature, combining its QA task and its dev task, then the cards of approved changes
- *  (C1T1, C1T2, ...), then the integration card. */
+ *  (C1T1, C1T2, ...), then the integration card, then quick changes the engine has queued (Q1, Q2, ...). */
 export function features(s: ProjectState): Feature[] {
   if (!s.plan) return [];
   const integ = s.tasks[INTEGRATION];
@@ -319,7 +367,11 @@ export function features(s: ProjectState): Feature[] {
                           spec: "Wires every merged feature into a working website. Checked with a production build " +
                                 "and by opening every page.", depends_on: integ.depends_on }]
     : planned;
-  return cards.map((p) => {
+  const quickCards = s.quicks.filter((q) => s.tasks[quickId(q.n)]).map((q) => ({
+    id: quickId(q.n), title: `Quick change ${q.n}`, module: "src/app, src/components",
+    spec: `${q.text}\n\nOne agent edits only the pages and components; the whole app is checked (types, tests, a ` +
+          "production build, every page) before it merges. No plan or approval.", depends_on: [] as string[] }));
+  return [...cards, ...quickCards].map((p) => {
     const qa = s.tasks[`${p.id}-qa`];
     const dev = s.tasks[p.id];
     let column: Column = "queued";

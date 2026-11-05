@@ -10,6 +10,7 @@ import type { TaskState } from "@/lib/types";
 import { Avatar, Mono } from "@/components/ui";
 import { Feed } from "@/components/Feed";
 import { ChangeRequestBox } from "@/components/ChangeRequest";
+import { QuickChangeBox } from "@/components/QuickChange";
 
 const COL_TINT: Record<Column, string> = {
   queued: "bg-faint",
@@ -21,7 +22,7 @@ const COL_TINT: Record<Column, string> = {
 };
 
 export default function BoardPage() {
-  const { state, project, canChange } = useProject();
+  const { state, project } = useProject();
   const [open, setOpen] = useState<string | null>(null);
   const fs = features(state);
   const selected = fs.find((f) => f.id === open) ?? null;
@@ -56,11 +57,11 @@ export default function BoardPage() {
   return (
     <div className="flex min-h-[calc(100dvh-57px)]">
       <div className="min-w-0 flex-1 overflow-x-auto scroll-thin px-4 py-5 md:px-6">
-        {canChange && (
-          <div className="sticky left-0 mb-4 max-w-3xl">
-            <ChangeRequestBox compact />
-          </div>
-        )}
+        {/* quick changes (wording, colors) next to change requests (features, data); each box hides itself */}
+        <div className="sticky left-0 mb-4 grid max-w-5xl gap-3 empty:hidden md:grid-cols-2">
+          <QuickChangeBox compact />
+          <ChangeRequestBox compact />
+        </div>
         <LayoutGroup>
           <div className="grid min-w-[900px] grid-cols-6 gap-3">
             {COLUMNS.map((c) => {

@@ -11,6 +11,7 @@ import { Avatar, Mono } from "@/components/ui";
 import { ChangeRequestBox } from "@/components/ChangeRequest";
 import { BudgetLine } from "@/components/Budget";
 import { estimateBuild } from "@/lib/estimate";
+import { QuickChangeBox } from "@/components/QuickChange";
 
 export default function PlanPage() {
   const { state, approve, sendBack, project, liveStatus, liveError } = useProject();
@@ -172,7 +173,8 @@ export default function PlanPage() {
         </section>
       )}
 
-      <div className="mt-8">
+      <div className="mt-8 flex flex-col gap-3 empty:hidden">
+        <QuickChangeBox />
         <ChangeRequestBox />
       </div>
 

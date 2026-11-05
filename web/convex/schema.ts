@@ -26,6 +26,7 @@ export default defineSchema({
     budgetUsd: v.optional(v.number()), // spending limit in $, enforced by the engine (convex/budget.ts, engine/budget.py)
     checkpoints: v.optional(v.array(v.any())), // save points, oldest first: {n, tag, sha, label, at, merged} (convex/checkpoints.ts)
     rollback: v.optional(v.any()), // the running/last rollback: {n, from} (from = status before it, restored if it fails)
+    quicks: v.optional(v.array(v.any())), // quick changes, oldest first: {n, text, at, result?, reason?} (convex/quick.ts)
   }),
   events: defineTable({
     projectId: v.id("projects"),
