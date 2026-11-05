@@ -105,6 +105,7 @@ class PythonStack:
 Use Python 3.11+ standard library only. Every file must import cleanly."""
 
     integration = False      # web apps get a final integrator task that wires pages (NextSupabaseStack)
+    required_pages: tuple[str, ...] = ()     # pages the integrator always writes (NextSupabaseStack)
 
     def template_files(self) -> dict[str, bytes]:
         """Files the template owns in every project (agents may not edit them). Python projects have none."""
@@ -134,7 +135,8 @@ class NextSupabaseStack(PythonStack):
     reserved = {"supabase/migrations/0000_base.sql", "src/lib/db.ts", "src/lib/errors.ts", "src/lib/db-postgres.ts",
                 "src/test/db.ts", "src/app/layout.tsx"}
     template = TEMPLATES / "next-supabase"
-    reserved |= {"src/lib/pglite.ts", "src/lib/runtime.ts", "src/lib/auth.ts", "src/lib/session.ts", "src/lib/migrate.ts"}
+    reserved |= {"src/lib/pglite.ts", "src/lib/runtime.ts", "src/lib/auth.ts", "src/lib/session.ts", "src/lib/migrate.ts",
+                 "src/lib/owner.ts"}
 
     # ---------------------------------------------------------------- integration
     integration = True
@@ -143,6 +145,8 @@ class NextSupabaseStack(PythonStack):
         return module.startswith("src/components/")
     # Pages, server actions, layout and small client wrappers, plus the integrator's own tests.
     integration_scope = ["src/app/*", "src/middleware.ts", "tests/unit/*"]
+    # Pages every web app has, whatever its plan lists: the owner claims the app there (src/lib/owner.ts).
+    required_pages = ("/owner-setup",)
 
     def integration_check_cmd(self, pages: list[str]) -> str:
         """The whole app: types, lint, every test, a production build, and every page answering without a
@@ -273,6 +277,12 @@ Write these files:
      because tests and code guessed different labels.
    - Pages (src/app/**/page.tsx) are written by the integrator at the end, not by tasks. Sign-in, sign-up
      and sessions come from the template (src/lib/session.ts); server functions take the user id in Actor.
+   - The app's owner is its admin (src/lib/owner.ts). Any admin, owner or manager check is
+     `await requireOwner(db, actor)` (or `isOwner`) from the template, never a role column: nobody can set a
+     role "in the database" or by hand. The owner claims the app on /owner-setup with a setup code (the
+     integrator writes that page; don't plan it). Other staff roles, if any, live in the project's own tables
+     and are granted by the owner through a server function that calls requireOwner. Migrations never
+     reference app_owner. Tests make someone the owner with `await claimOwner(db, actor, "any")`.
    - Template files (everything already in src/lib/, src/test/db.ts, src/app/, scripts/ and
      supabase/migrations/0000_base.sql) are fixed: never edit or list them.
 Everything must type-check (`npx tsc --noEmit`) and every migration must apply to a fresh database."""
@@ -295,6 +305,12 @@ AGENTS_MD = """# Team rules (Next.js + Supabase)
 - Always `vitest run`, never bare `vitest` (that watches for changes and never exits). No dev servers.
 - Sign-in is the template's: src/lib/session.ts (getAuth, getActor, requireActor) and src/lib/runtime.ts
   (getDb). Server functions never handle passwords or cookies; pages and server actions do.
+- The app's owner is its admin: src/lib/owner.ts (isOwner, requireOwner, getOwnerId, ownerSetupState,
+  claimOwner). Every admin/owner/manager check uses `requireOwner(db, actor)` or `isOwner(db, actor)`, never a
+  role column a person would have to set by hand. The owner claims the app once on /owner-setup with the setup
+  code Studio gives them (APP_SETUP_CODE). Other staff roles, if the app has any, live in the project's own
+  tables and are granted by the owner in the app. In tests (local mode) `await claimOwner(db, actor, "any")`
+  makes that user the owner.
 - The app runs without any accounts in local mode (no DATABASE_URL): an in-process Postgres with the
   migrations applied, and local logins. `node scripts/check-app.mjs /route ...` (after `npx next build`)
   starts it and checks every page answers without a server error.

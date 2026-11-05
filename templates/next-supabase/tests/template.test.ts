@@ -176,3 +176,124 @@ describe("template migrations (shared by local mode and production Postgres)", (
     await pg.close();
   });
 });
+
+describe("template owner setup (src/lib/owner.ts)", () => {
+  const withEnv = async (vars: Record<string, string | undefined>, fn: () => Promise<void>) => {
+    const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+    const put = (k: string, v: string | undefined) => {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    };
+    for (const [k, v] of Object.entries(vars)) put(k, v);
+    try {
+      await fn();
+    } finally {
+      for (const [k, v] of Object.entries(saved)) put(k, v);
+    }
+  };
+  const local = { APP_SETUP_CODE: undefined, DATABASE_URL: undefined };
+
+  it("local mode without a code: open, any code claims, then claimed; isOwner/requireOwner follow", async () => {
+    const { claimOwner, getOwnerId, isOwner, ownerSetupState, requireOwner } = await import("@/lib/owner");
+    await withEnv(local, async () => {
+      const db = await createTestDb();
+      const a = { userId: await createUser(db, "a@example.com") };
+      const b = { userId: await createUser(db, "b@example.com") };
+      expect(await ownerSetupState(db)).toBe("open");
+      expect(await getOwnerId(db)).toBeNull();
+      expect(await isOwner(db, a)).toBe(false);
+      expect(await isOwner(db, null)).toBe(false);
+      await expect(requireOwner(db, a)).rejects.toMatchObject({ code: "forbidden", message: "Only the owner can do this." });
+      await claimOwner(db, a, "anything");
+      expect(await ownerSetupState(db)).toBe("claimed");
+      expect(await getOwnerId(db)).toBe(a.userId);
+      expect(await isOwner(db, a)).toBe(true);
+      expect(await isOwner(db, b)).toBe(false);
+      await requireOwner(db, a);
+      await expect(requireOwner(db, b)).rejects.toMatchObject({ code: "forbidden" });
+      await expect(claimOwner(db, b, "anything")).rejects.toMatchObject(
+        { code: "conflict", message: "This app already has an owner." });
+      await expect(claimOwner(db, a, "anything")).rejects.toMatchObject({ code: "conflict" });
+      expect(await getOwnerId(db)).toBe(a.userId);                         // the second claim changed nothing
+      await db.close();
+    });
+  });
+
+  it("with APP_SETUP_CODE: a wrong code is refused; the right one (any case, spaces around) claims", async () => {
+    const { claimOwner, getOwnerId, ownerSetupState } = await import("@/lib/owner");
+    await withEnv({ APP_SETUP_CODE: "K7PQ-M2XR-9TVD", DATABASE_URL: "postgres://x/y" }, async () => {
+      const db = await createTestDb();
+      const a = { userId: await createUser(db, "a@example.com") };
+      expect(await ownerSetupState(db)).toBe("open");
+      for (const wrong of ["", "K7PQ-M2XR-9TVE", "K7PQ-M2XR-9TV", "K7PQ-M2XR-9TVDX"]) {
+        await expect(claimOwner(db, a, wrong)).rejects.toMatchObject(
+          { code: "forbidden", message: "That setup code isn't right." });
+      }
+      expect(await getOwnerId(db)).toBeNull();
+      await claimOwner(db, a, "  k7pq-m2xr-9tvd \n");
+      expect(await getOwnerId(db)).toBe(a.userId);
+      expect(await ownerSetupState(db)).toBe("claimed");
+      await db.close();
+    });
+  });
+
+  it("local mode with APP_SETUP_CODE still requires the code", async () => {
+    const { claimOwner, getOwnerId } = await import("@/lib/owner");
+    await withEnv({ APP_SETUP_CODE: "ABCD-EFGH-JKMN", DATABASE_URL: undefined }, async () => {
+      const db = await createTestDb();
+      const a = { userId: await createUser(db, "a@example.com") };
+      await expect(claimOwner(db, a, "nope")).rejects.toMatchObject({ code: "forbidden" });
+      await claimOwner(db, a, "abcd-efgh-jkmn");
+      expect(await getOwnerId(db)).toBe(a.userId);
+      await db.close();
+    });
+  });
+
+  it("a deployed app (DATABASE_URL) without a code is not configured and refuses every claim", async () => {
+    const { claimOwner, getOwnerId, ownerSetupState } = await import("@/lib/owner");
+    await withEnv({ APP_SETUP_CODE: "   ", DATABASE_URL: "postgres://x/y" }, async () => {
+      const db = await createTestDb();
+      const a = { userId: await createUser(db, "a@example.com") };
+      expect(await ownerSetupState(db)).toBe("not_configured");
+      await expect(claimOwner(db, a, "")).rejects.toMatchObject(
+        { code: "forbidden", message: "Owner setup isn't configured for this app." });
+      await expect(claimOwner(db, a, "K7PQ-M2XR-9TVD")).rejects.toMatchObject({ code: "forbidden" });
+      expect(await getOwnerId(db)).toBeNull();
+      await db.close();
+    });
+  });
+
+  it("two claims at the same moment: exactly one wins", async () => {
+    const { claimOwner, getOwnerId } = await import("@/lib/owner");
+    await withEnv(local, async () => {
+      const db = await createTestDb();
+      const ids = await Promise.all(["a", "b", "c", "d"].map((n) => createUser(db, `${n}@example.com`)));
+      const results = await Promise.allSettled(ids.map((userId) => claimOwner(db, { userId }, "x")));
+      const won = results.filter((r) => r.status === "fulfilled");
+      const lost = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+      expect(won).toHaveLength(1);
+      expect(lost.map((r) => r.reason.code)).toEqual(["conflict", "conflict", "conflict"]);
+      expect(await getOwnerId(db)).toBe(ids[results.findIndex((r) => r.status === "fulfilled")]);
+      expect((await db.query("select * from app_owner.owner")).rows).toHaveLength(1);
+      await db.close();
+    });
+  });
+
+  it("the owner survives re-opening a saved database (the table is created once, on first use)", async () => {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { openPglite } = await import("@/lib/pglite");
+    const { claimOwner, getOwnerId } = await import("@/lib/owner");
+    await withEnv(local, async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pglite-owner-"));
+      const a = await openPglite(dir);
+      const userId = await createUser(a.db, "keep@example.com");
+      await claimOwner(a.db, { userId }, "x");
+      await a.pg.close();
+      const b = await openPglite(dir);
+      expect(await getOwnerId(b.db)).toBe(userId);
+      await b.pg.close();
+    });
+  }, 90_000);   // a database on disk, opened twice: over 20s in a busy sandbox
+});

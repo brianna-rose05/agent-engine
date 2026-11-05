@@ -638,6 +638,16 @@ How to wire it (read AGENTS.md first):
 - If a component module still throws "Not implemented" (its feature didn't pass its tests), don't import it:
   build that screen yourself in src/app/ from its doc comments.
 - Send people to the right page for their role and keep others out, using the project's server functions.
+- The app's owner is its admin (src/lib/owner.ts, a template file). Admin pages and admin links check
+  `isOwner(db, actor)` / `requireOwner(db, actor)`; never a role someone would have to set in the database.
+- You MUST add an /owner-setup page (src/app/owner-setup/page.tsx), where the owner claims the app:
+  - signed out: the heading "Set up the owner account" and links to sign up and sign in first (come back here after);
+  - signed in, ownerSetupState(db) is "open": the heading "Set up the owner account", a "Setup code" field and a
+    "Claim owner" button; a server action calls claimOwner(db, actor, code), shows the AppError's message on a
+    wrong code, and on success redirects to the admin home (or "/" if the app has no admin pages);
+  - "claimed": "This app already has an owner." (and a link home);
+  - "not_configured": "Owner setup isn't configured for this app."
+  Link it from the sign-in page's footer as "Owner setup". It must load without a session.
 - A simple header with links to the main pages in src/app/layout.tsx, styled with the look in the brief.
 - You may only edit files under src/app/, src/middleware.ts, and your own tests under tests/unit/.
 
@@ -682,6 +692,7 @@ def integration_task(plan: dict, description: str, stack: PythonStack, agent=Non
     current = apply_change(plan, change) if change else plan
     saved = set(deferred or ())
     pages = [r for r in current.get("pages", []) if isinstance(r, str)] or ["/"]
+    pages += [r for r in getattr(stack, "required_pages", ()) if r not in pages]     # /owner-setup on the web stack
     waits_on = [t for t in (change["tasks"] if change else plan["tasks"]) if t["id"] not in saved]
     ui = [t["id"] for t in waits_on if stack.is_ui_module(t["module"])]
     modules = "\n".join(f"- {t['module']}: {t['title']}" for t in current["tasks"] if t["id"] not in saved)

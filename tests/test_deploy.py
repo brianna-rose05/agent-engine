@@ -323,3 +323,85 @@ def test_worker_without_an_admin_url_behaves_as_before(monkeypatch):
     provisions, deploys, evs = run_worker_db(monkeypatch, lambda a, s: "x", admin=None)
     assert provisions == [] and deploys == [("studio-x-abc123", {})]
     assert evs == [("preview_ready", {"url": "https://x.vercel.app"})]
+
+
+# ------------------------------------------------------------------ owner setup code (docs/owner-setup.md)
+CODE = "K7PQ-M2XR-9TVD"
+
+
+def test_a_setup_code_is_set_as_a_sensitive_app_setup_code(tmp_path):
+    http = FakeVercel()
+    logs = []
+    r = deploy(make_repo(tmp_path), http, env={"DATABASE_URL": DB_URL}, setup_code=f" {CODE} ", log=logs.append)
+    assert r.status == "ready", r.reason
+    secret = {e["key"]: e for e in env_posts(http)[1]}
+    assert set(secret) == {"DATABASE_URL", "APP_SESSION_SECRET", "APP_SETUP_CODE"}
+    assert secret["APP_SETUP_CODE"] == {"key": "APP_SETUP_CODE", "value": CODE, "type": "sensitive",
+                                        "target": ["production", "preview"]}
+    assert CODE not in json.dumps(logs)
+
+
+def test_a_setup_code_without_a_database_still_reaches_the_app(tmp_path):
+    """A preview in local mode (no POSTGRES_ADMIN_URL) still gets its code, so nobody claims it without one."""
+    http = FakeVercel()
+    assert deploy(make_repo(tmp_path), http, setup_code=CODE).status == "ready"
+    secret = {e["key"]: e["value"] for e in env_posts(http)[1]}
+    assert secret["APP_SETUP_CODE"] == CODE and "DATABASE_URL" not in secret
+
+
+def test_no_setup_code_means_no_app_setup_code(tmp_path):
+    for i, code in enumerate((None, "", "  ")):
+        http = FakeVercel()
+        assert deploy(make_repo(tmp_path / str(i)), http, env={"DATABASE_URL": DB_URL}, setup_code=code).status == "ready"
+        assert "APP_SETUP_CODE" not in json.dumps(env_posts(http))
+    http = FakeVercel()
+    assert deploy(make_repo(tmp_path / "none"), http, setup_code=None).status == "ready"
+    assert len(env_posts(http)) == 1                                          # local mode exactly as before
+
+
+def test_a_failed_setup_code_never_shows_the_code(tmp_path):
+    http = FakeVercel(env_failed="APP_SETUP_CODE")                              # the fake echoes the value back
+    r = deploy(make_repo(tmp_path), http, env={"DATABASE_URL": DB_URL}, setup_code=CODE)
+    assert r.status == "failed" and "APP_SETUP_CODE" in r.reason and CODE not in r.reason
+    http = FakeVercel(states=("ERROR",), error_message=f"build failed near {CODE}")
+    r = deploy(make_repo(tmp_path / "b"), http, setup_code=CODE)
+    assert r.status == "failed" and CODE not in r.reason
+
+
+def test_deploy_production_passes_its_own_setup_code(tmp_path):
+    from engine.deploy import deploy_production
+    http = FakeVercel(states=("READY",))
+    r = deploy_production(make_repo(tmp_path), "studio-x-abc123", ref="main", env={"DATABASE_URL": DB_URL},
+                          setup_code=CODE, token=TOKEN, team_id="", http=http, sleep=lambda s: None)
+    assert r.status == "ready"
+    secret = {e["key"]: e["value"] for e in env_posts(http)[1]}
+    assert secret["APP_SETUP_CODE"] == CODE
+    assert all("/v10/projects/x-abc123/" in c[1] for c in http.find("POST", "/env"))
+
+
+def run_worker_code(monkeypatch, code, deploy_result=("ready", "https://x.vercel.app", "")):
+    from engine.deploy import DeployResult
+    from worker import publish_preview
+    monkeypatch.delenv("POSTGRES_ADMIN_URL", raising=False)
+    sink, deploys = ListSink(), []
+
+    def fake_deploy(repo, project_name, log, **kw):
+        deploys.append(kw)
+        if kw.get("setup_code") == "RAISE":
+            raise RuntimeError(f"boom {kw['setup_code']}")
+        return DeployResult(*deploy_result)
+    publish_preview([Result("INT", "i", "merged")], Path("/nowhere"), "https://github.com/me/studio-x-abc123",
+                    Emitter(sink), deploy=fake_deploy, setup_code=code)
+    return deploys, [(e.kind, e.data) for e in sink.events]
+
+
+def test_worker_passes_the_preview_setup_code_and_never_emits_it(monkeypatch, capsys):
+    deploys, evs = run_worker_code(monkeypatch, CODE)
+    assert deploys == [{"setup_code": CODE}] and evs == [("preview_ready", {"url": "https://x.vercel.app"})]
+    deploys, evs = run_worker_code(monkeypatch, None)
+    assert deploys == [{}]                                                     # no code: deploy as before
+    deploys, evs = run_worker_code(monkeypatch, CODE, ("failed", "", f"Vercel says {CODE} is bad"))
+    assert evs[0][0] == "preview_failed" and CODE not in json.dumps(evs)
+    deploys, evs = run_worker_code(monkeypatch, "RAISE")
+    assert evs[0][0] == "preview_failed" and "RAISE" not in json.dumps(evs)
+    assert CODE not in capsys.readouterr().out

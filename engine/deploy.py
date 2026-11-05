@@ -12,9 +12,14 @@ Without `env`, the app runs in local mode (no DATABASE_URL): its data lives in m
 as `sensitive` (encrypted, never readable back) for production and preview, plus an APP_SESSION_SECRET that is
 generated once per project and then kept, so redeploys don't sign everyone out. Values never appear in errors.
 
+With `setup_code` (worker.py, from the project row's setupCodes; docs/owner-setup.md) APP_SETUP_CODE is set the same
+way (sensitive): the code the app's owner enters on /owner-setup to claim the app (template src/lib/owner.ts).
+Without one the variable is left alone, and an app on a real database refuses every claim ("not configured").
+The code is a secret like the others: never logged, never in an event, scrubbed from every error.
+
 Production (docs/ship.md) reuses all of this through `deploy_production`: its own Vercel project
 (`production_name`: the repo name without "studio-"), files from a version tag (`ref="v3"`) instead of main,
-and its own DATABASE_URL and APP_SESSION_SECRET. The preview project is never touched by a ship.
+and its own DATABASE_URL, APP_SESSION_SECRET and APP_SETUP_CODE. The preview project is never touched by a ship.
 
 The token is only ever sent in the Authorization header: never in a URL, an error message or an event.
 The HTTP layer is injectable (`http=`) so tests run against a fake.
@@ -42,6 +47,7 @@ ENV = {"NEXT_TELEMETRY_DISABLED": "1"}          # plain settings every preview g
 TARGETS = ["production", "preview"]
 SECRET_TYPE = "sensitive"                       # encrypted and write-only (production/preview targets only)
 SESSION_SECRET = "APP_SESSION_SECRET"
+SETUP_CODE = "APP_SETUP_CODE"                   # the owner's one-time setup code (src/lib/owner.ts in the template)
 SKIP_DIRS = {"node_modules", ".next", ".vercel", ".git"}
 MAX_FILE_BYTES = 50 * 1024 * 1024
 
@@ -207,9 +213,10 @@ def deploy_preview(repo: Path, project_name: str, token: str | None = None, team
                    timeout_s: float = TIMEOUT_S, poll_s: float = POLL_S,
                    sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
                    log: Callable[[str], None] = lambda _m: None, env: dict[str, str] | None = None,
-                   ref: str = "main") -> DeployResult:
-    """Deploy `repo`'s `ref` (main by default), with `env` set on the project as secrets (see the module doc).
-    Never raises: every problem comes back as a failed result."""
+                   ref: str = "main", setup_code: str | None = None) -> DeployResult:
+    """Deploy `repo`'s `ref` (main by default), with `env` set on the project as secrets (see the module doc), plus
+    APP_SETUP_CODE when a `setup_code` is given. Never raises: every problem comes back as a failed result."""
+    env = with_setup_code(env, setup_code)
     token = token if token is not None else os.environ.get("VERCEL_TOKEN", "")
     team_id = team_id if team_id is not None else (os.environ.get("VERCEL_TEAM_ID") or None)
     if not token:
@@ -252,6 +259,14 @@ def deploy_preview(repo: Path, project_name: str, token: str | None = None, team
         return DeployResult("failed", reason=v.scrub(f"{type(e).__name__}: {e}")[:300])
 
 
+def with_setup_code(env: dict[str, str] | None, setup_code: str | None) -> dict[str, str] | None:
+    """`env` plus APP_SETUP_CODE when there is a code; `env` unchanged (possibly None: local mode) when there isn't."""
+    code = (setup_code or "").strip() if isinstance(setup_code, str) else ""
+    if not code:
+        return env
+    return {**(env or {}), SETUP_CODE: code}
+
+
 def production_name(slug: str) -> str:
     """The production Vercel project for a project whose preview project is `slug`: studio-garden-ab12cd ->
     garden-ab12cd. Never the preview's own name, so a ship can't redeploy the preview."""
@@ -259,8 +274,9 @@ def production_name(slug: str) -> str:
     return name if name and project_slug(name) != project_slug(slug) else f"{slug}-prod"
 
 
-def deploy_production(repo: Path, slug: str, ref: str, env: dict[str, str], **kw) -> DeployResult:
+def deploy_production(repo: Path, slug: str, ref: str, env: dict[str, str], setup_code: str | None = None,
+                      **kw) -> DeployResult:
     """Ship: deploy version `ref` (a tag like v3) to the project's production Vercel project (production_name),
-    with its own env (the production DATABASE_URL; an APP_SESSION_SECRET of its own, kept once made).
-    Same upload and polling as deploy_preview; never raises."""
-    return deploy_preview(repo, project_name=production_name(slug), env=env, ref=ref, **kw)
+    with its own env (the production DATABASE_URL; an APP_SESSION_SECRET of its own, kept once made; production's
+    own APP_SETUP_CODE when `setup_code` is given). Same upload and polling as deploy_preview; never raises."""
+    return deploy_preview(repo, project_name=production_name(slug), env=env, ref=ref, setup_code=setup_code, **kw)
