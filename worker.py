@@ -98,11 +98,27 @@ def provision_for_preview(project_name: str, events, provision=None) -> dict | N
     return {"DATABASE_URL": url}
 
 
-def publish_preview(results, repo: Path, repo_url: str, events, deploy=None, merged_before=(), provision=None) -> None:
+def project_setup_code(project: dict | None, environment: str) -> str | None:
+    """The owner's setup code for "preview" or "production" from the project row (`setupCodes`, docs/owner-setup.md),
+    or None when the row has none. The deploy sets it as APP_SETUP_CODE; it is never printed or emitted."""
+    codes = (project or {}).get("setupCodes")
+    code = codes.get(environment) if isinstance(codes, dict) else None
+    return code.strip() if isinstance(code, str) and code.strip() else None
+
+
+def hide(text: str, *secrets: str | None) -> str:
+    for s in secrets:
+        if s:
+            text = text.replace(s, "***")
+    return text
+
+
+def publish_preview(results, repo: Path, repo_url: str, events, deploy=None, merged_before=(), provision=None,
+                    setup_code: str | None = None) -> None:
     """Once the integration task has merged, deploy main to Vercel and tell the app where it lives (on a
     retry where INT merged earlier, redeploy if anything new merged). With POSTGRES_ADMIN_URL set, the preview
-    gets its own durable Postgres first; if that fails it still deploys, in local mode. Never raises: a preview
-    is a bonus."""
+    gets its own durable Postgres first; if that fails it still deploys, in local mode. With a `setup_code` (the
+    row's setupCodes.preview) the preview gets it as APP_SETUP_CODE. Never raises: a preview is a bonus."""
     merged_now = {r.task for r in results if r.status == "merged"}
     if "INT" not in merged_now and not ("INT" in merged_before and merged_now):
         return
@@ -111,16 +127,19 @@ def publish_preview(results, repo: Path, repo_url: str, events, deploy=None, mer
         project_name = repo_url.rstrip("/").rsplit("/", 1)[-1]
         env = provision_for_preview(project_name, events, provision)
         extra = {"env": env} if env else {}
+        if setup_code:
+            extra["setup_code"] = setup_code
         r = (deploy or deploy_preview)(repo, project_name=project_name, log=print, **extra)
+        reason = hide(r.reason or "", setup_code)
         if r.status == "ready":
             events.emit("preview_ready", url=r.url)
         elif r.status == "skipped":
-            events.emit("preview_skipped", reason=r.reason)
+            events.emit("preview_skipped", reason=reason)
         else:
-            events.emit("preview_failed", reason=r.reason)
-        print(f"preview: {r.status} {r.url or r.reason}")
+            events.emit("preview_failed", reason=reason)
+        print(f"preview: {r.status} {r.url or reason}")
     except Exception as e:
-        events.emit("preview_failed", reason=f"{type(e).__name__}: {e}"[:300])
+        events.emit("preview_failed", reason=hide(f"{type(e).__name__}: {e}", setup_code)[:300])
 
 
 def finished(results, deferred=()) -> str:
@@ -278,7 +297,8 @@ def run_ship_mode(project: dict, backend, out: Path, token: str, stack) -> None:
                 print(f"template: not updated ({type(e).__name__})")
         slug = repo_url.rstrip("/").rsplit("/", 1)[-1]        # the repo name, as for previews
         status = run_ship(repo, slug, events.emit, stack=stack, rollback_to=rollback_to,
-                          open_box=lambda: ship_sandbox(repo_url, token, out.name, stack))
+                          open_box=lambda: ship_sandbox(repo_url, token, out.name, stack),
+                          setup_code=project_setup_code(project, "production"))
     finally:
         events.emit("project_finished", status="done", repo=repo_url)
         print(f"project ship: {status} ({repo_url})")
@@ -353,7 +373,8 @@ def main():
         # the current template's files (the checkpoint may predate a template fix)
         if files := upgrade_template(repo, stack):
             events.emit("template_updated", files=files)
-        publish_preview([Result("INT", "rollback", "merged")], repo, repo_url, events)
+        publish_preview([Result("INT", "rollback", "merged")], repo, repo_url, events,
+                        setup_code=project_setup_code(project, "preview"))
         return
     opts = stack.daytona_options()
     engine = Engine(repo, ClaudeCLIAgent(model=project["model"], budget_usd=a.budget),
@@ -428,7 +449,8 @@ def main():
             emit_ready_to_ship(repo, results, events, merged_before, needs_int=stack.integration)
         # a rejected change merged (and reverted) only its plan: nothing new to deploy
         publish_preview(results if status != "rejected" else [], repo, repo_url, events,
-                        merged_before=set(project.get("merged") or []))
+                        merged_before=set(project.get("merged") or []),
+                        setup_code=project_setup_code(project, "preview"))
         if status not in ("done", "rejected", STOPPED, "blocked"):  # stopped at the limit / blocked quick change: the owner's call
             sys.exit(1)
 

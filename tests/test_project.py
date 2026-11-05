@@ -245,7 +245,8 @@ def test_web_project_plans_tests_and_builds(tmp_path):
     tracked = git(repo, "ls-tree", "-r", "--name-only", "main").split()
     assert "src/server/bookings.ts" in tracked and "node_modules" not in tracked
     # the integrator ran last and wired the design's pages; its check built the app and requested each page
-    assert {"src/app/book/page.tsx", "src/app/sign-up/page.tsx"} <= set(tracked)
+    assert {"src/app/book/page.tsx", "src/app/sign-up/page.tsx", "src/app/owner-setup/page.tsx"} <= set(tracked)
+    assert "src/lib/owner.ts" in tracked                       # template file; the check requested /owner-setup
     assert "INT" == list(res)[-1] and plan["pages"] == ["/", "/sign-up", "/book"]
     assert not [f for f in tracked if f.startswith("tests/acceptance/")]          # hidden tests never merged
 
@@ -309,6 +310,49 @@ def test_integration_task_only_for_web_and_scoped_to_pages():
     assert not default_stack().integration
     bad = dict(plan, pages=["/p/[id]"])
     assert any('"pages"' in m for m in plan_problems(bad, NextSupabaseStack(link_node_modules=False)))
+
+
+def test_integrator_must_write_owner_setup_and_its_check_requests_it():
+    """Regression (Tool library build, Nov 5): the design said the admin role "is set by the project owner directly
+    in the database", which nobody using Studio can do. Every web app now gets /owner-setup (src/lib/owner.ts)."""
+    from engine.project import integration_task
+    from engine.stacks import AGENTS_MD, NextSupabaseStack
+    stack = NextSupabaseStack(link_node_modules=False)
+    plan = json.loads((WEB / "plan" / "plan.json").read_text())
+    assert "/owner-setup" not in plan["pages"]
+    for change in (None, {"n": 1, "request": "r", "summary": "s", "contracts": [], "pages": ["/", "/book"],
+                          "tasks": [{"id": "C1T1", "kind": "change", "title": "t", "module": "src/server/bookings.ts",
+                                     "spec": "s", "depends_on": []}]}):
+        t = integration_task(plan, "A booking site", stack, change=change)
+        assert "MUST add an /owner-setup page" in t.spec and "claimOwner" in t.spec
+        assert "Set up the owner account" in t.spec and "This app already has an owner." in t.spec
+        assert 'as "Owner setup"' in t.spec and "isOwner" in t.spec
+        assert stack.integration_check_cmd([*(change or plan)["pages"], "/owner-setup"]) in t.spec
+        assert t.spec.count("/owner-setup") >= 3                       # spec, the page list, the check command
+        assert "Pages the app must have: " in t.spec and "/owner-setup" in t.spec.split("Pages the app must have: ")[1].split("\n")[0]
+    with_it = integration_task(dict(plan, pages=["/", "/owner-setup"]), "A booking site", stack)
+    assert "check-app.mjs / /owner-setup" in with_it.spec and "/owner-setup /owner-setup" not in with_it.spec
+    # planners and devs learn the rule too
+    assert "requireOwner" in stack.plan_layout and "in the database" in stack.plan_layout
+    assert "src/lib/owner.ts" in AGENTS_MD and "requireOwner" in AGENTS_MD
+    assert default_stack().required_pages == ()
+
+
+def test_owner_ts_is_a_reserved_template_file_that_upgrades_reach(tmp_path):
+    from engine.stacks import NextSupabaseStack, upgrade_template
+    stack = NextSupabaseStack(link_node_modules=False)
+    assert "src/lib/owner.ts" in stack.reserved
+    assert "src/lib/owner.ts" in stack.template_files()
+    plan = json.loads((WEB / "plan" / "plan.json").read_text())
+    taken = dict(plan, tasks=[dict(plan["tasks"][0], module="src/lib/owner.ts"), *plan["tasks"][1:]])
+    assert any("'src/lib/owner.ts'" in m for m in plan_problems(taken, stack))     # no task may own it
+    repo = build_project_repo(tmp_path / "r", stack)
+    (repo / "src/lib/owner.ts").unlink()                                  # a project built before owner setup
+    git(repo, "add", "-A")
+    git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "old project")
+    assert upgrade_template(repo, stack) == ["src/lib/owner.ts"]
+    assert "export async function claimOwner" in (repo / "src/lib/owner.ts").read_text()
+    assert "src/lib/owner.ts" in git(repo, "ls-tree", "-r", "--name-only", "HEAD").split()
 
 
 @web

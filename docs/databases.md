@@ -36,6 +36,7 @@ them when idle).
 3. The deployer sets it on the project's Vercel project as `DATABASE_URL`, type **sensitive** (encrypted and
    write-only: nobody can read it back in the Vercel dashboard), for production and preview. It also sets
    `APP_SESSION_SECRET` (sensitive) the first time only; later deploys keep it, so redeploys don't sign anyone out.
+   When the project row has a setup code, it sets `APP_SETUP_CODE` (sensitive) too: see docs/owner-setup.md.
 4. The app's first request on a fresh instance (templates/next-supabase/src/lib/runtime.ts → db-postgres.ts →
    migrate.ts) takes a Postgres advisory lock, applies the auth shim (auth schema, `auth.users`, `auth.uid()`,
    the `authenticated`/`anon` roles, local sign-in tables) and every migration not yet recorded in

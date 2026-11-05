@@ -185,16 +185,16 @@ class Fakes:
         self.provisioned.append(slug)
         return f"postgresql://owner:pw-Sup3rSecret@ep-x.neon.tech/{engine.ship.database_name(slug)}"
 
-    def deploy(self, repo, slug, ref, env, log=None):
-        self.deployed.append({"slug": slug, "ref": ref, "env": env,
+    def deploy(self, repo, slug, ref, env, log=None, **kw):
+        self.deployed.append({"slug": slug, "ref": ref, "env": env, **kw,
                               "files": sh(["ls-tree", "-r", "--name-only", ref], repo).split()})
         return self.result
 
 
-def ship(work, f, rollback_to=None, admin=ADMIN):
+def ship(work, f, rollback_to=None, admin=ADMIN, **kw):
     sink, emit = collect()
     status = run_ship(work, SLUG, emit, stack=NextSupabaseStack(link_node_modules=False), rollback_to=rollback_to,
-                      open_box=lambda: f.box, admin_url=admin, provision=f.provision, deploy=f.deploy,
+                      open_box=lambda: f.box, admin_url=admin, provision=f.provision, deploy=f.deploy, **kw,
                       log=lambda m: None)
     return status, events(sink)
 
@@ -329,7 +329,7 @@ def test_deploy_production_uses_its_own_project_and_the_tag_files(repos):
 
 
 # -------------------------------------------------------------------- worker.main, mode ship
-def run_worker(monkeypatch, tmp_path, bare, ship_row, box=None, fakes=None):
+def run_worker(monkeypatch, tmp_path, bare, ship_row, box=None, fakes=None, row=None):
     import worker
     sent = []
 
@@ -339,7 +339,7 @@ def run_worker(monkeypatch, tmp_path, bare, ship_row, box=None, fakes=None):
 
         def project(self):
             return {"status": "starting", "mode": "ship", "ship": ship_row, "versions": [], "resume": False,
-                    "change": None, "repo": str(bare), "merged": ["INT"], "name": "x", "model": "haiku"}
+                    "change": None, "repo": str(bare), "merged": ["INT"], "name": "x", "model": "haiku", **(row or {})}
 
         def write(self, e):
             sent.append((e.kind, e.data))
@@ -410,3 +410,46 @@ def test_worker_rollback_ship_to_a_missing_tag_fails(repos, tmp_path, monkeypatc
     code, sent, _, _, f = run_worker(monkeypatch, tmp_path, bare, {"from": "done", "rollbackTo": 3})
     assert code == 1 and [k for k, _ in sent] == ["ship_started", "ship_failed", "project_finished"]
     assert not f.deployed
+
+
+# -------------------------------------------------------------------- owner setup code (docs/owner-setup.md)
+PROD_CODE, PREVIEW_CODE = "K7PQ-M2XR-9TVD", "ABCD-EFGH-JKMN"
+
+
+def test_a_ship_gives_production_its_setup_code_and_never_reports_it(repos):
+    work, _ = repos
+    f = Fakes()
+    status, evs = ship(work, f, setup_code=PROD_CODE)
+    assert status == "live" and f.deployed[0]["setup_code"] == PROD_CODE
+    assert set(f.deployed[0]["env"]) == {"DATABASE_URL"}                # the deploy adds APP_SETUP_CODE itself
+    assert PROD_CODE not in json.dumps(evs)
+    f = Fakes(deploy=DeployResult("failed", reason=f"Vercel could not set APP_SETUP_CODE: bad value {PROD_CODE}"))
+    status, evs = ship(work, f, setup_code=PROD_CODE)
+    assert status == "failed" and "APP_SETUP_CODE" in evs[-1][1]["reason"] and PROD_CODE not in json.dumps(evs)
+
+
+def test_a_ship_without_a_setup_code_deploys_without_one(repos):
+    work, _ = repos
+    for code in (None, "", "   "):
+        f = Fakes()
+        assert ship(work, f, setup_code=code)[0] == "live"
+        assert "setup_code" not in f.deployed[0]
+
+
+def test_worker_ship_mode_passes_the_production_code_only(repos, tmp_path, monkeypatch, capsys):
+    work, bare = repos
+    row = {"setupCodes": {"preview": PREVIEW_CODE, "production": PROD_CODE}}
+    code, sent, _, _, f = run_worker(monkeypatch, tmp_path, bare, {"from": "done", "rollbackTo": None}, row=row)
+    assert code == 0 and f.deployed[0]["setup_code"] == PROD_CODE
+    assert PROD_CODE not in json.dumps(sent) and PREVIEW_CODE not in json.dumps(sent)
+    assert PROD_CODE not in capsys.readouterr().out
+
+
+def test_worker_reads_setup_codes_per_environment():
+    from worker import project_setup_code
+    row = {"setupCodes": {"preview": f" {PREVIEW_CODE} ", "production": PROD_CODE}}
+    assert project_setup_code(row, "preview") == PREVIEW_CODE
+    assert project_setup_code(row, "production") == PROD_CODE
+    for bad in ({}, None, {"setupCodes": None}, {"setupCodes": "x"}, {"setupCodes": {"preview": 5}},
+                {"setupCodes": {"preview": "  "}}, {"setupCodes": {"production": PROD_CODE}}):
+        assert project_setup_code(bad, "preview") is None

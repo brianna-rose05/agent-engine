@@ -10,7 +10,10 @@ never runs on the in-memory local mode); then tags main as the next version `v<n
 forced, moved or deleted once pushed); then deploys that tag to the production Vercel project.
 A rollback (`rollback_to=n`) skips the checks and the tagging and deploys the existing tag `v<n>`.
 
-Connection strings, passwords and tokens never reach an event or a log line: everything is scrubbed.
+With a `setup_code` (the project row's setupCodes.production, from worker.py) production gets it as APP_SETUP_CODE,
+the code its owner enters on /owner-setup (docs/owner-setup.md); without one, production refuses owner claims.
+
+Connection strings, passwords, tokens and the setup code never reach an event or a log line: everything is scrubbed.
 """
 from __future__ import annotations
 
@@ -145,13 +148,15 @@ def create_version_tag(repo: Path, n: int, sha: str | None = None) -> dict:
 def run_ship(repo: Path, slug: str, emit: Callable, *, stack=None, rollback_to: int | None = None,
              open_box: Callable[[], object] | None = None, admin_url: str | None = None,
              provision: Callable[[str, str], str] | None = None, deploy: Callable | None = None,
-             log: Callable[[str], None] = print) -> str:
+             log: Callable[[str], None] = print, setup_code: str | None = None) -> str:
     """The worker's ship mode. `slug` is the repo name (the preview's Vercel project and database use it too).
     `open_box()` returns a sandbox context manager on main (new ship only); `provision(admin_url, name)` and
-    `deploy(repo, slug, ref=, env=)` default to the real ones. Returns "live" or "failed"; never raises."""
+    `deploy(repo, slug, ref=, env=)` default to the real ones (with `setup_code=` too when there is a code).
+    Returns "live" or "failed"; never raises."""
     repo = Path(repo)
     admin = (admin_url if admin_url is not None else os.environ.get("POSTGRES_ADMIN_URL", "")).strip()
-    secrets: list[str] = [admin]
+    code = setup_code.strip() if isinstance(setup_code, str) else ""
+    secrets: list[str] = [admin, code]
     rollback = rollback_to is not None
     emit("ship_started", version=int(rollback_to) if rollback else None, rollback=rollback)
 
@@ -218,7 +223,9 @@ def run_ship(repo: Path, slug: str, emit: Callable, *, stack=None, rollback_to: 
             log(f"ship: tagged {version['tag']} at {version['sha'][:12]}")
 
         # 4. deploy that tag to production
-        r = (deploy or deploy_production)(repo, slug, ref=version["tag"], env={"DATABASE_URL": db_url}, log=log)
+        extra = {"setup_code": code} if code else {}
+        r = (deploy or deploy_production)(repo, slug, ref=version["tag"], env={"DATABASE_URL": db_url}, log=log,
+                                          **extra)
         if r.status != "ready":
             what = "Production can't be deployed" if r.status == "skipped" else "The production deploy failed"
             return fail(f"{what}: {r.reason or r.status}")
