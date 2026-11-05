@@ -201,7 +201,9 @@ def test_worker_rollback_mode_end_to_end_without_network(repos, tmp_path, monkey
         def write(self, e):
             sent.append((e.kind, e.data))
 
-    deployed = []
+    deployed, upgraded = [], []
+    # template updates are tested in test_project.py; here: they run after the rollback, before the redeploy
+    monkeypatch.setattr(worker, "upgrade_template", lambda repo, stack: upgraded.append(len(sent)) or [])
     monkeypatch.setattr(worker, "ConvexBackend", FakeBackend)
     monkeypatch.setattr(worker, "ROOT", tmp_path / "worker")
     monkeypatch.setattr(engine.deploy, "deploy_preview",
@@ -216,3 +218,4 @@ def test_worker_rollback_mode_end_to_end_without_network(repos, tmp_path, monkey
     assert sent[3][1] == {"status": "done", "repo": str(bare)}
     assert sent[2][1]["n"] == 2 and sent[2][1]["merged"] == ["INT", "T1"]
     assert tree(bare) == c1_tree and deployed == ["remote.git"]
+    assert upgraded == [4]                     # once: after project_finished, not before the rollback
