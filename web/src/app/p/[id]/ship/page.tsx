@@ -4,7 +4,8 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useMutation } from "convex/react";
 import {
-  ArrowRight, Check, ChevronRight, Circle, ExternalLink, GitCommitHorizontal, Loader2, PartyPopper, Rocket, RotateCcw, X,
+  ArrowRight, Check, ChevronRight, Circle, ExternalLink, GitCommitHorizontal, Loader2, PartyPopper, Rocket, RotateCcw,
+  TriangleAlert, X,
 } from "lucide-react";
 import { api, useOwner } from "@/lib/convex";
 import { anyRunning, useProject } from "@/lib/project-store";
@@ -111,8 +112,8 @@ function ShipScreen({ onShip, onRollback }: { onShip?: () => Promise<void>; onRo
             Ship to production
           </h2>
           <p className="text-sm text-muted">
-            Production is separate from the preview: its own address and its own database. Shipping runs five checks,
-            saves the code as the next version, and puts it live.
+            Production is separate from the preview: its own address and its own database. Shipping runs the checks
+            below, saves the code as the next version, and puts it live.
           </p>
         </div>
         <div className="flex flex-wrap gap-2 text-sm">
@@ -146,7 +147,7 @@ function ShipScreen({ onShip, onRollback }: { onShip?: () => Promise<void>; onRo
         <p className="mb-3 text-xs text-muted">
           {run?.rollback && !run.finished
             ? "A rollback puts back a version that already passed these checks, so they don't run again."
-            : "Run on the code in the repo, one by one, every time you ship. The first one that fails stops the ship."}
+            : "Run on the code in the repo, one by one, every time you ship. The first one that fails stops the ship; warnings don't."}
         </p>
         <ol className="flex flex-col divide-y divide-line">
           {shipChecks(run && !run.rollback ? run : null).map((c) => (
@@ -280,6 +281,11 @@ function RunBanner({ run, queued, production, celebrating }: {
          className="mt-1 inline-flex max-w-full items-center gap-1 break-all text-muted underline-offset-2 hover:text-ink hover:underline">
         {production.url} <ExternalLink size={12} className="shrink-0" />
       </a>
+      {!run.rollback && run.checks.some((x) => x.status === "warning") && (
+        <p className="mt-1 text-xs text-warn">
+          Passed with warnings: {run.checks.filter((x) => x.status === "warning").map((x) => x.label).join(", ")}. The checks below say what to look at.
+        </p>
+      )}
     </div>
   );
 }
@@ -288,23 +294,35 @@ const CHECK_ICON: Record<ShipCheckState["status"], React.ReactNode> = {
   pending: <Circle size={16} strokeWidth={1.6} className="text-faint" />,
   running: <Loader2 size={16} className="animate-spin text-qa" />,
   passed: <span className="grid size-4 place-items-center rounded-full bg-dev text-white"><Check size={11} strokeWidth={3} /></span>,
+  warning: <span className="grid size-4 place-items-center rounded-full bg-warn text-white"><TriangleAlert size={10} strokeWidth={3} /></span>,
   failed: <span className="grid size-4 place-items-center rounded-full bg-bad text-white"><X size={11} strokeWidth={3} /></span>,
 };
 
+const CHECK_TEXT: Record<Exclude<ShipCheckState["status"], "pending">, string> = {
+  running: "Running…", passed: "Passed", warning: "Passed with warnings", failed: "Failed",
+};
+const CHECK_TONE: Record<ShipCheckState["status"], string> = {
+  pending: "text-faint", running: "text-qa", passed: "text-dev", warning: "text-warn", failed: "text-bad",
+};
+/** What the expandable detail is called: a failure's output, a warning's notes, or a passed check's summary. */
+const DETAIL_TITLE: Partial<Record<ShipCheckState["status"], string>> = {
+  failed: "What went wrong", warning: "Warnings", passed: "Details",
+};
+
 function CheckRow({ c, stopped }: { c: ShipCheckState; stopped: boolean }) {
-  const text = { pending: stopped ? "Not run" : "Waiting", running: "Running…", passed: "Passed", failed: "Failed" }[c.status];
-  const tone = { pending: "text-faint", running: "text-qa", passed: "text-dev", failed: "text-bad" }[c.status];
+  const text = c.status === "pending" ? (stopped ? "Not run" : "Waiting") : CHECK_TEXT[c.status];
+  const title = c.detail ? DETAIL_TITLE[c.status] : undefined;
   return (
-    <li className="py-2.5">
+    <li className={`py-2.5 ${c.status === "warning" ? "-mx-2 rounded-xl bg-warn-bg/60 px-2" : ""}`}>
       <div className="flex items-center gap-3">
         <span className="grid size-5 shrink-0 place-items-center">{CHECK_ICON[c.status]}</span>
         <span className={`mr-auto text-sm ${c.status === "pending" ? "text-muted" : "text-ink"}`}>{c.label}</span>
-        <span className={`text-xs ${tone}`} aria-live="polite">{text}</span>
+        <span className={`text-xs ${CHECK_TONE[c.status]}`} aria-live="polite">{text}</span>
       </div>
-      {c.status === "failed" && c.detail && (
+      {title && (
         <details className="group ml-8 mt-2">
-          <summary className="flex cursor-pointer list-none items-center gap-1 text-xs text-muted hover:text-ink">
-            <ChevronRight size={13} className="transition-transform duration-150 group-open:rotate-90" /> What went wrong
+          <summary className={`flex cursor-pointer list-none items-center gap-1 text-xs hover:text-ink ${c.status === "warning" ? "text-warn" : "text-muted"}`}>
+            <ChevronRight size={13} className="transition-transform duration-150 group-open:rotate-90" /> {title}
           </summary>
           <pre className="scroll-thin mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-canvas p-3 font-mono text-[12px] leading-relaxed text-muted">
             {c.detail}

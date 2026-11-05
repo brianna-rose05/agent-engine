@@ -1,4 +1,4 @@
-import { SHIP_CHECKS } from "../../convex/ship";
+import { SHIP_CHECKS, allChecksPassed, checkStatus } from "../../convex/ship";
 import type { EngineEvent, FeedItem, ProjectState, ShipCheckState, ShipRun, ShipState } from "./types";
 
 /*
@@ -36,15 +36,15 @@ export function withShip(s: ProjectState, e: EngineEvent, inner: (s: ProjectStat
       return { ...s, now, status: "shipping", ship: { ...sh, run: next },
                feed: say({ who: "you", text: rollback
                  ? `Roll production back to version ${version}. Only the code goes back; the production database is kept as it is.`
-                 : "Ship to production: running the five checks, then deploying the next version." }) };
+                 : "Ship to production: running the checks, then deploying the next version." }) };
     }
     case "ship_check": {
       if (!run || typeof d.name !== "string") return { ...s, now };
-      const status = d.status === "passed" || d.status === "failed" ? d.status : "running";
+      const status = checkStatus(d.status);
       const check: ShipCheckState = { name: d.name, label: String(d.label ?? labelOf(d.name)), status,
-                                      ...(status === "failed" && typeof d.detail === "string" ? { detail: d.detail } : {}) };
+                                      ...(status !== "running" && typeof d.detail === "string" ? { detail: d.detail } : {}) };
       const checks = setCheck(run.checks, check);
-      const passedAll = SHIP_CHECKS.every((c) => checks.some((x) => x.name === c.name && x.status === "passed"));
+      const passedAll = allChecksPassed(checks);
       // a failed check is said once, by ship_failed, with the reason
       return { ...s, now, ship: setRun({ checks, state: status === "failed" ? "failed" : passedAll ? "deploying" : "checking",
                                          ...(status === "failed" ? { failed_check: d.name } : {}) }) };
@@ -61,10 +61,12 @@ export function withShip(s: ProjectState, e: EngineEvent, inner: (s: ProjectStat
       ].sort((a, b) => a.n - b.n);
       const ship: ShipState = { run: run ? { ...run, state: "live", version: n } : null, versions,
                                 production: { url, version: n, t: e.t } };
+      const warned = rollback ? [] : (run?.checks ?? []).filter((x) => x.status === "warning").map((x) => x.label);
+      const notes = warned.length ? ` ${warned.join(", ")} passed with warnings: see the Ship screen.` : "";
       return { ...s, now, ship,
                feed: say({ who: "engine", tone: "good", text: rollback
                  ? `Production is back on version ${n} at ${url}. Its database was kept as it is.`
-                 : `Version ${n} is live at ${url}.` }) };
+                 : `Version ${n} is live at ${url}.${notes}` }) };
     }
     case "ship_failed": {
       const reason = String(d.reason ?? "the ship didn't finish").slice(0, 300);
@@ -101,7 +103,7 @@ export function withShip(s: ProjectState, e: EngineEvent, inner: (s: ProjectStat
 /** The rest of the reducer doesn't know about `ship`: carry it over. */
 const keep = (next: ProjectState, s: ProjectState): ProjectState => (s.ship ? { ...next, ship: s.ship } : next);
 
-/** The five checks as the Ship screen lists them: what each has reported, pending for the rest. */
+/** The checks as the Ship screen lists them: what each has reported, pending for the rest. */
 export function shipChecks(run: ShipRun | null | undefined): ShipCheckState[] {
   const ran = run && !run.rollback ? run.checks : [];
   const known = SHIP_CHECKS.map((c) => ran.find((x) => x.name === c.name) ?? { name: c.name, label: c.label, status: "pending" as const });

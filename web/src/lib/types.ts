@@ -170,7 +170,8 @@ export type ProjectState = {
   retros?: { summary: string; t: number }[]; // retro notes after each run (retro_written), oldest first
 };
 
-export type ShipCheckState = { name: string; label: string; status: "pending" | "running" | "passed" | "failed"; detail?: string };
+/** warning: passed with notes (the ship goes on). detail: a failure's output, a warning's notes or a passed check's summary. */
+export type ShipCheckState = { name: string; label: string; status: "pending" | "running" | "passed" | "warning" | "failed"; detail?: string };
 
 /** One ship run: a new version (checks, tag, deploy) or a production rollback to `version`. */
 export type ShipRun = {

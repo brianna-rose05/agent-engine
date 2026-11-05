@@ -38,7 +38,9 @@ Event kinds and their data:
     checkpoint_created {n, tag, sha, label, merged}   a save point (engine/checkpoints.py, docs/checkpoints.md)
     rollback_started {n} / rollback_done {to, n, sha} / rollback_failed {n, reason}
     ship_started     {version, rollback}   version: the target of a production rollback, null for a new ship
-    ship_check       {name, label, status, detail?}   running | passed | failed (detail: end of the output, scrubbed)
+    ship_check       {name, label, status, detail?}   running | passed | warning | failed; warning = passed with notes,
+                     the ship goes on (detail: end of the output, scrubbed; on failed and warning, and on passed
+                     for the checks that report a summary: security, accessibility, speed)
     ship_live        {url, version, tag, sha, rollback, database}   production is on version `tag` (docs/ship.md)
     ship_failed      {reason, check?}   plain English, scrubbed; nothing new is live
     pm_deferred      {tasks, titles}   features saved for later at the start of a build or retry (docs/pm.md)
