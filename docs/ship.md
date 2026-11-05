@@ -35,8 +35,10 @@ app started with `next start` in local mode (no `DATABASE_URL`: an in-process da
 - **Security** (`check-security.mjs`), three parts:
   1. `npm audit --omit=dev` (production dependencies only). A high or critical advisory fails the check; a moderate
      one is a warning; low ones are counted. Advisories the template itself ships with and that only a major
-     upgrade fixes (zod 3, postcss inside Next 15: the `ACCEPTED` list in the script) are listed as known and not
-     counted, or every app would fail. **If the audit service can't be reached** the check doesn't block: it passes
+     upgrade fixes (the `ACCEPTED` list in the script) are listed as known and not counted, or every app would
+     fail. The list is empty since the template moved to Next 16 and zod 4 (docs/template-upgrades.md); projects
+     still on Next 15 / zod 3 keep their own copy of the script, with the old list, until they opt into the
+     upgrade. **If the audit service can't be reached** the check doesn't block: it passes
      with a warning saying the dependencies weren't audited (a registry outage shouldn't stop a ship, and the
      warning makes the gap visible).
   2. A secret scan of every tracked file (`git ls-files`): private key blocks, GitHub/Anthropic/Vercel/Daytona/
