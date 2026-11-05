@@ -12,6 +12,7 @@ import { RetriedOn, TechLeadThread } from "@/components/TechLead";
 import { Feed } from "@/components/Feed";
 import { ChangeRequestBox } from "@/components/ChangeRequest";
 import { QuickChangeBox } from "@/components/QuickChange";
+import { BuildSavedButton } from "@/components/PM";
 
 const COL_TINT: Record<Column, string> = {
   queued: "bg-faint",
@@ -20,6 +21,7 @@ const COL_TINT: Record<Column, string> = {
   checking: "bg-check",
   done: "bg-dev",
   attention: "bg-bad",
+  saved: "bg-pm",
 };
 
 export default function BoardPage() {
@@ -27,6 +29,7 @@ export default function BoardPage() {
   const [open, setOpen] = useState<string | null>(null);
   const fs = features(state);
   const selected = fs.find((f) => f.id === open) ?? null;
+  const saved = fs.filter((f) => f.column === "saved");
 
   if (!state.plan || state.status === "awaiting_approval" || state.status === "planning") {
     const waiting = state.status === "awaiting_approval";
@@ -64,6 +67,31 @@ export default function BoardPage() {
           <ChangeRequestBox compact />
         </div>
         <LayoutGroup>
+          {saved.length > 0 && (
+            <section aria-labelledby="saved-title"
+              className="sticky left-0 mb-4 flex max-w-5xl flex-col gap-2.5 rounded-2xl bg-pm-bg/40 p-2.5 ring-1 ring-pm/15">
+              <header className="flex flex-wrap items-center gap-x-3 gap-y-2 px-1.5 pt-1">
+                <div className="mr-auto min-w-0">
+                  <p id="saved-title" className="flex items-center gap-2 text-sm font-medium">
+                    <span className={`size-2 rounded-full ${COL_TINT.saved}`} />
+                    Saved for later
+                    <span className="text-xs font-normal tabular-nums text-faint">{saved.length}</span>
+                  </p>
+                  <p className="text-xs text-faint">
+                    Should and Could features the PM saved for the next version. They don&apos;t block shipping.
+                  </p>
+                </div>
+                <BuildSavedButton />
+              </header>
+              <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
+                <AnimatePresence>
+                  {saved.map((f) => (
+                    <Card key={f.id} f={f} now={state.now} onOpen={() => setOpen(f.id)} titles={titles(fs)} />
+                  ))}
+                </AnimatePresence>
+              </div>
+            </section>
+          )}
           <div className="grid min-w-[900px] grid-cols-6 gap-3">
             {COLUMNS.map((c) => {
               const items = fs.filter((f) => f.column === c.id);
@@ -109,7 +137,8 @@ function Card({ f, now, onOpen, titles }: { f: Feature; now: number; onOpen: () 
   const testsDone = integ || f.qa?.status === "passed";
   const built = f.dev?.status === "merged";
   const doing =
-    f.column === "tests" ? `Writing tests · ${since(now, f.qa)}s`
+    f.column === "saved" ? `Saved for the next version (${f.priority === "could" ? "a Could" : "a Should"})`
+    : f.column === "tests" ? `Writing tests · ${since(now, f.qa)}s`
     : f.column === "building" ? `Building · ${since(now, f.dev)}s`
     : f.reviewing ? "Tech lead reviewing the failed tries"
     : f.column === "checking" ? (integ ? "Building the app and opening every page" : "Running hidden tests")
@@ -139,11 +168,14 @@ function Card({ f, now, onOpen, titles }: { f: Feature; now: number; onOpen: () 
             <CircleCheck size={14} strokeWidth={1.8} />
           </span>
         ) : (
-          <Avatar who={f.reviewing || f.question ? "tech lead" : f.active ?? (f.column === "attention" ? "engine" : testsDone ? "dev" : "qa")}
+          <Avatar who={f.column === "saved" ? "PM" : f.reviewing || f.question ? "tech lead" : f.active ?? (f.column === "attention" ? "engine" : testsDone ? "dev" : "qa")}
             size={24} active={!!f.active} />
         )}
         <span className="text-[11px] font-medium text-faint">{f.id}</span>
         <span className="ml-auto flex items-center gap-1">
+          {f.column === "saved" && (
+            <span className="rounded-full bg-pm-bg px-1.5 py-0.5 text-[11px] font-medium text-pm">Saved for later</span>
+          )}
           <RetriedOn model={f.retry_model} compact />
           {f.tries > 1 && (
             <span className="flex items-center gap-1 rounded-full bg-check-bg px-1.5 py-0.5 text-[11px] text-check">

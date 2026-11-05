@@ -24,12 +24,17 @@ export type EngineEvent = {
     | "template_updated"
     | "quick_started"
     | "quick_blocked"
-    | "ship_started" | "ship_check" | "ship_live" | "ship_failed"; // ship to production (convex/ship.ts, lib/ship.ts)
+    | "ship_started" | "ship_check" | "ship_live" | "ship_failed" // ship to production (convex/ship.ts, lib/ship.ts)
+    | "pm_deferred" | "ready_to_ship" | "retro_written"; // the PM: features saved for later, the ship gate, retro notes
   task_id: string | null;
   data: Record<string, unknown>;
 };
 
-export type PlanTask = { id: string; title: string; module: string; spec: string; depends_on: string[] };
+export type PlanTask = {
+  id: string; title: string; module: string; spec: string; depends_on: string[];
+  stories?: string[];                      // the wizard's story ids it serves (S1, S2...)
+  priority?: "must" | "should" | "could";  // missing = "must" (older plans, the benchmark): convex/pm.ts priorityOf
+};
 export type Plan = { project: string; contracts: string[]; tasks: PlanTask[] };
 
 /** A task in a planned change (changes/{n}.json): "change" rewrites an existing module's spec, "new" adds one. */
@@ -111,7 +116,7 @@ export type ProjectStatus =
 
 export type FeedItem = {
   t: number;
-  who: Role | "engine" | "you" | "tech lead";
+  who: Role | "engine" | "you" | "tech lead" | "PM";
   channel: "planning" | "tests" | "build";
   text: string;
   tone?: "good" | "warn" | "bad";
@@ -133,6 +138,9 @@ export type ProjectState = {
   history?: HistoryState;      // checkpoints and rollbacks (lib/history.ts); absent until the first one
   quicks: QuickState[];        // quick changes, oldest first
   ship?: ShipState;            // ship to production (lib/ship.ts); absent until the first ship
+  deferred?: string[];         // plan task ids the PM saved for the next version (pm_deferred), until they're built
+  ready_to_ship?: { saved: string[]; musts: number; t: number } | null; // the latest run's ship gate (ready_to_ship)
+  retros?: { summary: string; t: number }[]; // retro notes after each run (retro_written), oldest first
 };
 
 export type ShipCheckState = { name: string; label: string; status: "pending" | "running" | "passed" | "failed"; detail?: string };
