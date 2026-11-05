@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  CHECKLIST, checkQuestions, checkRequirements, composeSpec, designWarnings, type Design, type Feature, type Question, type Wizard,
+  CHECKLIST, DESIGN_RULES, OWNER_RULE, checkQuestions, checkRequirements, composeSpec, designWarnings, type Design, type Feature,
+  type Question, type Wizard,
 } from "../convex/wizard";
 
 const q = (id: string, item: string, gate: "must" | "confirm" = "must"): Question => ({
@@ -67,6 +68,44 @@ describe("designWarnings", () => {
     expect(w).toContain("Must story S1 isn't on any page");
     expect(w).toContain('"payments" that doesn\'t exist');
     expect(w).toContain("bookings has no security rule");
+  });
+});
+
+describe("owner rule (Design step)", () => {
+  it("the design prompt says the owner is the admin and claims it on /owner-setup", () => {
+    expect(DESIGN_RULES).toContain(OWNER_RULE);
+    expect(OWNER_RULE).toContain("The app's owner is its admin");
+    expect(OWNER_RULE).toContain("/owner-setup");
+    expect(OWNER_RULE).toContain("src/lib/owner.ts");
+    expect(OWNER_RULE).toContain("granted by the owner in the app");
+  });
+  const withText = (security: string, why = "who the person is") => ({
+    ...design,
+    tables: [{ ...design.tables[0], security: [security], fields: [{ name: "role", type: "text", why }] }],
+  });
+  it("refuses roles set by hand in the database", () => {
+    for (const bad of [
+      "The admin role is set by the project owner directly in the database.",
+      "Admins are added manually in the database",
+      "The owner sets a member as admin by hand",
+      "Roles can only be changed by hand; signed-in requests can't change them",
+    ]) {
+      const w = designWarnings(withText(bad), feats).join("\n");
+      expect(w, bad).toContain("says a role is set by hand in the database");
+      expect(w).toContain("/owner-setup");
+    }
+    const w = designWarnings(withText("Members see their own loans", "admin flag, flipped directly in the database"), feats);
+    expect(w.join("\n")).toContain("field bookings.role says a role is set by hand");
+  });
+  it("accepts ordinary rules that mention the database or roles", () => {
+    for (const ok of [
+      "Customers see only their own bookings",
+      "Each person's role is stored in the database",
+      "Staff can update any booking in the database",
+      "Only the owner (isOwner) can change staff roles, in the app",
+    ]) {
+      expect(designWarnings(withText(ok), feats), ok).toEqual([]);
+    }
   });
 });
 

@@ -10,6 +10,7 @@ import type { EngineEvent, Project, ProjectState } from "./types";
 import type { Wizard } from "../../convex/wizard";
 import { canRequestChange, checkChangeText, nextChangeNumber, type ChangeRequest } from "../../convex/changes";
 import { checkAnswerText } from "../../convex/answers";
+import { isSetupCode, type SetupCodes } from "../../convex/setup";
 
 type Store = {
   project: Project;
@@ -44,6 +45,7 @@ type Store = {
   answerAndRetry: (taskId: string, text: string) => Promise<void>;
   canBuildSaved?: boolean;      // live: features were saved for later and the team can build them now (convex/pm.ts)
   buildSaved?: () => Promise<void>; // live: build the saved features; throws with a message to show when it can't
+  setupCodes?: SetupCodes;      // live, owner only: codes for the app's /owner-setup page (convex/setup.ts); the demo has none
 };
 
 /** A task agent is busy right now (the demo has no project row to ask). */
@@ -138,7 +140,7 @@ type LiveData = {
   project: Project & { status: string; error: string | null; wizard: Wizard | null; canRetry?: boolean; previewUrl?: string | null; durableDb?: boolean;
                       canShip?: boolean; shipping?: boolean; production?: { url: string; version: number; at: number } | null;
                       canChange?: boolean; changes?: ChangeRequest[]; budgetUsd?: number; costUsd?: number;
-                      answers?: Record<string, string>; canBuildSaved?: boolean };
+                      answers?: Record<string, string>; canBuildSaved?: boolean; setupCodes?: SetupCodes };
   events: { kind: EngineEvent["kind"]; task_id: string | null; data: Record<string, unknown>; ts: number }[];
 } | null;
 
@@ -151,6 +153,17 @@ function LiveProvider({ id, children }: { id: string; children: React.ReactNode 
   const saveBudget = useMutation(api.projects.setBudget);
   const answer = useMutation(api.projects.answerAndRetry);
   const buildSavedNow = useMutation(api.projects.buildSaved);
+  const ensureSetupCodes = useMutation(api.projects.ensureSetupCodes);
+  // Projects made before owner setup codes existed get theirs the first time the owner opens them, so the next
+  // worker run (and its deploys) already has them. Once per project per page load; existing codes never change.
+  const codes = data?.project.setupCodes;
+  const missingCodes = Boolean(data) && !(isSetupCode(codes?.preview) && isSetupCode(codes?.production));
+  const ensured = useRef<string | null>(null);
+  useEffect(() => {
+    if (!missingCodes || !key || ensured.current === id) return;
+    ensured.current = id;
+    ensureSetupCodes({ key, id }).catch(() => { ensured.current = null; }); // try again on the next change
+  }, [missingCodes, key, id, ensureSetupCodes]);
   const t0 = data?.events[0]?.ts;
   const state = useMemo(() => {
     if (!data) return initialState();
@@ -211,6 +224,7 @@ function LiveProvider({ id, children }: { id: string; children: React.ReactNode 
       }
     },
     canBuildSaved: Boolean(data?.project.canBuildSaved),
+    setupCodes: codes ?? {},
     buildSaved: async () => {
       try {
         await buildSavedNow({ key: key!, id });

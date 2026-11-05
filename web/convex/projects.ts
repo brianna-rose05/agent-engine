@@ -7,6 +7,7 @@ import { canRequestChange, checkChangeText, nextChangeNumber, type ChangeRequest
 import { budgetOf, canSpendMore, checkBudget } from "./budget";
 import { canShip } from "./ship";
 import { BUILD_SAVED_PATCH, buildSavedBlocker, decisionDeferred } from "./pm";
+import { missingSetupCodes, newSetupCodes, setupCodesForWorker } from "./setup";
 import { RETRY_PATCH, checkAnswer, failedTasks, retryBlocker, withAnswer, type Answers } from "./answers";
 
 const owner = { key: v.string() };
@@ -57,7 +58,9 @@ export const get = queryGeneric({
                  production: p.production ?? null,
                  answers: p.answers ?? {}, // your answers to the tech lead, {taskId: text} (convex/answers.ts)
                  // features saved for the next version at approval (convex/pm.ts), and whether they can be built now
-                 deferred: p.deferred ?? [], canBuildSaved: buildSavedBlocker(p) === null },
+                 deferred: p.deferred ?? [], canBuildSaved: buildSavedBlocker(p) === null,
+                 // owner setup codes for the app's /owner-setup page (convex/setup.ts): owner-only, like this whole query
+                 setupCodes: setupCodesForWorker(p.setupCodes) },
       events: events.map((e) => ({ kind: e.kind, task_id: e.taskId, data: e.data, ts: e.ts })),
     };
   },
@@ -77,13 +80,32 @@ export const create = mutationGeneric({
     if (setup) {
       // Setup wizard first (Questions -> Requirements -> Stack -> Design); the team starts when Design is locked.
       const id = await ctx.db.insert("projects", { name: n, description: d, model, status: "draft", costUsd: 0,
-                                                    budgetUsd: budget.usd, wizard: { step: "questions", busy: "questions" } });
+                                                    budgetUsd: budget.usd, setupCodes: newSetupCodes(), wizard: { step: "questions", busy: "questions" } });
       await ctx.scheduler.runAfter(0, anyApi.wizard.generateQuestions, { key, id });
       return id;
     }
-    const id = await ctx.db.insert("projects", { name: n, description: d, model, status: "queued", costUsd: 0, budgetUsd: budget.usd });
+    const id = await ctx.db.insert("projects", { name: n, description: d, model, status: "queued", costUsd: 0, budgetUsd: budget.usd,
+                                         setupCodes: newSetupCodes() });
     await ctx.scheduler.runAfter(0, anyApi.projects.startWorker, { projectId: id });
     return id;
+  },
+});
+
+/**
+ * Give a project the owner setup codes it's missing (convex/setup.ts). New projects get both when they're created;
+ * projects made before codes existed get them here, called by the project page when it opens for the owner, so the
+ * next worker run (and its deploys) already has them. Codes that exist are never changed. Returns nothing: the
+ * codes reach the screen through projects.get.
+ */
+export const ensureSetupCodes = mutationGeneric({
+  args: { ...owner, id: v.string() },
+  handler: async (ctx, { key, id }) => {
+    checkOwner(key);
+    const pid = ctx.db.normalizeId("projects", id);
+    const p = pid && (await ctx.db.get(pid));
+    if (!pid || !p) return;
+    const codes = missingSetupCodes(p.setupCodes);
+    if (codes) await ctx.db.patch(pid, { setupCodes: codes });
   },
 });
 
@@ -157,7 +179,7 @@ export const rebuild = mutationGeneric({
     const copies = (await ctx.db.query("projects").collect()).filter((x) => x.name.startsWith(p.name.replace(/ \(\d+\)$/, ""))).length;
     const nid = await ctx.db.insert("projects", {
       name: `${p.name.replace(/ \(\d+\)$/, "")} (${copies + 1})`, description: p.description, model: p.model,
-      status: "queued", costUsd: 0, budgetUsd: budgetOf(p), ...(p.wizard ? { wizard: p.wizard } : {}),
+      status: "queued", costUsd: 0, budgetUsd: budgetOf(p), setupCodes: newSetupCodes(), ...(p.wizard ? { wizard: p.wizard } : {}),
     });
     await ctx.scheduler.runAfter(0, anyApi.projects.startWorker, { projectId: nid });
     return nid;

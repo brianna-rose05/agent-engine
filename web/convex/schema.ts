@@ -34,6 +34,9 @@ export default defineSchema({
     production: v.optional(v.any()), // what production runs now: {url, version, at}
     answers: v.optional(v.record(v.string(), v.string())), // owner answers to the tech lead: {taskId: text} (convex/answers.ts)
     deferred: v.optional(v.array(v.string())), // plan task ids saved for the next version at approval (convex/pm.ts)
+    // one-time codes the app's owner enters on <app>/owner-setup to claim the admin role (convex/setup.ts). Set as
+    // APP_SETUP_CODE on each deploy by the worker; shown only to the owner through projects.get, never in events.
+    setupCodes: v.optional(v.object({ preview: v.optional(v.string()), production: v.optional(v.string()) })),
   }),
   events: defineTable({
     projectId: v.id("projects"),

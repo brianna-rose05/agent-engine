@@ -324,8 +324,65 @@ export function designWarnings(d: Design, features: Feature[]): string[] {
   }
   for (const p of d.pages) for (const t of p.tables) if (!tables.has(t)) w.push(`page ${p.name} uses a table "${t}" that doesn't exist`);
   for (const t of d.tables) if (!t.security.length) w.push(`table ${t.name} has no security rule`);
+  w.push(...handSetRoles(d));
   return w;
 }
+
+/**
+ * The owner rule for the Design step: nobody using Studio can edit an app's database, so a role someone has to set
+ * there by hand is a role nobody can ever have (Tool library, Nov 5: its admin pages were unreachable).
+ */
+export const OWNER_RULE = `The app's owner is its admin. Never design "set by the project owner in the database" or any
+role a person must edit by hand: the owner claims the admin role in the app with a setup code on /owner-setup (template
+src/lib/owner.ts). Other staff roles, if any, are granted by the owner in the app.`;
+
+const HAND_PLACE = String.raw`(?:directly in (?:the|a|its|our) database|in (?:the|a|its|our) database|by hand|manually|in the supabase (?:dashboard|editor)|with sql)`;
+const HAND_SET: RegExp[] = [
+  // "the admin role is set by the project owner directly in the database", "is_admin is flipped by hand"
+  // (a role merely "stored in the database" is fine: it's who sets it that matters)
+  new RegExp(String.raw`\b(?:roles?|is_admin|admin (?:flag|status|rights|access))\b[^.;\n]{0,60}` +
+             String.raw`\b(?:set|assigned|granted|given|changed|edited|updated|flipped|toggled|made|promoted|inserted|configured)\b` +
+             String.raw`[^.;\n]{0,60}\b${HAND_PLACE}`, "i"),
+  // "the owner sets a user as admin in the database", "promote a manager manually"
+  new RegExp(String.raw`\b(?:set|sets|setting|assign\w*|grant\w*|promot\w*|make|makes|made|mark\w*|flag\w*|flip\w*|toggl\w*|insert\w*)\b` +
+             String.raw`[^.;\n]{0,60}\b(?:admin|administrator|owner|manager|staff)s?\b[^.;\n]{0,60}\b${HAND_PLACE}`, "i"),
+  // "admins are added manually", "managers get created by hand in the database"
+  new RegExp(String.raw`\b(?:admin|administrator|owner|manager|staff)s?\b[^.;\n]{0,40}\b(?:is|are|get|gets)\s+(?:set|assigned|granted|created|added|made|promoted|marked|flagged|configured|inserted)\b` +
+             String.raw`[^.;\n]{0,60}\b${HAND_PLACE}`, "i"),
+];
+
+/** Problems (planner-facing) for every place the design has a role set by hand in the database. */
+export function handSetRoles(d: Design): string[] {
+  const texts: { where: string; text: string }[] = [];
+  for (const t of d.tables) {
+    texts.push({ where: `table ${t.name}`, text: t.purpose });
+    for (const s of t.security) texts.push({ where: `table ${t.name} security`, text: s });
+    for (const f of t.fields) texts.push({ where: `field ${t.name}.${f.name}`, text: f.why });
+  }
+  for (const p of d.pages) texts.push({ where: `page ${p.id}`, text: p.purpose });
+  for (const a of d.actions) texts.push({ where: `action ${a.id}`, text: `${a.who} ${a.sentence}` });
+  const out: string[] = [];
+  for (const { where, text } of texts) {
+    for (const sentence of (text ?? "").split(/(?<=[.;!?])\s+|\n/)) {
+      if (HAND_SET.some((re) => re.test(sentence))) {
+        out.push(`${where} says a role is set by hand in the database ("${sentence.trim().slice(0, 120)}"). Nobody using ` +
+                 `the app can do that: the owner is the admin and claims it on /owner-setup with a setup code ` +
+                 `(src/lib/owner.ts); other staff roles are granted by the owner in the app`);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/** The Design step's rules for the AI (generateDesign). */
+export const DESIGN_RULES = `Tables: snake_case names, every field with a plain-English reason, ids are uuid, users are auth.users;
+security rules as sentences ("Customers can see only their own bookings"). Pages: ids P1.., routes like /book, each
+lists the story ids it covers, the tables it reads and the action ids it calls. Actions: ids A1.., grouped by who may do
+them ("Customers can book an appointment for their own pet"), read or write, on one page. Flows: user journeys as page
+ids in order. Looks: three distinct visual directions (e.g. "Clean and calm", "Friendly and playful", "Bold and modern")
+each with a 5-color palette (hex), a font and a corner rounding. Every Must story must appear on a page that has an action.
+${OWNER_RULE}`;
 
 export const generateDesign = actionGeneric({
   args: { key: v.string(), id: v.id("projects"), comment: v.optional(v.string()) },
@@ -338,12 +395,7 @@ export const generateDesign = actionGeneric({
       const feats = (w.requirements?.features ?? []).map((f) => ({ ...f, stories: f.stories.filter((s) => s.priority !== "out") }));
       const base = `Project "${p.name}". Brief:\n${p.description}\n\nLocked requirements (JSON):\n${JSON.stringify(feats)}\n\n` +
         `Stack: ${(w.stack?.layers ?? []).map((l) => `${l.layer}: ${l.choice}`).join("; ")}.`;
-      const rules = `Tables: snake_case names, every field with a plain-English reason, ids are uuid, users are auth.users;
-security rules as sentences ("Customers can see only their own bookings"). Pages: ids P1.., routes like /book, each
-lists the story ids it covers, the tables it reads and the action ids it calls. Actions: ids A1.., grouped by who may do
-them ("Customers can book an appointment for their own pet"), read or write, on one page. Flows: user journeys as page
-ids in order. Looks: three distinct visual directions (e.g. "Clean and calm", "Friendly and playful", "Bold and modern")
-each with a 5-color palette (hex), a font and a corner rounding. Every Must story must appear on a page that has an action.`;
+      const rules = DESIGN_RULES;
       const prompt = comment && w.design
         ? `${base}\n\nCurrent design (JSON):\n${JSON.stringify(w.design)}\n\nThe user commented: "${comment}". Revise the design ` +
           `to address it and keep the rest. ${rules}`
