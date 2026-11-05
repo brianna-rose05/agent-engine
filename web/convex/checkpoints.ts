@@ -20,12 +20,17 @@ export function canRollback(status: string, running: boolean): boolean {
   return !running && (status === "done" || status === "failed");
 }
 
+/** A checkpoint label as people read it. Labels saved before the worker's int() fix say "Quick change 2.0: ...". */
+export function cleanLabel(label: unknown): string {
+  return String(label ?? "").replace(/^((?:Quick change|Change) \d+)\.0(?=:)/, "$1");
+}
+
 /** A checkpoint_created event's data as a stored checkpoint, or null if it isn't one. */
 export function toCheckpoint(data: unknown, ts: number): Checkpoint | null {
   const d = (data ?? {}) as Record<string, unknown>;
   const n = Number(d.n);
   if (!Number.isInteger(n) || n < 1 || typeof d.sha !== "string") return null;
-  return { n, tag: typeof d.tag === "string" ? d.tag : `checkpoint-${n}`, sha: d.sha, label: String(d.label ?? ""),
+  return { n, tag: typeof d.tag === "string" ? d.tag : `checkpoint-${n}`, sha: d.sha, label: cleanLabel(d.label),
            at: Math.round(ts * 1000), ...(Array.isArray(d.merged) ? { merged: d.merged.map(String) } : {}) };
 }
 

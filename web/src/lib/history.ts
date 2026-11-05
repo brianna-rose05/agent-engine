@@ -1,4 +1,5 @@
 import type { ChangeState, CheckpointState, EngineEvent, FeedItem, HistoryState, ProjectState, TaskState } from "./types";
+import { cleanLabel } from "../../convex/checkpoints";
 
 /*
  * Checkpoints and rollbacks in the app (docs/checkpoints.md). Kept apart from reduce.ts: `reduce` hands every
@@ -49,7 +50,7 @@ export function withHistory(s: ProjectState, e: EngineEvent, inner: (s: ProjectS
     case "checkpoint_created": {
       const n = Number(d.n);
       if (!Number.isInteger(n) || typeof d.sha !== "string") return { ...s, now };
-      const c: CheckpointState = { n, tag: String(d.tag ?? `checkpoint-${n}`), sha: d.sha, label: String(d.label ?? ""), t: e.t,
+      const c: CheckpointState = { n, tag: String(d.tag ?? `checkpoint-${n}`), sha: d.sha, label: cleanLabel(d.label), t: e.t,
                                    merged: Array.isArray(d.merged) ? d.merged.map(String) : null };
       const checkpoints = [...h.checkpoints.filter((x) => x.n !== n), c].sort((a, b) => a.n - b.n);
       return { ...s, now, history: { ...h, checkpoints, current: n },

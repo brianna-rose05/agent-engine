@@ -144,3 +144,14 @@ describe("checkpoint rules shared with Convex", () => {
     expect(commitUrl("https://evil.example/me/x", "abc1234")).toBeNull();
   });
 });
+
+describe("cleanLabel", () => {
+  it("drops the .0 that old labels got from Convex floats, and nothing else", async () => {
+    const { cleanLabel } = await import("../convex/checkpoints");
+    expect(cleanLabel("Quick change 2.0: On the home page")).toBe("Quick change 2: On the home page");
+    expect(cleanLabel("Change 3.0: keep the groomer")).toBe("Change 3: keep the groomer");
+    expect(cleanLabel("Quick change 4: Change the line 2.0: x")).toBe("Quick change 4: Change the line 2.0: x");
+    expect(cleanLabel("Build finished")).toBe("Build finished");
+    expect(cleanLabel(undefined)).toBe("");
+  });
+});
