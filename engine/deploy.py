@@ -12,6 +12,10 @@ Without `env`, the app runs in local mode (no DATABASE_URL): its data lives in m
 as `sensitive` (encrypted, never readable back) for production and preview, plus an APP_SESSION_SECRET that is
 generated once per project and then kept, so redeploys don't sign everyone out. Values never appear in errors.
 
+Production (docs/ship.md) reuses all of this through `deploy_production`: its own Vercel project
+(`production_name`: the repo name without "studio-"), files from a version tag (`ref="v3"`) instead of main,
+and its own DATABASE_URL and APP_SESSION_SECRET. The preview project is never touched by a ship.
+
 The token is only ever sent in the Authorization header: never in a URL, an error message or an event.
 The HTTP layer is injectable (`http=`) so tests run against a fake.
 """
@@ -202,9 +206,10 @@ def deploy_preview(repo: Path, project_name: str, token: str | None = None, team
                    http: Http = urllib_http, files: list[tuple[str, bytes]] | None = None,
                    timeout_s: float = TIMEOUT_S, poll_s: float = POLL_S,
                    sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
-                   log: Callable[[str], None] = lambda _m: None, env: dict[str, str] | None = None) -> DeployResult:
-    """Deploy `repo`'s main branch, with `env` set on the project as secrets (see the module doc). Never raises:
-    every problem comes back as a failed result."""
+                   log: Callable[[str], None] = lambda _m: None, env: dict[str, str] | None = None,
+                   ref: str = "main") -> DeployResult:
+    """Deploy `repo`'s `ref` (main by default), with `env` set on the project as secrets (see the module doc).
+    Never raises: every problem comes back as a failed result."""
     token = token if token is not None else os.environ.get("VERCEL_TOKEN", "")
     team_id = team_id if team_id is not None else (os.environ.get("VERCEL_TEAM_ID") or None)
     if not token:
@@ -215,9 +220,9 @@ def deploy_preview(repo: Path, project_name: str, token: str | None = None, team
         v.team_id = v.find_team()
     name = project_slug(project_name)
     try:
-        files = [(p, d) for p, d in (files if files is not None else repo_files(Path(repo))) if not excluded(p)]
+        files = [(p, d) for p, d in (files if files is not None else repo_files(Path(repo), ref)) if not excluded(p)]
         if not files:
-            return DeployResult("failed", reason="nothing to deploy: main has no files")
+            return DeployResult("failed", reason=f"nothing to deploy: {ref} has no files")
         big = [p for p, d in files if len(d) > MAX_FILE_BYTES]
         if big:
             return DeployResult("failed", reason=f"file too large to deploy: {big[0]}")
@@ -245,3 +250,17 @@ def deploy_preview(repo: Path, project_name: str, token: str | None = None, team
         return DeployResult("failed", reason=str(e))
     except Exception as e:                      # a preview must never take down a finished build
         return DeployResult("failed", reason=v.scrub(f"{type(e).__name__}: {e}")[:300])
+
+
+def production_name(slug: str) -> str:
+    """The production Vercel project for a project whose preview project is `slug`: studio-garden-ab12cd ->
+    garden-ab12cd. Never the preview's own name, so a ship can't redeploy the preview."""
+    name = slug.removeprefix("studio-")
+    return name if name and project_slug(name) != project_slug(slug) else f"{slug}-prod"
+
+
+def deploy_production(repo: Path, slug: str, ref: str, env: dict[str, str], **kw) -> DeployResult:
+    """Ship: deploy version `ref` (a tag like v3) to the project's production Vercel project (production_name),
+    with its own env (the production DATABASE_URL; an APP_SESSION_SECRET of its own, kept once made).
+    Same upload and polling as deploy_preview; never raises."""
+    return deploy_preview(repo, project_name=production_name(slug), env=env, ref=ref, **kw)
