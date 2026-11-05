@@ -365,7 +365,9 @@ def main():
         subprocess.run(["git", "-c", f"credential.helper={CREDENTIALS}", "clone", "-q", repo_url, str(repo)], check=True)
         subprocess.run(["git", "config", "credential.helper", CREDENTIALS], cwd=repo, check=True)
         if not rollback_to:                     # a rollback restores old files first; it updates them after
-            template_updated = upgrade_template(repo, stack)
+            # A new major version of the template's dependencies only with a change that opts in
+            # (docs/template-upgrades.md); every other run keeps the project's own versions.
+            template_updated = upgrade_template(repo, stack, dependencies=bool((change or {}).get("upgradeTemplate")))
     else:
         repo = stack.build_repo(out / "repo")
         repo_url = create_repo(repo_name(project["name"], a.project_id), token, project["name"])

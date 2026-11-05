@@ -835,7 +835,8 @@ How to wire it (read AGENTS.md first):
 - The root layout src/app/layout.tsx MUST render the template's Studio bridge inside <body>:
   `import {{ StudioBridge }} from "@/lib/studio-bridge";` and `<StudioBridge />`. It tells Studio's preview which
   page is open (nothing else) so the owner's comment pins land on the right page. Keep it if you rewrite the layout.
-- You may only edit files under src/app/, src/middleware.ts, and your own tests under tests/unit/.
+- You may only edit files under src/app/, src/proxy.ts (Next 16's middleware; src/middleware.ts on a project
+  still on Next 15), and your own tests under tests/unit/.
 
 Before saying DONE, run all of this and fix anything that fails:
 {check}"""
