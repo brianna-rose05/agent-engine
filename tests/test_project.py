@@ -1071,3 +1071,122 @@ def test_worker_reads_owner_answers_and_builds_sonnet_tech_lead_agents():
         "T2": "Stop at $50.", "T5": "y" * 2000}
     lead, dev = tech_lead_agents(0.5)
     assert lead.model == dev.model == "sonnet" and lead is not dev and lead.budget_usd == 0.5
+
+
+# --------------------------------------------------------------------------- code reviewer (docs/reviewer.md)
+class Reviewer:
+    """Writes the verdict file for each review it is given: `verdicts[feature]` is a list, one per review of that
+    feature (the last one repeats); features it has no verdict for are approved."""
+    model = "sonnet"
+
+    def __init__(self, verdicts: dict[str, list[str]] | None = None):
+        self.verdicts, self.seen = verdicts or {}, []
+
+    def run(self, task, box, attempt, feedback):
+        tid = task.id.split("-codereview")[0]
+        self.seen.append((task, box.exec("cat acceptance/test_fees.py").output))
+        mine = self.verdicts.get(tid) or ['{"verdict": "approve", "comments": []}']
+        said = mine.pop(0) if len(mine) > 1 else mine[0]
+        box.write_file(f"review/{tid}-review.json", said)
+        return AgentReport("done")
+
+
+def go_review(tmp_path, team, reviewer):
+    from engine.events import Emitter, ListSink
+    sink = ListSink()
+    repo = build_project_repo(tmp_path / "r")
+    eng = Engine(repo, team, lambda t, n: LocalWorktreeSandbox(repo, t.id, n), events=Emitter(sink))
+    _, results = run_project(DESCRIPTION, repo, eng, python=sys.executable, reviewer=reviewer)
+    return repo, {r.task: r for r in results}, sink.events
+
+
+def test_the_reviewer_reads_each_feature_s_diff_and_approves(tmp_path):
+    rev = Reviewer()
+    repo, res, events = go_review(tmp_path, ScriptedTeam(FIXTURE), rev)
+    assert {k: r.status for k, r in res.items() if not k.endswith("-qa")} == {
+        "PLAN": "merged", "T1": "merged", "T2": "merged", "T3": "merged"}
+    assert sorted(t.id for t, _ in rev.seen) == ["T1-codereview", "T2-codereview", "T3-codereview"]
+    task, tests_seen = next(x for x in rev.seen if x[0].id == "T2-codereview")
+    assert task.role == "reviewer" and not task.merge and task.max_attempts == 1
+    assert "def test_" in tests_seen                                       # the hidden tests, written in for it
+    assert "acceptance/test_fees.py" in task.spec and "review/T2-review.json" in task.spec
+    diff = task.spec.split("The dev's changes (git diff):")[1]
+    assert "fees.py" in diff and "\n+" in diff and "acceptance/" not in diff  # the dev's diff, not the hidden tests
+    assert "second review" not in task.spec
+    reviews = [(e.task_id, e.data) for e in events if e.kind == "code_review"]
+    assert sorted(t for t, _ in reviews) == ["T1", "T2", "T3"]
+    assert all(d == {"verdict": "approve", "comments": [], "attempt": 1} for _, d in reviews)
+    tree = git(repo, "ls-tree", "-r", "--name-only", "main")
+    assert "review/" not in tree and "acceptance" not in tree             # nothing of the review merged
+
+
+def test_the_reviewer_s_changes_reach_the_dev_and_its_second_review_is_security_only(tmp_path):
+    seen = []
+
+    class Records(ScriptedTeam):
+        def run(self, task, box, attempt, feedback):
+            seen.append((task.id, attempt, feedback))
+            return super().run(task, box, attempt, feedback)
+
+    comment = "late_fee_cents ignores the $50 cap the spec sets."
+    rev = Reviewer({"T2": [json.dumps({"verdict": "changes", "comments": [comment]}),
+                           '```json\n{"verdict": "Approve", "comments": "Cap handled."}\n```']})
+    _, res, events = go_review(tmp_path, Records(FIXTURE), rev)
+    assert res["T2"].status == "merged" and [a.passed for a in res["T2"].attempts] == [False, True]
+    assert res["T2"].attempts[0].reason == "the reviewer requested changes"
+    fb = next(f for tid, n, f in seen if tid == "T2" and n == 2)
+    assert comment in fb
+    specs = [t.spec for t, _ in rev.seen if t.id.startswith("T2-")]
+    assert [t.id for t, _ in rev.seen if t.id.startswith("T2-")] == ["T2-codereview", "T2-codereview2"]
+    assert "second review" not in specs[0] and "ONLY\nfor a security problem" in specs[1]
+    t2 = [e.data for e in events if e.kind == "code_review" and e.task_id == "T2"]
+    assert t2 == [{"verdict": "changes", "comments": [comment], "attempt": 1},
+                  {"verdict": "approve", "comments": ["Cap handled."], "attempt": 2}]
+
+
+@pytest.mark.parametrize("verdict", ["", "not json", '{"verdict": "changes"}', '{"verdict": "later", "comments": []}'])
+def test_a_missing_or_invalid_review_file_approves_with_review_error(tmp_path, verdict):
+    _, res, events = go_review(tmp_path, ScriptedTeam(FIXTURE), Reviewer({"T2": [verdict]}))
+    assert res["T2"].status == "merged" and len(res["T2"].attempts) == 1
+    t2 = [e.data for e in events if e.kind == "code_review" and e.task_id == "T2"]
+    assert len(t2) == 1 and t2[0]["verdict"] == "approve" and t2[0]["review_error"] is True
+    assert "review didn't finish" in t2[0]["note"]
+
+
+def test_parse_code_review():
+    from engine.project import parse_code_review as parse
+    assert parse('{"verdict": "Approve"}') == {"verdict": "approve", "comments": []}
+    assert parse('x {"verdict": "changes", "comments": ["  fix   it ", "", 3]} y') == {
+        "verdict": "changes", "comments": ["fix it", "3"]}
+    assert parse('{"verdict": "changes", "comments": "one"}') == {"verdict": "changes", "comments": ["one"]}
+    for bad in ("", "[1]", "{", '{"verdict": "changes"}', '{"verdict": "changes", "comments": [""]}',
+                '{"verdict": "skip"}'):
+        assert parse(bad) is None, bad
+
+
+def test_only_feature_dev_tasks_get_the_reviewer(tmp_path):
+    from engine.project import resume_tasks, tasks_from_change
+    from engine.quick import quick_task
+    from engine.stacks import NextSupabaseStack
+    eng = Engine(tmp_path, ScriptedTeam(FIXTURE), lambda t, n: None)
+    rev, ref = object(), object()
+    tasks = {t.id: t for t in tasks_from_plan(PLAN, sys.executable, engine=eng, referee=ref, reviewer=rev)}
+    for tid in ("T1", "T2", "T3"):
+        assert tasks[tid].review_code is not None and tasks[f"{tid}-qa"].review_code is None
+    # without a reviewer (offline runs, the benchmark): no review, exactly as before
+    assert all(t.review_code is None for t in tasks_from_plan(PLAN, sys.executable, engine=eng, referee=ref))
+    change = {r.id: r for r in tasks_from_change(CHANGE, PLAN, default_stack(sys.executable), engine=eng,
+                                                 referee=ref, reviewer=rev)}
+    assert {tid for tid, t in change.items() if t.review_code} == {t["id"] for t in CHANGE["tasks"]}
+    web_plan = json.loads((WEB / "plan" / "plan.json").read_text())
+    stack = NextSupabaseStack(link_node_modules=False)
+    todo = resume_tasks(web_plan, "x", stack, set(), engine=eng, reviewer=rev)
+    assert next(t for t in todo if t.id == "INT").review_code is None
+    assert any(t.review_code for t in todo)
+    assert quick_task(1, "Make the heading green", web_plan, stack).review_code is None
+
+
+def test_worker_builds_a_sonnet_reviewer():
+    from worker import reviewer_agent
+    rev = reviewer_agent(0.5)
+    assert rev.model == "sonnet" and rev.budget_usd == 0.5 and rev is not reviewer_agent(0.5)

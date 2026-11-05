@@ -9,7 +9,7 @@ const ABOUT: Record<string, string> = {
   all: "Everything the team says and does, in order.",
   planning: "The planner, and your decisions on its plan.",
   tests: "QA agents writing hidden tests, and what the engine accepted.",
-  build: "Dev agents building, retries, and every verified merge.",
+  build: "Dev agents building, code reviews, retries, and every verified merge.",
 };
 
 export default function ChannelPage({ params }: { params: Promise<{ channel: string }> }) {

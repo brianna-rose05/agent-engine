@@ -172,6 +172,13 @@ def tech_lead_agents(budget_usd: float):
     return ClaudeCLIAgent(model="sonnet", budget_usd=budget_usd), ClaudeCLIAgent(model="sonnet", budget_usd=budget_usd)
 
 
+def reviewer_agent(budget_usd: float):
+    """The code reviewer (docs/reviewer.md): Sonnet, a different model from a Haiku dev. When the project's dev is
+    Sonnet too, it is still a separate run that never saw the dev's session, so no agent grades its own work."""
+    from engine.agents.claude_cli import ClaudeCLIAgent
+    return ClaudeCLIAgent(model="sonnet", budget_usd=budget_usd)
+
+
 def owner_answers(project: dict) -> dict[str, str]:
     """The owner's answers to the tech lead's questions on the project row (`answers: {taskId: text}`), as plain
     text of at most 2000 characters each; anything else on the row is ignored."""
@@ -359,6 +366,8 @@ def main():
     # The tech lead reviews a feature whose tries all failed (docs/tech-lead.md): a stronger model than a Haiku dev.
     # Its extra tries run on `stronger_dev` when it asks for a stronger model.
     tech_lead, stronger_dev = tech_lead_agents(a.budget)
+    # The code reviewer reads each feature's passing attempt before it merges (docs/reviewer.md).
+    reviewer = reviewer_agent(a.budget)
     approve = with_fresh_budget(wait_for_decision(backend.project), backend.project, engine.budget)
     status = "failed"
     results = []
@@ -378,7 +387,8 @@ def main():
                                               approve=approve, stack=stack,
                                               parallel=stack.parallel, save_tests=out / "hidden_tests",
                                               referee=referee, integrator=integrator,
-                                              tech_lead=tech_lead, stronger_dev=stronger_dev, deferred=deferred)
+                                              tech_lead=tech_lead, stronger_dev=stronger_dev, deferred=deferred,
+                                              reviewer=reviewer)
             status = "failed" if planned is None else "rejected" if len(results) == 1 else finished(results, deferred)
             return
         if resume:
@@ -387,7 +397,7 @@ def main():
                                      stack=stack, parallel=stack.parallel, save_tests=out / "hidden_tests",
                                      referee=referee, integrator=integrator,
                                      tech_lead=tech_lead, stronger_dev=stronger_dev,
-                                     answers=owner_answers(project), deferred=deferred)
+                                     answers=owner_answers(project), deferred=deferred, reviewer=reviewer)
             status = finished(results, deferred)
             return
         deferred = []                           # filled after approval, when the owner has chosen
@@ -395,7 +405,7 @@ def main():
                                     parallel=stack.parallel, approve=approve, stack=stack,
                                     save_tests=out / "hidden_tests", referee=referee, integrator=integrator,
                                     tech_lead=tech_lead, stronger_dev=stronger_dev,
-                                    deferred=fresh_deferred(backend.project, deferred))
+                                    deferred=fresh_deferred(backend.project, deferred), reviewer=reviewer)
         if plan is None:
             status = "failed"
         elif len(results) == 1:

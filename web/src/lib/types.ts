@@ -10,6 +10,7 @@ export type EngineEvent = {
     | "plan_decision"
     | "dispute_resolved"
     | "tech_lead_review" | "escalated" // the tech lead reviews a feature that failed its tries (dev -> tech lead -> you)
+    | "code_review" // the code reviewer's verdict on a passing try, before it merges (docs/reviewer.md)
     | "build_resumed"
     | "project_finished"
     | "preview_ready"
@@ -79,7 +80,7 @@ export type TaskState = {
   title: string;
   role: Role;
   depends_on: string[];
-  status: string; // queued | working | checking | disputing | reviewing | merging | merged | passed | failed | blocked | error | stopped
+  status: string; // queued | working | checking | disputing | reviewing | reviewing_code | merging | merged | passed | failed | blocked | error | stopped
   attempt: number;
   attempts: Attempt[];
   cost_usd: number;
@@ -90,6 +91,18 @@ export type TaskState = {
   review?: TechLeadReview; // the tech lead's latest review of this task's failed tries (this run)
   question?: string;       // the tech lead's open question for you (escalated): answer it to retry
   retry_model?: string;    // the model the tech lead's extra tries ran on ("sonnet"), when it moved to a stronger one
+  code_reviews?: CodeReview[]; // the code reviewer's verdicts this run, one per try it reviewed, oldest first
+};
+
+/** The code reviewer's verdict on one passing try, before it merges (code_review, docs/reviewer.md). */
+export type CodeReview = {
+  attempt: number;
+  verdict: "approve" | "changes"; // changes: that try counts as failed and the dev tries again with the comments
+  comments: string[];      // short and plain; "Security: ..." for a security problem
+  note?: string;           // why it approved anyway (a second non-security "changes", comments that named hidden tests)
+  error?: boolean;         // the reviewer's run failed: the try merged on its passing tests
+  skipped?: boolean;       // the spending limit didn't allow a review: the try merged unreviewed
+  t: number;
 };
 
 /** The tech lead's verdict on a feature that used all its tries (tech_lead_review). */
@@ -116,7 +129,7 @@ export type ProjectStatus =
 
 export type FeedItem = {
   t: number;
-  who: Role | "engine" | "you" | "tech lead" | "PM";
+  who: Role | "engine" | "you" | "tech lead" | "PM" | "reviewer";
   channel: "planning" | "tests" | "build";
   text: string;
   tone?: "good" | "warn" | "bad";

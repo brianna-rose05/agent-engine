@@ -2,8 +2,8 @@ import { withHistory } from "./history";
 import { withShip } from "./ship";
 import { listText } from "./pm";
 import { priorityOf, type TaskPriority } from "../../convex/pm";
-import type { Attempt, ChangeState, ChangeTask, EngineEvent, FeedItem, Plan, PlanTask, ProjectState, QuickState, Role, TaskState,
-              TechLeadReview } from "./types";
+import type { Attempt, ChangeState, ChangeTask, CodeReview, EngineEvent, FeedItem, Plan, PlanTask, ProjectState, QuickState, Role,
+              TaskState, TechLeadReview } from "./types";
 
 export const initialState = (): ProjectState => ({
   status: "queued",
@@ -49,6 +49,11 @@ export const quickId = (n: number) => `Q${n}`;
 export const isQuick = (taskId: string) => /^Q\d+$/.test(taskId);
 /** How the engine says a quick change needs a change request (engine/quick.py blocked_reason). */
 const NEEDS_CHANGE = "needs a change request";
+/** The reason on a try the code reviewer sent back (engine/engine.py REVIEW_CHANGES); code_review already said why. */
+export const REVIEW_CHANGES = "the reviewer requested changes";
+
+/** The code reviewer's verdict on one try of a task, if it reviewed that try. */
+export const codeReviewFor = (t: TaskState, n: number): CodeReview | undefined => t.code_reviews?.find((r) => r.attempt === n);
 
 /** Change tasks that belong on the board: those of approved changes, or any the engine has queued. */
 export function boardChangeTasks(s: ProjectState): ChangeTask[] {
@@ -154,6 +159,9 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
           say({ who: task.role, channel: ch, task_id: task.id, tone: "warn",
                 text: `${name(task)}: trying again with the tech lead's guidance (try ${d.attempt ?? next.attempt}` +
                       `${task.retry_model ? `, on ${modelName(task.retry_model)}` : ""}).` });
+        } else if ((d.attempt ?? 1) > 1 && codeReviewFor(task, d.attempt! - 1)?.verdict === "changes") {
+          say({ who: task.role, channel: ch, task_id: task.id, tone: "warn",
+                text: `${name(task)}: trying again with the reviewer's comments (try ${d.attempt}).` });
         } else if ((d.attempt ?? 1) > 1) {
           say({ who: task.role, channel: ch, task_id: task.id, tone: "warn", text: `${name(task)}: trying again (try ${d.attempt}).` });
         } else {
@@ -198,7 +206,7 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
       }
       tasks[task.id] = { ...task, attempts: [...task.attempts, a], cost_usd: round(task.cost_usd + a.cost_usd) };
       cost_usd = round(cost_usd + a.cost_usd);
-      if (!a.passed && !(isQuick(task.id) && a.reason.startsWith(NEEDS_CHANGE))) {
+      if (!a.passed && a.reason !== REVIEW_CHANGES && !(isQuick(task.id) && a.reason.startsWith(NEEDS_CHANGE))) {
         const claimed = a.claim.toLowerCase().startsWith("done");
         say({ who: "engine", channel: channelFor(task.role), task_id: task.id, tone: "warn",
               text: claimed
@@ -251,6 +259,40 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
                     `${review.note ? ` ${review.note}` : ""}` });
       } else if (review.note) {
         say({ who: "tech lead", channel: ch, task_id: task.id, text: `Tech lead reviewed ${name(task)}: ${review.note}` });
+      }
+      break;
+    }
+    case "code_review": {
+      // docs/reviewer.md: a different model reads a passing try before it merges
+      if (!task) break;
+      const d = e.data as { verdict?: unknown; comments?: unknown; attempt?: unknown; note?: unknown; review_error?: unknown;
+                            skipped?: unknown };
+      const attempt = Number(d.attempt ?? task.attempt) || task.attempt;
+      const comments = Array.isArray(d.comments)
+        ? d.comments.filter((c): c is string => typeof c === "string" && c.trim() !== "").map((c) => c.trim()) : [];
+      const note = typeof d.note === "string" ? d.note.trim() : "";
+      const review: CodeReview = {
+        attempt, verdict: d.verdict === "changes" ? "changes" : "approve", comments, t: e.t,
+        ...(note ? { note } : {}), ...(d.review_error ? { error: true } : {}), ...(d.skipped ? { skipped: true } : {}),
+      };
+      // the latest verdict per try (a redone try replaces its earlier review), oldest try first
+      const code_reviews = [...(task.code_reviews ?? []).filter((r) => r.attempt !== attempt), review]
+        .sort((x, y) => x.attempt - y.attempt);
+      tasks[task.id] = { ...task, code_reviews };
+      const ch = channelFor(task.role);
+      if (review.skipped) {
+        say({ who: "reviewer", channel: ch, task_id: task.id, tone: "warn",
+              text: `Review skipped (spending limit): ${name(task)} merges on its passing tests, unreviewed.` });
+      } else if (review.error) {
+        say({ who: "reviewer", channel: ch, task_id: task.id, tone: "warn",
+              text: `The reviewer couldn't review ${name(task)} (its run hit an error), so it merges on its passing tests.` });
+      } else if (review.verdict === "changes") {
+        const more = comments.length - 1;
+        say({ who: "reviewer", channel: ch, task_id: task.id, tone: "warn",
+              text: `Reviewer asked for changes on ${name(task)}: ${comments[0] ?? "see the board"}` +
+                    (more > 0 ? ` (and ${more} more)` : "") });
+      } else {
+        say({ who: "reviewer", channel: ch, task_id: task.id, text: `Reviewer approved ${name(task)}.${note ? ` ${note}` : ""}` });
       }
       break;
     }
@@ -488,13 +530,14 @@ export type Feature = {
   tries: number;
   priority: TaskPriority;  // must (also when the plan has none), should or could
   reviewing: boolean;      // the tech lead is reviewing its failed tries
+  code_reviewing: boolean; // the code reviewer is reading a passing try before it merges
   question?: string;       // the tech lead's open question for you (a failed dev task)
   retry_model?: string;    // the tech lead moved its extra tries to this model ("sonnet")
 };
 
 const BAD = new Set(["failed", "blocked", "error", "merge_conflict", "stopped"]);
 /** A task agent at work, or about to merge: a saved feature in one of these is being built after all. */
-const ACTIVE = new Set(["working", "checking", "merging", "disputing", "reviewing"]);
+const ACTIVE = new Set(["working", "checking", "merging", "disputing", "reviewing", "reviewing_code"]);
 
 /** One card per planned feature, combining its QA task and its dev task, then the cards of approved changes
  *  (C1T1, C1T2, ...), then the integration card, then quick changes the engine has queued (Q1, Q2, ...). */
@@ -521,7 +564,9 @@ export function features(s: ProjectState): Feature[] {
       column = "saved"; // not built in this run: not a failure, never "needs you"
     } else if ((qa && BAD.has(qa.status)) || (dev && BAD.has(dev.status))) column = "attention";
     else if (dev?.status === "merged") column = "done";
-    else if (dev && ["checking", "merging", "disputing", "reviewing"].includes(dev.status)) { column = "checking"; active = "dev"; }
+    else if (dev && ["checking", "merging", "disputing", "reviewing", "reviewing_code"].includes(dev.status)) {
+      column = "checking"; active = "dev";
+    }
     else if (dev?.status === "working") { column = "building"; active = "dev"; }
     else if (qa && ["working", "checking"].includes(qa.status)) { column = "tests"; active = "qa"; }
     // saved features aren't waited for (the integrator goes ahead without them)
@@ -532,6 +577,7 @@ export function features(s: ProjectState): Feature[] {
       tries: Math.max(dev?.attempts.length ?? 0, dev?.attempt ?? 0),
       priority: priorityOf(p),
       reviewing: dev?.status === "reviewing",
+      code_reviewing: dev?.status === "reviewing_code",
       ...(dev?.status === "failed" && dev.question ? { question: dev.question } : {}),
       ...(dev?.retry_model ? { retry_model: dev.retry_model } : {}),
     };

@@ -634,3 +634,186 @@ def test_first_feedback_reaches_the_first_attempt(tmp_path):
     eng, _ = lead_engine(repo, strong)
     assert eng.run_task(task).status == "merged"
     assert strong.seen == [(1, "The project owner answered the tech lead's question: use the cap.")]
+
+
+# ------------------------------------------------------------------ code reviewer (docs/reviewer.md)
+def review_task(verdicts, calls):
+    """B6 with a scripted code reviewer: one verdict per review, in order (an exception is raised instead)."""
+    task = load_tasks(["B6"])[0]
+    left = list(verdicts)
+
+    def review(diff, second):
+        calls.append((diff, second))
+        v = left.pop(0)
+        if isinstance(v, Exception):
+            raise v
+        return v
+    task.review_code = review
+    return task
+
+
+def statuses(sink):
+    return [e.data.get("status") for e in sink.events if e.kind == "task_status"]
+
+
+def test_an_approved_attempt_merges_after_its_review(tmp_path):
+    repo = build_repo(tmp_path / "r")
+    calls = []
+    eng, sink = lead_engine(repo, Stronger())
+    r = eng.run_task(review_task([{"verdict": "approve", "comments": ["Clear and complete."]}], calls))
+    assert r.status == "merged" and [(a.n, a.passed) for a in r.attempts] == [(1, True)]
+    assert len(calls) == 1 and calls[0][1] is False
+    diff = calls[0][0]
+    assert "payments.py" in diff and "tests/test_payments.py" not in diff     # the dev's work, never the hidden tests
+    assert kinds(sink, "code_review") == [("code_review", {"verdict": "approve", "comments": ["Clear and complete."],
+                                                            "attempt": 1})]
+    order = [(e.kind, e.data.get("status")) for e in sink.events
+             if e.kind in ("task_status", "code_review", "attempt_finished")]
+    assert order[order.index(("task_status", "checking")):] == [
+        ("task_status", "checking"), ("task_status", "reviewing_code"), ("code_review", None),
+        ("attempt_finished", None), ("task_status", "merging"), ("task_status", "merged")]
+    assert ("task_status", {"status": "reviewing_code", "attempt": 1}) in kinds(sink, "task_status")
+    assert "NotImplementedError" not in git(repo, "show", "main:payments.py")           # the work is on main
+
+
+def test_changes_send_the_dev_back_with_the_comments_then_an_approval_merges(tmp_path):
+    from engine.engine import REVIEW_CHANGES
+    repo = build_repo(tmp_path / "r")
+    calls, dev = [], Stronger()
+    comments = ["The spec says a deposit is refunded on cancellation, and nothing refunds it.",
+                "Security: any user can read another user's payments."]
+    eng, sink = lead_engine(repo, dev)
+    r = eng.run_task(review_task([{"verdict": "changes", "comments": comments},
+                                  {"verdict": "approve", "comments": []}], calls))
+    assert r.status == "merged" and [(a.n, a.passed) for a in r.attempts] == [(1, False), (2, True)]
+    first = r.attempts[0]
+    assert first.reason == REVIEW_CHANGES and first.claim == "done"
+    assert all(c in first.test_output for c in comments)
+    assert [c[1] for c in calls] == [False, True]                     # the second review is security-only
+    fb = dev.seen[1][1]
+    assert fb.startswith("Your previous attempt passed the acceptance tests, but the code reviewer")
+    assert all(f"- {c}" in fb for c in comments) and "Test output" not in fb
+    assert [d for _, d in kinds(sink, "code_review")] == [{"verdict": "changes", "comments": comments, "attempt": 1},
+                                                          {"verdict": "approve", "comments": [], "attempt": 2}]
+    finished = [e.data for e in sink.events if e.kind == "attempt_finished"]
+    assert finished[0]["passed"] is False and finished[0]["reason"] == REVIEW_CHANGES
+    assert comments[0] in finished[0]["output"]
+    assert statuses(sink).count("reviewing_code") == 2 and statuses(sink)[-1] == "merged"
+
+
+def test_a_second_changes_without_a_security_comment_approves_with_a_note(tmp_path):
+    from engine.engine import SECOND_REVIEW_NOTE
+    repo = build_repo(tmp_path / "r")
+    eng, sink = lead_engine(repo, Stronger())
+    r = eng.run_task(review_task([{"verdict": "changes", "comments": ["Deposits are never refunded."]},
+                                  {"verdict": "changes", "comments": ["Rename pay() to charge()."]}], []))
+    assert r.status == "merged" and [(a.n, a.passed) for a in r.attempts] == [(1, False), (2, True)]
+    assert kinds(sink, "code_review")[1] == ("code_review", {
+        "verdict": "approve", "comments": ["Rename pay() to charge()."], "attempt": 2, "note": SECOND_REVIEW_NOTE})
+
+
+def test_a_second_changes_for_a_security_problem_still_blocks(tmp_path):
+    from engine.engine import REVIEW_CHANGES
+    repo = build_repo(tmp_path / "r")
+    calls, dev = [], Stronger()
+    eng, sink = lead_engine(repo, dev)
+    r = eng.run_task(review_task([{"verdict": "changes", "comments": ["Deposits are never refunded."]},
+                                  {"verdict": "changes", "comments": ["security: the API key is in payments.py."]},
+                                  {"verdict": "approve", "comments": []}], calls))
+    assert r.status == "merged" and [a.n for a in r.attempts] == [1, 2, 3]
+    assert [a.reason for a in r.attempts] == [REVIEW_CHANGES, REVIEW_CHANGES, ""]
+    assert [c[1] for c in calls] == [False, True, True]
+    assert "security: the API key is in payments.py." in dev.seen[2][1]
+    assert [d["verdict"] for _, d in kinds(sink, "code_review")] == ["changes", "changes", "approve"]
+
+
+def test_changes_on_every_try_end_failed_and_reach_the_tech_lead(tmp_path):
+    from engine.engine import REVIEW_CHANGES
+    repo = build_repo(tmp_path / "r")
+    lead_calls = []
+    task = review_task([{"verdict": "changes", "comments": ["Security: no ownership check."]}] * 3, [])
+
+    def lead(attempts, diff):
+        lead_calls.append((attempts, diff))
+        return {"decision": "escalate", "question": "Who may see a payment?"}
+    task.review_failure = lead
+    eng, sink = lead_engine(repo, Stronger())
+    r = eng.run_task(task)
+    assert r.status == "failed" and r.error == "Needs you: Who may see a payment?" and len(r.attempts) == 3
+    assert [a.reason for a in lead_calls[0][0]] == [REVIEW_CHANGES] * 3
+    assert "payments.py" in lead_calls[0][1]                          # the last reviewed diff
+    assert "NotImplementedError" in git(repo, "show", "main:payments.py")               # never merged
+    assert not kinds(sink, "dispute_resolved")
+
+
+@pytest.mark.parametrize("verdict", [RuntimeError("API Error: 529 overloaded"), None, "approve",
+                                     {"verdict": "maybe"}, {"verdict": "changes", "comments": []},
+                                     {"review_error": True, "note": "The review didn't finish: made no changes"}])
+def test_a_broken_review_approves_with_review_error(tmp_path, verdict):
+    from engine.engine import REVIEW_ERROR_NOTE
+    repo = build_repo(tmp_path / "r")
+    eng, sink = lead_engine(repo, Stronger())
+    r = eng.run_task(review_task([verdict], []))
+    assert r.status == "merged" and len(r.attempts) == 1 and r.attempts[0].passed
+    review = kinds(sink, "code_review")[0][1]
+    assert review["verdict"] == "approve" and review["review_error"] is True and review["comments"] == []
+    assert review["note"].startswith(REVIEW_ERROR_NOTE) and review["attempt"] == 1
+
+
+def test_no_review_when_the_budget_is_spent_the_feature_merges_unreviewed(tmp_path):
+    from engine.budget import Budget
+
+    class Costly(Stronger):
+        def run(self, task, box, attempt, feedback):
+            rep = super().run(task, box, attempt, feedback)
+            rep.cost_usd = 1.0
+            return rep
+
+    repo = build_repo(tmp_path / "r")
+    calls = []
+    eng, sink = lead_engine(repo, Costly(), budget=Budget(1.0))
+    r = eng.run_task(review_task([{"verdict": "changes", "comments": ["x"]}], calls))
+    assert r.status == "merged" and calls == []
+    assert kinds(sink, "code_review") == [("code_review", {"verdict": "approve", "comments": [], "attempt": 1,
+                                                            "skipped": True})]
+    assert "reviewing_code" not in statuses(sink)
+
+
+def test_failing_attempts_and_tasks_without_the_hook_are_never_reviewed(tmp_path):
+    repo = build_repo(tmp_path / "r")
+    calls = []
+    eng, sink = lead_engine(repo, NeverFixes())
+    r = eng.run_task(review_task([], calls))
+    assert r.status == "failed" and len(r.attempts) == 3 and calls == []      # nothing passed: nothing to review
+    eng2, sink2 = lead_engine(build_repo(tmp_path / "r2"), Stronger())
+    r2 = eng2.run_task(load_tasks(["B6"])[0])
+    assert r2.status == "merged" and len(r2.attempts) == 1
+    assert not kinds(sink, "code_review") and not kinds(sink2, "code_review")
+    assert "reviewing_code" not in statuses(sink) + statuses(sink2)
+
+
+def test_hidden_test_paths_are_scrubbed_from_the_reviewers_comments(tmp_path):
+    repo = build_repo(tmp_path / "r")
+    dev = Stronger()
+    eng, sink = lead_engine(repo, dev)
+    r = eng.run_task(review_task([{"verdict": "changes", "comments": [
+        "Deposits are never refunded.\nSee tests/test_payments.py::test_refund for the exact case.",
+        "test_payments.py expects 20%; use that.",
+        "Security: the card number is logged."]},
+        {"verdict": "approve", "comments": []}], []))
+    assert r.status == "merged"
+    fb = dev.seen[1][1]
+    assert "test_payments" not in fb and "Deposits are never refunded." in fb and "card number is logged" in fb
+    assert kinds(sink, "code_review")[0][1]["comments"] == ["Deposits are never refunded.",
+                                                             "Security: the card number is logged."]
+    assert "test_payments" not in r.attempts[0].test_output
+
+
+def test_normalize_code_review():
+    from engine.engine import SCRUBBED_NOTE, normalize_code_review
+    v = normalize_code_review({"verdict": "changes", "comments": ["Fails tests/test_payments.py line 4"]},
+                              {"tests/test_payments.py": ""})
+    assert v == {"verdict": "approve", "comments": [], "note": SCRUBBED_NOTE}   # nothing left the dev may see
+    many = normalize_code_review({"verdict": "approve", "comments": [f"  note   {i} " for i in range(20)]})
+    assert many["comments"][0] == "note 0" and len(many["comments"]) == 8
+    assert normalize_code_review({"verdict": "changes", "comments": "one string"})["comments"] == ["one string"]

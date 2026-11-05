@@ -39,6 +39,10 @@ class Task:
     # The dev agent for the tech lead's extra attempts when it asks for a stronger model (never used otherwise).
     stronger_agent: object | None = field(default=None, repr=False)
     first_feedback: str | None = None                           # feedback for this run's first attempt (owner's answer)
+    # review_code(diff, second) -> the code reviewer's verdict on an attempt that passed every check, before it merges
+    # (docs/reviewer.md): {"verdict": "approve" | "changes", "comments": [...]}. `second` is True once the reviewer has
+    # asked for changes on this task in this run (then only a security problem may block). None: merge as before.
+    review_code: Callable[[str, bool], dict] | None = field(default=None, repr=False)
 
 
 class SandboxUnavailable(RuntimeError):

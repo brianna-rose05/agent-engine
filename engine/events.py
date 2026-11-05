@@ -7,7 +7,13 @@ Event kinds and their data:
                                 sandbox_lost {attempt, retry, error}: the sandbox dropped mid-attempt;
                                     the attempt is redone in a fresh one (not one of the agent's tries)
                                 reviewing {attempt}: the tech lead is reviewing a feature whose tries all failed
+                                reviewing_code {attempt}: the code reviewer is reading a passing attempt before it
+                                    merges (docs/reviewer.md); its attempt_finished follows the verdict
     attempt_finished {n, passed, claim, reason, cost_usd, seconds, turns, files_changed}
+    code_review      {verdict, comments, attempt, note?, review_error?, skipped?}   (docs/reviewer.md)
+                     verdict changes: that attempt failed ("the reviewer requested changes") and the dev tries again;
+                     approve: it merges (also when the review broke, review_error, or the limit kept it from running,
+                     skipped)
     tech_lead_review {decision, note, stronger_model, question?, model?, tech_lead_error?}   (docs/tech-lead.md)
                      decision retry: more attempts follow (n = 4, 5), on `model` when it switched the dev agent
     escalated        {question}   the task ends failed after a review; its error is "Needs you: <question>"

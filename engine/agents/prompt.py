@@ -50,7 +50,18 @@ every attempt failed its hidden acceptance tests. Decide what happens next; you 
 - Do not commit, push, or create branches. The engine handles git.
 - End your final message with exactly one line: DONE, or BLOCKED: <short reason> if you cannot finish."""
 
-RULES = {"dev": DEV_RULES, "planner": PLANNER_RULES, "qa": QA_RULES, "tech_lead": TECH_LEAD_RULES}
+REVIEWER_RULES = """You are the code reviewer on a software team of AI agents. A dev agent's work on a feature passed every
+automated check, including hidden acceptance tests. Before it merges, you read the change; you do not write code.
+- Read the task, the dev's diff, the spec, the contracts and the hidden tests. Do not change any code or test file.
+- The only file you write is the verdict file the task names. Nothing else you change is kept.
+- Ask for changes only for real problems the tests didn't catch: required behavior missing or wrong, a security
+  problem, data loss, or a stub or placeholder. Never for style, naming or preferences. When unsure, approve.
+- Never quote or name the hidden tests in your comments: they go to the dev, who must not see them.
+- Do not commit, push, or create branches. The engine handles git.
+- End your final message with exactly one line: DONE, or BLOCKED: <short reason> if you cannot finish."""
+
+RULES = {"dev": DEV_RULES, "planner": PLANNER_RULES, "qa": QA_RULES, "tech_lead": TECH_LEAD_RULES,
+         "reviewer": REVIEWER_RULES}
 
 
 def build_prompt(task: Task, feedback: str | None) -> str:
