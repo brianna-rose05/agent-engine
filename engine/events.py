@@ -9,6 +9,8 @@ Event kinds and their data:
                                 reviewing {attempt}: the tech lead is reviewing a feature whose tries all failed
                                 reviewing_code {attempt}: the code reviewer is reading a passing attempt before it
                                     merges (docs/reviewer.md); its attempt_finished follows the verdict
+                                architect_reviewing {attempt}: the architect is reviewing a plan (PLAN, C{n}PLAN) that
+                                    passed its checks, before it merges (docs/architect.md)
     attempt_finished {n, passed, claim, reason, cost_usd, seconds, turns, files_changed}
     code_review      {verdict, comments, attempt, note?, review_error?, skipped?}   (docs/reviewer.md)
                      verdict changes: that attempt failed ("the reviewer requested changes") and the dev tries again;
@@ -16,6 +18,11 @@ Event kinds and their data:
                      skipped)
     tech_lead_review {decision, note, stronger_model, question?, model?, tech_lead_error?}   (docs/tech-lead.md)
                      decision retry: more attempts follow (n = 4, 5), on `model` when it switched the dev agent
+    architect_review {verdict, comments, round, warnings?, architect_error?, skipped?}   (docs/architect.md)
+                     task id: the planner's. Round 1 changes: that plan attempt failed ("the architect requested
+                     changes") and the planner tries once more with the comments. Round 2 changes carries warnings: the
+                     plan merges and goes to the owner with the comments. Approve: it merges (also when the review
+                     broke, architect_error, or the limit kept it from running, skipped)
     escalated        {question}   the task ends failed after a review; its error is "Needs you: <question>"
     plan_ready       {plan}
     plan_decision    {approved, note}

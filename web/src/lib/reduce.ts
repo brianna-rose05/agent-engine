@@ -1,13 +1,15 @@
 import { withHistory } from "./history";
 import { withShip } from "./ship";
 import { listText } from "./pm";
+import { ARCHITECT_CHANGES, architectFeed, architectReview } from "./architect";
 import { priorityOf, type TaskPriority } from "../../convex/pm";
-import type { Attempt, ChangeState, ChangeTask, CodeReview, EngineEvent, FeedItem, Plan, PlanTask, ProjectState, QuickState, Role,
+import type { ArchitectReview, Attempt, ChangeState, ChangeTask, CodeReview, EngineEvent, FeedItem, Plan, PlanTask, ProjectState, QuickState, Role,
               TaskState, TechLeadReview } from "./types";
 
 export const initialState = (): ProjectState => ({
   status: "queued",
   plan: null,
+  architect: null,
   tasks: {},
   feed: [],
   cost_usd: 0,
@@ -83,6 +85,7 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
   const tasks = { ...s.tasks };
   const feed = [...s.feed];
   let { status, plan, cost_usd, preview_url, budget_reached } = s;
+  let architect: ArchitectReview | null = s.architect ?? null;
   let durable_db = Boolean(s.durable_db);
   let changes = s.changes;
   let quicks = s.quicks;
@@ -118,6 +121,7 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
       };
       if (d.role === "planner") {
         status = "planning";
+        if (!isChangePlanner(e.task_id!)) architect = null; // a new plan: the architect hasn't seen it yet
         say({ who: "planner", channel: "planning",
               text: isChangePlanner(e.task_id!)
                 ? "Reading the code and your change request, and planning only what has to change."
@@ -168,6 +172,11 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
           say({ who: task.role, channel: ch, task_id: task.id,
                 text: task.role === "qa" ? `${name(task)}: writing acceptance tests.` : `${name(task)}: building ${mod(task)}.` });
         }
+      } else if (d.status === "architect_reviewing") {
+        const n = Number(task.id.match(/^C(\d+)PLAN$/)?.[1]);
+        say({ who: "architect", channel: "planning", task_id: task.id,
+              text: `The plan${n ? ` for change ${n}` : ""} passed its checks. The architect (a different model) is reviewing ` +
+                    "its contracts, migrations and security before it comes to you." });
       } else if (d.status === "disputing") {
         say({ who: "engine", channel: "tests", task_id: task.id, tone: "warn",
               text: `${name(task)} keeps failing a few hidden tests, so a referee (a different model) is checking whether the tests match the spec.` });
@@ -206,7 +215,7 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
       }
       tasks[task.id] = { ...task, attempts: [...task.attempts, a], cost_usd: round(task.cost_usd + a.cost_usd) };
       cost_usd = round(cost_usd + a.cost_usd);
-      if (!a.passed && a.reason !== REVIEW_CHANGES && !(isQuick(task.id) && a.reason.startsWith(NEEDS_CHANGE))) {
+      if (!a.passed && a.reason !== REVIEW_CHANGES && a.reason !== ARCHITECT_CHANGES && !(isQuick(task.id) && a.reason.startsWith(NEEDS_CHANGE))) {
         const claimed = a.claim.toLowerCase().startsWith("done");
         say({ who: "engine", channel: channelFor(task.role), task_id: task.id, tone: "warn",
               text: claimed
@@ -294,6 +303,20 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
       } else {
         say({ who: "reviewer", channel: ch, task_id: task.id, text: `Reviewer approved ${name(task)}.${note ? ` ${note}` : ""}` });
       }
+      break;
+    }
+    case "architect_review": {
+      // docs/architect.md: on the planner's task id (PLAN, or C{n}PLAN for a change), before plan_ready
+      const review = architectReview(e.data ?? {}, e.t);
+      const n = Number(e.task_id?.match(/^C(\d+)PLAN$/)?.[1]);
+      if (n) {
+        if (!changes.some((c) => c.n === n)) break; // change_started missed: nothing to attach it to
+        setChange(n, { architect: review });
+      } else {
+        architect = review;
+      }
+      say({ who: "architect", channel: "planning", task_id: e.task_id,
+            ...architectFeed(review, n ? `the plan for change ${n}` : "the plan") });
       break;
     }
     case "escalated": {
@@ -498,7 +521,7 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
       break;
     }
   }
-  return { status, plan, tasks, feed, cost_usd, now: Math.max(s.now, e.t), preview_url, durable_db, changes, change: changes.at(-1) ?? null,
+  return { status, plan, architect, tasks, feed, cost_usd, now: Math.max(s.now, e.t), preview_url, durable_db, changes, change: changes.at(-1) ?? null,
            budget_reached, quicks, deferred, ready_to_ship, retros };
 }
 

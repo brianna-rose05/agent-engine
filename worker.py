@@ -198,6 +198,13 @@ def reviewer_agent(budget_usd: float):
     return ClaudeCLIAgent(model="sonnet", budget_usd=budget_usd)
 
 
+def architect_agent(budget_usd: float):
+    """The architect (docs/architect.md): Sonnet, a different model from a Haiku planner. It reviews a plan's contracts
+    before the owner approves it; on a Sonnet project it is still a separate run that never saw the planner's session."""
+    from engine.agents.claude_cli import ClaudeCLIAgent
+    return ClaudeCLIAgent(model="sonnet", budget_usd=budget_usd)
+
+
 def owner_answers(project: dict) -> dict[str, str]:
     """The owner's answers to the tech lead's questions on the project row (`answers: {taskId: text}`), as plain
     text of at most 2000 characters each; anything else on the row is ignored."""
@@ -389,6 +396,8 @@ def main():
     tech_lead, stronger_dev = tech_lead_agents(a.budget)
     # The code reviewer reads each feature's passing attempt before it merges (docs/reviewer.md).
     reviewer = reviewer_agent(a.budget)
+    # The architect reviews the plan's contracts before the owner is asked to approve it (docs/architect.md).
+    architect = architect_agent(a.budget)
     approve = with_fresh_budget(wait_for_decision(backend.project), backend.project, engine.budget)
     status = "failed"
     results = []
@@ -409,7 +418,7 @@ def main():
                                               parallel=stack.parallel, save_tests=out / "hidden_tests",
                                               referee=referee, integrator=integrator,
                                               tech_lead=tech_lead, stronger_dev=stronger_dev, deferred=deferred,
-                                              reviewer=reviewer)
+                                              reviewer=reviewer, architect=architect)
             status = "failed" if planned is None else "rejected" if len(results) == 1 else finished(results, deferred)
             return
         if resume:
@@ -426,7 +435,8 @@ def main():
                                     parallel=stack.parallel, approve=approve, stack=stack,
                                     save_tests=out / "hidden_tests", referee=referee, integrator=integrator,
                                     tech_lead=tech_lead, stronger_dev=stronger_dev,
-                                    deferred=fresh_deferred(backend.project, deferred), reviewer=reviewer)
+                                    deferred=fresh_deferred(backend.project, deferred), reviewer=reviewer,
+                                    architect=architect)
         if plan is None:
             status = "failed"
         elif len(results) == 1:

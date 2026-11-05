@@ -11,6 +11,7 @@ export type EngineEvent = {
     | "dispute_resolved"
     | "tech_lead_review" | "escalated" // the tech lead reviews a feature that failed its tries (dev -> tech lead -> you)
     | "code_review" // the code reviewer's verdict on a passing try, before it merges (docs/reviewer.md)
+    | "architect_review" // the architect's verdict on a plan's contracts, before you approve it (docs/architect.md)
     | "build_resumed"
     | "project_finished"
     | "preview_ready"
@@ -52,6 +53,18 @@ export type ChangeState = {
   decision: "planning" | "pending" | "approved" | "rejected";
   before: ProjectStatus;   // status before the change started, restored if it is sent back
   rolled_back?: boolean;   // its work was rolled away by a rollback to an earlier checkpoint (off the board)
+  architect?: ArchitectReview; // the architect's latest review of this change's plan (architect_review on C{n}PLAN)
+};
+
+/** The architect's verdict on a plan's contracts before you approve it (architect_review, docs/architect.md). */
+export type ArchitectReview = {
+  verdict: "approve" | "changes";
+  comments: string[];      // short and plain; "Security: ..." for a security problem
+  round: number;           // 1, then 2 for the plan the planner rewrote with its comments
+  warnings?: boolean;      // it still asked for changes on the second plan: the plan comes to you with its comments
+  error?: boolean;         // its run failed: the plan comes to you unreviewed
+  skipped?: boolean;       // the spending limit didn't allow a review: the plan comes to you unreviewed
+  t: number;
 };
 
 /** One quick change (engine/quick.py): one UI task Q{n}, checked like the whole app, merged without approval. */
@@ -129,7 +142,7 @@ export type ProjectStatus =
 
 export type FeedItem = {
   t: number;
-  who: Role | "engine" | "you" | "tech lead" | "PM" | "reviewer";
+  who: Role | "engine" | "you" | "tech lead" | "PM" | "reviewer" | "architect";
   channel: "planning" | "tests" | "build";
   text: string;
   tone?: "good" | "warn" | "bad";
@@ -139,6 +152,7 @@ export type FeedItem = {
 export type ProjectState = {
   status: ProjectStatus;
   plan: Plan | null;
+  architect?: ArchitectReview | null; // the architect's latest review of the build plan (PLAN); a change's is on it
   tasks: Record<string, TaskState>;
   feed: FeedItem[];
   cost_usd: number;

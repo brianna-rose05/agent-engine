@@ -548,6 +548,183 @@ def make_reviewer(t: dict, test_path: str, hidden: dict[str, str], contracts: st
     return review
 
 
+# ------------------------------------------------------------------ architect
+# docs/architect.md. "Human decides architecture, AI implements": after the planner's plan (or change plan) passes the
+# mechanical checks, and before the owner is asked to approve it, a different model from the planner reviews its
+# contracts. The engine runs it (Task.review_plan) and acts on the verdict: one replan with its comments, then the
+# owner sees any comments that are left as warnings. It never edits code and never blocks planning.
+ARCHITECT_SPEC = """The planner has just written {what}. You are the project's architect, a different model from the
+planner. Before the project owner is asked to approve it, review its contracts: the shared files every feature builds
+on. The owner decides the architecture; your comments either go back to the planner or reach the owner.
+
+{context}
+The planner's work is in this repo as uncommitted changes on top of {base}: run `git status --short` and `git diff`
+to see it (new files show as untracked; read them). Its files: {files}. The plan itself is {plan_path}.
+{engine_found}{previous}
+Check these, and only these:
+1. Contracts. Read every contract file{migrations_hint} and every task's spec and depends_on. A task must not depend
+   on a type, table, column, function or constant that no contract and no task module provides; the stubs' imports
+   must point at files that exist or that a task in this plan creates.
+2. Migrations (SQL files under supabase/migrations/, if the project has them).{migration_checks}
+   - Never edit an already-merged migration: a migration file that existed before this plan must be unchanged
+     (check with `git diff --stat`); a schema change is a new migration numbered after the last one.
+3. Security: row level security and policies (`enable row level security`, `create policy`), and ownership or role
+   checks that the contracts or specs describe (who may read or change which rows). A plan that turns RLS off,
+   widens a policy to every user, or drops an ownership or role check is a security regression. Start each such
+   comment with "Security:".
+4. Removed or changed exports.{exports_check}
+
+Write {verdict} with exactly this JSON and nothing else:
+{{"verdict": "approve" or "changes",
+  "comments": ["<one short, specific, plain-English comment: what is wrong, in which file and name, and what the planner should do instead>", ...]}}
+- "changes" ONLY for a real problem from the list above: something that would break the build or a page, lose the
+  owner's data, or open a security hole.
+- Never ask for changes over style, naming, how the work is split into tasks, or preferences. When unsure, approve.
+- "approve" may carry comments as notes; they don't block anything. Keep comments few (at most 8).
+Don't change any other file: you review, the planner and the dev agents write the code. End with DONE."""
+
+ARCHITECT_EXPORTS_CHANGE = """ This is the check that matters most for a change. List every exported name (function,
+   type, constant, component) that this change removes, renames, or changes the signature of. Look in three places:
+   the code of the files it edits (`git diff`), its contracts, and the words of its task specs and the modules' doc
+   comments (a spec that says "requireAdmin is replaced by requireRole" removes requireAdmin). For EACH such name, find
+   its users with:
+       git grep -n -w "<name>" -- . ':!{plan_path}' ':!plan.json'
+   Every hit outside the file that defines it is a user. A user that is a page, or a module no task in this change
+   owns, breaks: each dev agent may edit only its own module, so the type check fails on files nobody in the change
+   can edit. Ask the planner to keep the old name working as a thin wrapper over the new code (and to say so in the
+   task spec), unless every user is a module a task in this change owns. (Regression: a change removed requireAdmin
+   from src/server/profiles.ts while two pages still imported it, and the feature failed all five tries.)"""
+
+ARCHITECT_EXPORTS_NEW = """ This is a new project: nothing exists yet to break, so only check that the names the
+   tasks' specs say they call from each other (their depends_on) are exported by the stub or contract they name."""
+
+ARCHITECT_MIGRATIONS_CHANGE = """
+   - This project is already built and has data. A destructive migration needs the owner's explicit say-so: dropping
+     a table or a column, narrowing a column's type (text to varchar(n), bigint to int, dropping values from an
+     enum), adding a NOT NULL column without a default to a table that already has rows, or deleting rows. Unless
+     the change request asks for exactly that, ask for an additive version (a new nullable column or one with a
+     default, a new table, keeping the old column)."""
+
+ARCHITECT_MIGRATIONS_NEW = """
+   - This is a new project with no data yet, so a migration may create and shape tables freely; check that every
+     table and column a task's spec relies on is created, with the types and constraints it needs."""
+
+ARCHITECT_SECOND = """
+This is your second review: you asked for changes on the planner's first plan, with these comments:
+{comments}
+The planner wrote the plan again with them. Approve if they are fixed. If a problem is still there, ask for changes
+again: the plan then goes to the owner with your comments as warnings, and the owner decides.
+"""
+
+PY_EXPORT_RE = re.compile(r"^(?:async\s+def|def|class)\s+([A-Za-z]\w*)|^([A-Za-z]\w*)[ \t]*(?::[^=\n]*)?=(?!=)", re.M)
+TS_EXPORT_RE = re.compile(r"^\s*export\s+(?:declare\s+)?(?:default\s+)?(?:async\s+)?"
+                          r"(?:function\*?|const|let|var|class|type|interface|enum|abstract\s+class)\s+([A-Za-z_$][\w$]*)",
+                          re.M)
+TS_EXPORT_LIST_RE = re.compile(r"^\s*export\s+(?:type\s+)?\{([^}]*)\}", re.M)
+
+
+def exported_names(path: str, text: str) -> set[str]:
+    """The names a module exports, read from its text: top-level public defs, classes and assignments for Python;
+    `export` declarations and export lists for TypeScript. Empty for other files."""
+    if path.endswith(".py"):
+        return {m.group(1) or m.group(2) for m in PY_EXPORT_RE.finditer(text)}
+    if path.endswith((".ts", ".tsx")):
+        names = {m.group(1) for m in TS_EXPORT_RE.finditer(text)}
+        for m in TS_EXPORT_LIST_RE.finditer(text):
+            for part in m.group(1).split(","):
+                name = part.strip().split(" as ")[-1].strip()
+                if re.fullmatch(r"[A-Za-z_$][\w$]*", name):
+                    names.add(name)
+        return names
+    return set()
+
+
+def removed_exports(repo: Path, files: dict[str, str]) -> dict[str, list[str]]:
+    """Names the planner's files no longer export that the same file exported on main, each with its users on main
+    (`file:line: text`, other files only; the plan files are left out). A hint for the architect, found by the
+    engine itself: a name removed from the code is the easy case, a name removed in a spec's words is the
+    architect's to find."""
+    found: dict[str, list[str]] = {}
+    for path, after in files.items():
+        r = git(["show", f"main:{path}"], Path(repo))
+        if r.returncode:
+            continue                                    # a new file: it removes nothing
+        for name in sorted(exported_names(path, r.stdout) - exported_names(path, after)):
+            hits = git(["grep", "-n", "-w", "-e", name, "main", "--"], Path(repo)).stdout.splitlines()
+            users = []
+            for h in hits:
+                where = h.removeprefix("main:")
+                file = where.split(":", 1)[0]
+                if file != path and file != "plan.json" and not file.startswith(("changes/", "review/")):
+                    users.append(where[:200])
+            found[f"{name} ({path})"] = users[:10]
+    return found
+
+
+def parse_architect_review(text: str) -> dict | None:
+    """The architect's verdict file, read leniently like the code reviewer's, or None when it isn't usable."""
+    return parse_code_review(text)
+
+
+def make_architect(plan_id: str, engine: Engine, architect, stack: PythonStack, mode: str = "new",
+                   plan_path: str = "plan.json", request: str = ""):
+    """Task.review_plan for a planner task (PLAN, or C{n}PLAN for a change): runs the architect as its own task in a
+    sandbox of main with the planner's files written in (so it sees the repo exactly as the plan leaves it; nothing it
+    does is merged) and returns its verdict. A review that doesn't finish, or writes no usable verdict, comes back as
+    architect_error (the engine then approves: the architect never blocks planning)."""
+    verdict = f"review/{plan_id}-architect.json"
+    said: list[str] = []                                     # the first round's comments, for the second
+
+    def review(files: dict[str, str], rnd: int = 1) -> dict:
+        found: dict = {}
+
+        def check(box: Sandbox) -> tuple[bool, str, str]:
+            text = box.exec(f"cat {shlex.quote(verdict)} 2>/dev/null").output
+            v = parse_architect_review(text)
+            if v is None:
+                return False, "the architect's verdict is missing or not valid", text[-500:]
+            found.update(v)
+            return True, "", text[-500:]
+
+        change = mode == "change"
+        try:
+            removed = removed_exports(engine.repo, files) if change else {}
+        except Exception:                                    # only a hint: the architect still greps
+            removed = {}
+        engine_found = ""
+        if removed:
+            lines = "\n".join(f"- {name}: " + ("; ".join(users) if users else "no other file uses it")
+                              for name, users in removed.items())
+            engine_found = ("\nThe engine compared the code: these exported names are gone from the files that "
+                            f"defined them, with their users on main:\n{lines}\n")
+        rx = stack.migration_re
+        spec = ARCHITECT_SPEC.format(
+            what=(f"the plan for change request {plan_id.removesuffix('PLAN')} ({plan_path})" if change
+                  else f"the build plan for a new project ({plan_path})"),
+            context=(f"The change the owner asked for: {' '.join(request.split())}\n" if change and request.strip()
+                     else "") + ("The project is already built and working; its code, pages and data exist, and "
+                                 "plan.json describes what was built.\n" if change else
+                                 "This is a new project: only the template exists so far.\n"),
+            base="main", files=", ".join(sorted(files)) or "(none)", plan_path=plan_path,
+            engine_found=engine_found,
+            previous=ARCHITECT_SECOND.format(comments="\n".join(f"- {c}" for c in said)) if rnd > 1 and said else "",
+            migrations_hint=" (including the migrations)" if rx else "",
+            migration_checks=ARCHITECT_MIGRATIONS_CHANGE if change else ARCHITECT_MIGRATIONS_NEW,
+            exports_check=(ARCHITECT_EXPORTS_CHANGE.format(plan_path=plan_path) if change else ARCHITECT_EXPORTS_NEW),
+            verdict=verdict)
+        tid = f"{plan_id}-architect" + (str(rnd) if rnd > 1 else "")   # each review needs its own sandbox branch
+        task = Task(tid, f"Architect review: {plan_path}", spec, ["*"], "", role="architect", merge=False,
+                    max_attempts=1, agent=architect, setup_files=dict(files), check=check)
+        r = engine.run_task(task)
+        if r.status == "passed" and found:
+            if found["verdict"] == "changes" and rnd == 1:
+                said[:] = found["comments"]
+            return found
+        why = r.error or (r.attempts[-1].reason if r.attempts else r.status)
+        return {"architect_error": True, "note": f"The architect's review didn't finish: {why}"[:300]}
+    return review
+
+
 # ------------------------------------------------------------------ tasks
 def tasks_from_plan(plan: dict, python_or_stack: "str | PythonStack" = "python3",
                     engine: Engine | None = None, referee=None, tech_lead=None, stronger_dev=None,
@@ -726,16 +903,19 @@ def run_project(description: str, repo: Path, engine: Engine, python: str = "pyt
                 parallel: int = 4, approve: Approver = auto_approve,
                 stack: PythonStack | None = None, save_tests: Path | None = None,
                 referee=None, integrator=None, tech_lead=None, stronger_dev=None,
-                deferred=(), reviewer=None) -> tuple[dict | None, list[Result]]:
+                deferred=(), reviewer=None, architect=None) -> tuple[dict | None, list[Result]]:
     """Plan, then pause for approval, then QA + build. `approve(plan)` returns (approved, note); in the
     app it waits for the user's click, offline it approves automatically. `referee` is the agent that settles
     test disputes; a different model from QA's, so work is never graded only by the model that wrote it.
     `reviewer` code reviews each feature's passing attempt before it merges (docs/reviewer.md).
     `deferred`: task ids the owner saved for later (docs/pm.md), or a function of the plan that returns them,
-    called after approval (the owner picks them on the approval screen). They are not built."""
+    called after approval (the owner picks them on the approval screen). They are not built.
+    `architect` reviews the plan's contracts before it merges and before approval (docs/architect.md)."""
     emit = engine.events.emit
     stack = stack or default_stack(python)
     planner = planning_task(description, stack)
+    if architect is not None:
+        planner.review_plan = make_architect(planner.id, engine, architect, stack)
     emit("task_queued", planner.id, title=planner.title, role="planner", depends_on=[])
     plan_result = engine.run_task(planner)
     if plan_result.status != "merged":
@@ -1168,12 +1348,13 @@ def undo_merge(engine: Engine, task_id: str) -> bool:
 def change_project(n: int, request: str, description: str, repo: Path, engine: Engine,
                    approve: Approver = auto_approve, stack: PythonStack | None = None, parallel: int = 4,
                    save_tests: Path | None = None, referee=None, integrator=None, tech_lead=None,
-                   stronger_dev=None, deferred=(), reviewer=None) -> tuple[dict | None, list[Result]]:
+                   stronger_dev=None, deferred=(), reviewer=None, architect=None) -> tuple[dict | None, list[Result]]:
     """Plan change n, pause for approval, record it in plan.json, then QA + build it in the same repo (and
     integrate again for web apps). Returns (change, results): change is None if planning failed; results is just
     the planner's if the change was rejected (its merge is reverted then). The planner and the tech lead read the
     end of docs/retro.md; `deferred` features (still saved for later, docs/pm.md) are named to the integrator.
-    `reviewer`: the code reviewer of each change task's passing attempt (docs/reviewer.md)."""
+    `reviewer`: the code reviewer of each change task's passing attempt (docs/reviewer.md). `architect` reviews the
+    change plan's contracts and every export it removes before approval (docs/architect.md)."""
     emit = engine.events.emit
     stack = stack or default_stack()
     repo = Path(repo)
@@ -1181,6 +1362,9 @@ def change_project(n: int, request: str, description: str, repo: Path, engine: E
     plan = json.loads((repo / "plan.json").read_text())
     retro = read_retro(repo)
     planner = change_planning_task(n, request, plan, stack, description, retro=retro)
+    if architect is not None:
+        planner.review_plan = make_architect(planner.id, engine, architect, stack, mode="change",
+                                             plan_path=f"changes/{n}.json", request=request)
     emit("task_queued", planner.id, title=planner.title, role="planner", depends_on=[])
     plan_result = engine.run_task(planner)
     if plan_result.status != "merged":

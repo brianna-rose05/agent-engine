@@ -17,6 +17,9 @@ in the same repo. Merged work stays; the engine still verifies everything.
      request, and writes `changes/{n}.json` (format below) plus any contract edits: new migrations only
      (never edit an existing migration), additive edits to src/contracts/*.ts, and updated doc comments in
      every module it changes (implementations stay; the doc comments become the new spec).
+   - Once the change plan passes its checks, the architect (Sonnet) reviews its contracts and every export it
+     removes before it merges (docs/architect.md): `architect_review` on `C{n}PLAN`, at most one replan, and any
+     comments left after it reach the approval card as warnings.
    - Emits `change_plan_ready {n, change}` where `change` is the parsed changes/{n}.json, then waits for
      the user's decision exactly like plan approval (Convex status `awaiting_approval`, the app's
      approve / send back → `approved` / `rejected`), and emits `plan_decision {approved, note}`.
