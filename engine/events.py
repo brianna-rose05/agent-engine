@@ -6,7 +6,11 @@ Event kinds and their data:
                                 waiting_for_sandbox {error}: the provider is at capacity; waiting to retry
                                 sandbox_lost {attempt, retry, error}: the sandbox dropped mid-attempt;
                                     the attempt is redone in a fresh one (not one of the agent's tries)
+                                reviewing {attempt}: the tech lead is reviewing a feature whose tries all failed
     attempt_finished {n, passed, claim, reason, cost_usd, seconds, turns, files_changed}
+    tech_lead_review {decision, note, stronger_model, question?, model?, tech_lead_error?}   (docs/tech-lead.md)
+                     decision retry: more attempts follow (n = 4, 5), on `model` when it switched the dev agent
+    escalated        {question}   the task ends failed after a review; its error is "Needs you: <question>"
     plan_ready       {plan}
     plan_decision    {approved, note}
     preview_ready    {url}      the finished app on Vercel (worker.py, engine/deploy.py)

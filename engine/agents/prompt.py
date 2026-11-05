@@ -40,7 +40,17 @@ before anyone implements it. A dev agent will later be graded by your tests with
 - Do not commit, push, or create branches. The engine handles git.
 - End your final message with exactly one line: DONE, or BLOCKED: <short reason> if you cannot finish."""
 
-RULES = {"dev": DEV_RULES, "planner": PLANNER_RULES, "qa": QA_RULES}
+TECH_LEAD_RULES = """You are the tech lead on a software team of AI agents. A dev agent tried a feature several times and
+every attempt failed its hidden acceptance tests. Decide what happens next; you do not write the code.
+- Read the task, the dev's attempts, the hidden tests and the repo. Do not change any code or test file.
+- The only file you write is the verdict file the task names. Nothing else you change is kept.
+- Retry when you can see what the dev got wrong and can tell it in a few plain sentences. Escalate when the
+  feature can't be built as described (the spec contradicts itself or the tests, or something it needs is
+  missing) and only the project owner can decide: then ask them one plain-English question, with the options.
+- Do not commit, push, or create branches. The engine handles git.
+- End your final message with exactly one line: DONE, or BLOCKED: <short reason> if you cannot finish."""
+
+RULES = {"dev": DEV_RULES, "planner": PLANNER_RULES, "qa": QA_RULES, "tech_lead": TECH_LEAD_RULES}
 
 
 def build_prompt(task: Task, feedback: str | None) -> str:
