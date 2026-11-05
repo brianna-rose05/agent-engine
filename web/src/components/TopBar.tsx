@@ -4,7 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useMutation } from "convex/react";
-import { ExternalLink, KeyRound, RefreshCw, Rocket, RotateCcw } from "lucide-react";
+import { ExternalLink, KeyRound, MessageSquarePlus, RefreshCw, Rocket, RotateCcw } from "lucide-react";
 import { isSetupCode } from "../../convex/setup";
 import { api, useOwner } from "@/lib/convex";
 import { motion } from "motion/react";
@@ -49,7 +49,8 @@ export function TopBar() {
             {clock(state.now)}
           </span>
           <span className="rounded-md bg-surface px-2 py-0.5 text-xs ring-1 ring-line">{project.model}</span>
-          {preview && <OpenPreview url={preview} durable={Boolean(durableDb ?? state.durable_db)} />}
+          {preview && <OpenPreview url={preview} durable={Boolean(durableDb ?? state.durable_db)}
+                                   inStudio={mode === "live" && !path.endsWith("/preview") ? `/p/${project.id}/preview` : null} />}
           {live && (
             <a href={live.url} target="_blank" rel="noopener noreferrer" title={`Production, version ${live.version}: ${live.url}`}
               className="flex items-center gap-1.5 rounded-lg bg-dev-bg px-3 py-1 text-xs font-medium text-dev ring-1 ring-dev/20 hover:ring-dev/40">
@@ -101,14 +102,21 @@ export function TopBar() {
 }
 
 /** The finished app on Vercel. Without its own database (docs/databases.md) it runs in local mode, an in-memory
- *  database, so its data doesn't last: say so. With one, the data is kept and there is nothing to warn about. */
-function OpenPreview({ url, durable }: { url: string; durable: boolean }) {
+ *  database, so its data doesn't last: say so. With one, the data is kept and there is nothing to warn about.
+ *  In the live app it opens Studio's Preview page (comment pins); the replay opens the app in a tab. */
+function OpenPreview({ url, durable, inStudio }: { url: string; durable: boolean; inStudio: string | null }) {
+  const cls = "flex items-center gap-1.5 rounded-lg bg-ink px-3 py-1 text-xs font-medium text-white hover:opacity-90";
   return (
     <span className="flex items-center gap-2">
-      <a href={url} target="_blank" rel="noopener noreferrer" title={durable ? url : `${url}. Preview data resets.`}
-        className="flex items-center gap-1.5 rounded-lg bg-ink px-3 py-1 text-xs font-medium text-white hover:opacity-90">
-        <ExternalLink size={12} /> Open preview
-      </a>
+      {inStudio ? (
+        <Link href={inStudio} title={durable ? `Comment on ${url}` : `Comment on ${url}. Preview data resets.`} className={cls}>
+          <MessageSquarePlus size={12} /> Open preview
+        </Link>
+      ) : (
+        <a href={url} target="_blank" rel="noopener noreferrer" title={durable ? url : `${url}. Preview data resets.`} className={cls}>
+          <ExternalLink size={12} /> Open preview
+        </a>
+      )}
       {!durable && <span className="text-xs text-muted">Preview data resets</span>}
     </span>
   );

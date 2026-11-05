@@ -1,5 +1,7 @@
-import { internalActionGeneric, internalMutationGeneric, mutationGeneric, queryGeneric } from "convex/server";
-import { ConvexError, v } from "convex/values";
+import {
+  internalActionGeneric, internalMutationGeneric, mutationGeneric, queryGeneric, type AnyDataModel, type GenericMutationCtx,
+} from "convex/server";
+import { ConvexError, v, type GenericId } from "convex/values";
 import { anyApi } from "convex/server";
 
 import { checkOwner } from "./owner";
@@ -142,30 +144,39 @@ export const answerAndRetry = mutationGeneric({
   },
 });
 
+/**
+ * Start a change request on a project row: every rule a change request has (a plan, nothing running, a repo, the
+ * text, the spending limit), then the row patch and the worker. Shared by requestChange and comment pins sent as a
+ * change request (convex/comments.ts), so both follow exactly the same rules. Returns the change's number.
+ */
+export async function startChangeRequest(ctx: GenericMutationCtx<AnyDataModel>, id: GenericId<"projects">, text: string): Promise<number> {
+  const p = await ctx.db.get(id);
+  if (!p) throw new ConvexError("This project doesn't exist any more.");
+  if (!canRequestChange(p.status, Boolean(p.plan), false)) {
+    throw new ConvexError(p.status === "failed"
+      ? "This build stopped before it had a plan, so there's nothing to change yet. Build it again instead."
+      : "The team is still working on this project. Ask for a change once it has finished.");
+  }
+  if (!p.repo) throw new ConvexError("This project has no repo yet, so there's nothing to change. Build it again instead.");
+  const checked = checkChangeText(text);
+  if (!checked.ok) throw new ConvexError(checked.message);
+  if (!canSpendMore(p.costUsd, budgetOf(p))) {
+    throw new ConvexError("This project has spent its limit. Raise the spending limit on the plan page first.");
+  }
+  const changes = (p.changes ?? []) as ChangeRequest[];
+  const entry: ChangeRequest = { n: nextChangeNumber(changes), text: checked.text, at: Date.now() };
+  await ctx.db.patch(id, { status: "queued", mode: "change", resume: false, error: undefined, changeFrom: p.status,
+                           pendingChange: undefined, planNote: undefined, changes: [...changes, entry] });
+  await ctx.scheduler.runAfter(0, anyApi.projects.startWorker, { projectId: id });
+  return entry.n;
+}
+
 /** Ask the team for a change to a built project, in the same repo (docs/change-requests.md). */
 export const requestChange = mutationGeneric({
   args: { ...owner, id: v.id("projects"), text: v.string() },
   handler: async (ctx, { key, id, text }) => {
     checkOwner(key);
-    const p = await ctx.db.get(id);
-    if (!p) throw new ConvexError("This project doesn't exist any more.");
-    if (!canRequestChange(p.status, Boolean(p.plan), false)) {
-      throw new ConvexError(p.status === "failed"
-        ? "This build stopped before it had a plan, so there's nothing to change yet. Build it again instead."
-        : "The team is still working on this project. Ask for a change once it has finished.");
-    }
-    if (!p.repo) throw new ConvexError("This project has no repo yet, so there's nothing to change. Build it again instead.");
-    const checked = checkChangeText(text);
-    if (!checked.ok) throw new ConvexError(checked.message);
-    if (!canSpendMore(p.costUsd, budgetOf(p))) {
-      throw new ConvexError("This project has spent its limit. Raise the spending limit on the plan page first.");
-    }
-    const changes = (p.changes ?? []) as ChangeRequest[];
-    const entry: ChangeRequest = { n: nextChangeNumber(changes), text: checked.text, at: Date.now() };
-    await ctx.db.patch(id, { status: "queued", mode: "change", resume: false, error: undefined, changeFrom: p.status,
-                             pendingChange: undefined, planNote: undefined, changes: [...changes, entry] });
-    await ctx.scheduler.runAfter(0, anyApi.projects.startWorker, { projectId: id });
-    return entry.n;
+    return startChangeRequest(ctx, id, text);
   },
 });
 
