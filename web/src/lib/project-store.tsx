@@ -9,6 +9,7 @@ import { OwnerGate } from "@/components/OwnerGate";
 import type { EngineEvent, Project, ProjectState } from "./types";
 import type { Wizard } from "../../convex/wizard";
 import { canRequestChange, checkChangeText, nextChangeNumber, type ChangeRequest } from "../../convex/changes";
+import { checkAnswerText } from "../../convex/answers";
 
 type Store = {
   project: Project;
@@ -38,16 +39,19 @@ type Store = {
   budgetUsd?: number;           // live: the project's spending limit (convex/budget.ts); the demo has none
   spentUsd?: number;            // live: what the project row says was spent so far, every run included
   setBudget?: (usd: number) => Promise<void>; // throws with a message to show when it can't be set
+  answers: Record<string, string>; // your answers to the tech lead so far, {taskId: text} (convex/answers.ts)
+  // answer the tech lead's question on a failed feature, then retry what failed; throws with a message to show
+  answerAndRetry: (taskId: string, text: string) => Promise<void>;
 };
 
 /** A task agent is busy right now (the demo has no project row to ask). */
-const RUNNING = new Set(["working", "checking", "merging", "disputing"]);
+const RUNNING = new Set(["working", "checking", "merging", "disputing", "reviewing"]);
 export const anyRunning = (s: ProjectState) => Object.values(s.tasks).some((t) => RUNNING.has(t.status));
 
 /** Message of a Convex error (ConvexError's data is the friendly text), or a generic one. */
-function errorText(e: unknown): string {
+function errorText(e: unknown, fallback = "Couldn't send the change. Try again in a moment."): string {
   const data = (e as { data?: unknown })?.data;
-  return typeof data === "string" ? data : "Couldn't send the change. Try again in a moment.";
+  return typeof data === "string" ? data : fallback;
 }
 
 const Ctx = createContext<Store | null>(null);
@@ -119,14 +123,20 @@ function useDemo(): Omit<Store, "project" | "mode"> {
     setHistory((h) => [...h, { n: nextChangeNumber(h), text: checked.text, at: Date.now() }]);
   }, []);
   const canChange = canRequestChange(state.status, Boolean(state.plan), anyRunning(state));
+  const answerAndRetry = useCallback(async (_taskId: string, text: string) => {
+    const checked = checkAnswerText(text);
+    if (!checked.ok) throw new Error(checked.message);
+    throw new Error("This is a replay of a recorded run, so nobody picks up answers here.");
+  }, []);
   return { state, approve, sendBack, speed, setSpeed, restart, clock, duration: DEMO_END,
-           canChange, changeHistory: history, requestChange };
+           canChange, changeHistory: history, requestChange, answers: {}, answerAndRetry };
 }
 
 type LiveData = {
   project: Project & { status: string; error: string | null; wizard: Wizard | null; canRetry?: boolean; previewUrl?: string | null; durableDb?: boolean;
                       canShip?: boolean; shipping?: boolean; production?: { url: string; version: number; at: number } | null;
-                      canChange?: boolean; changes?: ChangeRequest[]; budgetUsd?: number; costUsd?: number };
+                      canChange?: boolean; changes?: ChangeRequest[]; budgetUsd?: number; costUsd?: number;
+                      answers?: Record<string, string> };
   events: { kind: EngineEvent["kind"]; task_id: string | null; data: Record<string, unknown>; ts: number }[];
 } | null;
 
@@ -137,6 +147,7 @@ function LiveProvider({ id, children }: { id: string; children: React.ReactNode 
   const decide = useMutation(api.projects.decide);
   const askChange = useMutation(api.projects.requestChange);
   const saveBudget = useMutation(api.projects.setBudget);
+  const answer = useMutation(api.projects.answerAndRetry);
   const t0 = data?.events[0]?.ts;
   const state = useMemo(() => {
     if (!data) return initialState();
@@ -178,6 +189,16 @@ function LiveProvider({ id, children }: { id: string; children: React.ReactNode 
         await askChange({ key: key!, id, text: checked.text });
       } catch (e) {
         throw new Error(errorText(e));
+      }
+    },
+    answers: data?.project.answers ?? {},
+    answerAndRetry: async (taskId: string, text: string) => {
+      const checked = checkAnswerText(text);
+      if (!checked.ok) throw new Error(checked.message);
+      try {
+        await answer({ key: key!, id, taskId, text: checked.text });
+      } catch (e) {
+        throw new Error(errorText(e, "Couldn't send your answer. Try again in a moment."));
       }
     },
   };

@@ -1,6 +1,7 @@
 import { withHistory } from "./history";
 import { withShip } from "./ship";
-import type { Attempt, ChangeState, ChangeTask, EngineEvent, FeedItem, Plan, PlanTask, ProjectState, QuickState, Role, TaskState } from "./types";
+import type { Attempt, ChangeState, ChangeTask, EngineEvent, FeedItem, Plan, PlanTask, ProjectState, QuickState, Role, TaskState,
+              TechLeadReview } from "./types";
 
 export const initialState = (): ProjectState => ({
   status: "queued",
@@ -54,6 +55,9 @@ export function boardChangeTasks(s: ProjectState): ChangeTask[] {
 export const NOTES_KEPT = 5;
 
 const round = (x: number) => Math.round(x * 10000) / 10000;
+
+/** "sonnet" -> "Sonnet": how a model is named on screen. */
+export const modelName = (m: string) => (m ? m[0].toUpperCase() + m.slice(1) : m);
 
 function channelFor(role: Role): FeedItem["channel"] {
   return role === "planner" ? "planning" : role === "qa" ? "tests" : "build";
@@ -129,10 +133,16 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
         next.started ??= e.t;
         next.notes = []; // a new try starts with a clean slate
       }
+      if (d.status === "working" || d.status === "reviewing") delete next.question; // a question is only open once it failed
       tasks[task.id] = next;
       const ch = channelFor(task.role);
       if (d.status === "working" && task.role !== "planner") {
-        if ((d.attempt ?? 1) > 1) {
+        if (task.review?.decision === "retry" && !task.review.error) {
+          // the extra tries the tech lead asked for (4, 5), with its guidance and maybe a stronger model
+          say({ who: task.role, channel: ch, task_id: task.id, tone: "warn",
+                text: `${name(task)}: trying again with the tech lead's guidance (try ${d.attempt ?? next.attempt}` +
+                      `${task.retry_model ? `, on ${modelName(task.retry_model)}` : ""}).` });
+        } else if ((d.attempt ?? 1) > 1) {
           say({ who: task.role, channel: ch, task_id: task.id, tone: "warn", text: `${name(task)}: trying again (try ${d.attempt}).` });
         } else {
           say({ who: task.role, channel: ch, task_id: task.id,
@@ -141,6 +151,13 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
       } else if (d.status === "disputing") {
         say({ who: "engine", channel: "tests", task_id: task.id, tone: "warn",
               text: `${name(task)} keeps failing a few hidden tests, so a referee (a different model) is checking whether the tests match the spec.` });
+      } else if (d.status === "reviewing") {
+        const tries = Math.max(task.attempts.length, d.attempt ?? task.attempt);
+        say({ who: "tech lead", channel: ch, task_id: task.id, tone: "warn",
+              text: `${name(task)} didn't pass after ${tries} ${tries === 1 ? "try" : "tries"}, so the tech lead (a different model) ` +
+                    "is reading the attempts, the failing tests and the code to decide what to do next." });
+      } else if (d.status === "failed" && task.question) {
+        // escalated already said why, with the tech lead's question
       } else if (d.status === "merged" && task.role === "dev") {
         say({ who: "engine", channel: "build", task_id: task.id, tone: "good", text: `Verified and merged ${mod(task)}.` });
       } else if (d.status === "passed" && task.role === "qa") {
@@ -155,7 +172,8 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
       } else if (d.status === "failed" || d.status === "error") {
         say({ who: "engine", channel: ch, task_id: task.id, tone: "bad",
               text: `${name(task)} needs you: ${d.status === "error" ? d.error ?? "infrastructure error"
-                : isQuick(task.id) ? "2 tries, still not passing the whole-app check" : "3 tries, still not passing"}.` });
+                : isQuick(task.id) ? "2 tries, still not passing the whole-app check"
+                : `${Math.max(3, task.attempts.length)} tries, still not passing`}.` });
       }
       break;
     }
@@ -195,6 +213,43 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
               : fixed
               ? `The referee found tests for ${name(task)} that contradicted the spec and corrected them. The dev agent gets another try.`
               : `The referee confirmed the tests for ${name(task)} match the spec, so the code needs fixing.` });
+      break;
+    }
+    case "tech_lead_review": {
+      if (!task) break;
+      const d = e.data as { decision?: string; note?: unknown; question?: unknown; stronger_model?: unknown; model?: unknown;
+                            tech_lead_error?: unknown };
+      const text = (x: unknown) => (typeof x === "string" ? x.trim() : "");
+      const review: TechLeadReview = {
+        decision: d.decision === "retry" ? "retry" : "escalate", note: text(d.note), stronger_model: Boolean(d.stronger_model),
+        t: e.t, ...(text(d.question) ? { question: text(d.question) } : {}), ...(text(d.model) ? { model: text(d.model) } : {}),
+        ...(d.tech_lead_error ? { error: true } : {}),
+      };
+      const next: TaskState = { ...task, review };
+      delete next.retry_model;
+      if (review.decision === "retry" && review.model) next.retry_model = review.model;
+      tasks[task.id] = next;
+      const ch = channelFor(task.role);
+      if (review.error) {
+        say({ who: "tech lead", channel: ch, task_id: task.id, tone: "bad",
+              text: `The tech lead couldn't review ${name(task)} (its run hit an error), so it comes to you.` });
+      } else if (review.decision === "retry") {
+        say({ who: "tech lead", channel: ch, task_id: task.id,
+              text: `Tech lead reviewed ${name(task)}: trying again${review.model ? ` on ${modelName(review.model)}` : ""}.` +
+                    `${review.note ? ` ${review.note}` : ""}` });
+      } else if (review.note) {
+        say({ who: "tech lead", channel: ch, task_id: task.id, text: `Tech lead reviewed ${name(task)}: ${review.note}` });
+      }
+      break;
+    }
+    case "escalated": {
+      if (!task) break;
+      const q = (e.data as { question?: unknown }).question;
+      const question = (typeof q === "string" && q.trim()) || task.review?.question ||
+                       "The tech lead couldn't get this feature to pass. How should it work?";
+      tasks[task.id] = { ...task, question };
+      say({ who: "tech lead", channel: channelFor(task.role), task_id: task.id, tone: "bad",
+            text: `Tech lead needs you on ${name(task)}: ${question}` });
       break;
     }
     case "plan_ready": {
@@ -381,6 +436,9 @@ export type Feature = {
   waitingOn: string[];
   active: Role | null;
   tries: number;
+  reviewing: boolean;      // the tech lead is reviewing its failed tries
+  question?: string;       // the tech lead's open question for you (a failed dev task)
+  retry_model?: string;    // the tech lead moved its extra tries to this model ("sonnet")
 };
 
 const BAD = new Set(["failed", "blocked", "error", "merge_conflict", "stopped"]);
@@ -407,7 +465,7 @@ export function features(s: ProjectState): Feature[] {
     let active: Role | null = null;
     if ((qa && BAD.has(qa.status)) || (dev && BAD.has(dev.status))) column = "attention";
     else if (dev?.status === "merged") column = "done";
-    else if (dev && ["checking", "merging", "disputing"].includes(dev.status)) { column = "checking"; active = "dev"; }
+    else if (dev && ["checking", "merging", "disputing", "reviewing"].includes(dev.status)) { column = "checking"; active = "dev"; }
     else if (dev?.status === "working") { column = "building"; active = "dev"; }
     else if (qa && ["working", "checking"].includes(qa.status)) { column = "tests"; active = "qa"; }
     const waitingOn = p.depends_on.filter((d) => s.tasks[d]?.status !== "merged");
@@ -415,6 +473,9 @@ export function features(s: ProjectState): Feature[] {
       id: p.id, title: p.title, module: p.module, spec: p.spec, depends_on: p.depends_on, column, qa, dev,
       cost_usd: round((qa?.cost_usd ?? 0) + (dev?.cost_usd ?? 0)), waitingOn, active,
       tries: Math.max(dev?.attempts.length ?? 0, dev?.attempt ?? 0),
+      reviewing: dev?.status === "reviewing",
+      ...(dev?.status === "failed" && dev.question ? { question: dev.question } : {}),
+      ...(dev?.retry_model ? { retry_model: dev.retry_model } : {}),
     };
   });
 }

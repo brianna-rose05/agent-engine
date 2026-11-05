@@ -6,6 +6,7 @@ import { checkOwner } from "./owner";
 import { canRequestChange, checkChangeText, nextChangeNumber, type ChangeRequest } from "./changes";
 import { budgetOf, canSpendMore, checkBudget } from "./budget";
 import { canShip } from "./ship";
+import { RETRY_PATCH, checkAnswer, failedTasks, retryBlocker, withAnswer, type Answers } from "./answers";
 
 const owner = { key: v.string() };
 
@@ -52,7 +53,8 @@ export const get = queryGeneric({
                  durableDb: Boolean(p.durableDb),
                  // ship to production (convex/ship.ts): the screen reduces the events, the row says what's queued
                  canShip: canShip(p.status, false, Boolean(p.repo)), shipping: p.mode === "ship" && ["queued", "starting", "shipping"].includes(p.status),
-                 production: p.production ?? null },
+                 production: p.production ?? null,
+                 answers: p.answers ?? {} }, // your answers to the tech lead, {taskId: text} (convex/answers.ts)
       events: events.map((e) => ({ kind: e.kind, task_id: e.taskId, data: e.data, ts: e.ts })),
     };
   },
@@ -88,13 +90,29 @@ export const retryFailed = mutationGeneric({
   handler: async (ctx, { key, id }) => {
     checkOwner(key);
     const p = await ctx.db.get(id);
-    // stopped at the spending limit retries like failed, once the limit has room again
-    if (!p || !["failed", "stopped"].includes(p.status) || !p.plan) throw new ConvexError("Only a build that stopped after planning can be retried.");
-    if (!canSpendMore(p.costUsd, budgetOf(p))) {
-      throw new ConvexError("This project has spent its limit. Raise the spending limit on the plan page, then retry.");
-    }
-    // mode back to a plain build/retry, so projectForWorker doesn't take this retry for a change request
-    await ctx.db.patch(id, { status: "queued", resume: true, mode: undefined, error: undefined });
+    const blocker = retryBlocker(p);
+    if (blocker) throw new ConvexError(blocker);
+    await ctx.db.patch(id, RETRY_PATCH);
+    await ctx.scheduler.runAfter(0, anyApi.projects.startWorker, { projectId: id });
+  },
+});
+
+/**
+ * Answer the tech lead's question on a failed feature, then retry what failed exactly like retryFailed. The answer
+ * is kept on the row (`answers`, convex/answers.ts; a later one for the same task replaces it), and the retry's dev
+ * agent gets it as feedback on its first try (worker.py resume).
+ */
+export const answerAndRetry = mutationGeneric({
+  args: { ...owner, id: v.id("projects"), taskId: v.string(), text: v.string() },
+  handler: async (ctx, { key, id, taskId, text }) => {
+    checkOwner(key);
+    const p = await ctx.db.get(id);
+    const blocker = retryBlocker(p);
+    if (blocker || !p) throw new ConvexError(blocker ?? "This project doesn't exist any more.");
+    const events = await ctx.db.query("events").withIndex("by_project_ts", (q) => q.eq("projectId", id)).collect();
+    const checked = checkAnswer(taskId, text, failedTasks(events));
+    if (!checked.ok) throw new ConvexError(checked.message);
+    await ctx.db.patch(id, { ...RETRY_PATCH, answers: withAnswer(p.answers as Answers | undefined, taskId, checked.text) });
     await ctx.scheduler.runAfter(0, anyApi.projects.startWorker, { projectId: id });
   },
 });

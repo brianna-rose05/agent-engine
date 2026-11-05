@@ -1,12 +1,13 @@
-import { Bot, ClipboardCheck, Code2, Cog, Sparkles, User } from "lucide-react";
+import { Bot, ClipboardCheck, Code2, Cog, Compass, Sparkles, User } from "lucide-react";
 import type { Role } from "@/lib/types";
 
-export type Who = Role | "engine" | "you";
+export type Who = Role | "engine" | "you" | "tech lead";
 
 export const WHO: Record<Who, { label: string; bg: string; fg: string; Icon: typeof Bot }> = {
   planner: { label: "Planner", bg: "bg-planner-bg", fg: "text-planner", Icon: Sparkles },
   qa: { label: "QA agent", bg: "bg-qa-bg", fg: "text-qa", Icon: ClipboardCheck },
   dev: { label: "Dev agent", bg: "bg-dev-bg", fg: "text-dev", Icon: Code2 },
+  "tech lead": { label: "Tech lead", bg: "bg-lead-bg", fg: "text-lead", Icon: Compass },
   engine: { label: "Engine", bg: "bg-engine-bg", fg: "text-engine", Icon: Cog },
   you: { label: "You", bg: "bg-you-bg", fg: "text-you", Icon: User },
 };
@@ -54,6 +55,32 @@ export function StatusPill({ status }: { status: string }) {
     <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${PILL[status] ?? PILL.queued}`}>
       <span className="size-1.5 rounded-full bg-current" />
       {PILL_TEXT[status] ?? status}
+    </span>
+  );
+}
+
+/** One task's status (board drawer): the engine's word for it, in plain English. */
+const TASK_PILL: Record<string, [string, string]> = {
+  queued: ["Up next", "bg-canvas text-muted"],
+  working: ["Working", "bg-dev-bg text-dev"],
+  checking: ["Checking", "bg-check-bg text-check"],
+  disputing: ["Referee checking the tests", "bg-check-bg text-check"],
+  reviewing: ["Tech lead reviewing", "bg-lead-bg text-lead"],
+  merging: ["Merging", "bg-check-bg text-check"],
+  merged: ["Merged", "bg-dev-bg text-dev"],
+  passed: ["Tests accepted", "bg-qa-bg text-qa"],
+  failed: ["Failed", "bg-bad-bg text-bad"],
+  blocked: ["Paused", "bg-bad-bg text-bad"],
+  error: ["Error", "bg-bad-bg text-bad"],
+  stopped: ["Stopped at the limit", "bg-you-bg text-you"],
+};
+
+export function TaskStatusPill({ status }: { status?: string }) {
+  const [text, cls] = status ? TASK_PILL[status] ?? [status, TASK_PILL.queued[1]] : ["Not started", TASK_PILL.queued[1]];
+  return (
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium ${cls}`}>
+      <span className="size-1.5 rounded-full bg-current" />
+      {text}
     </span>
   );
 }
