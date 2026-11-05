@@ -57,10 +57,12 @@ def test_dependents_see_merged_code_from_dependencies(tmp_path):
 
 def test_independent_tasks_still_run_in_parallel(tmp_path):
     agent = Writer(delay=1.0)
-    t0 = time.time()
     res, _ = run(tmp_path, [task("A"), task("B"), task("C")], agent, parallel=3)
     assert all(r.status == "merged" for r in res.values())
-    assert time.time() - t0 < 2.8                    # 3 x 1s tasks, not run one after another
+    # 3 x 1s tasks, not run one after another: every task starts before any of them ends. Regression (CI): a
+    # wall-clock limit (< 2.8s for the whole run) failed on a slow runner whose git work took 3.5s.
+    when = {(kind, tid): ts for kind, tid, ts in agent.log}
+    assert max(when[("start", t)] for t in "ABC") < min(when[("end", t)] for t in "ABC")
 
 
 def test_dependent_does_not_start_before_dependency_merges(tmp_path):
