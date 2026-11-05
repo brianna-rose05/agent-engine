@@ -3,7 +3,7 @@ import { ConvexError, v } from "convex/values";
 import { checkOwner } from "./owner";
 
 /*
- * Ship to production. "Ship now" runs five checks on main in one sandbox, tags the version (`v<n>`), and deploys
+ * Ship to production. "Ship now" runs the checks (SHIP_CHECKS) on main in one sandbox, tags the version (`v<n>`), and deploys
  * it to production: its own Vercel project and its own database, separate from the preview. Rolling production
  * back redeploys an earlier version's code; the production database is kept as it is. The worker side is
  * worker.py + engine/ship.py; both sides follow the same events (ship_started, ship_check, ship_live, ship_failed).
@@ -11,16 +11,30 @@ import { checkOwner } from "./owner";
  * The rules below are pure functions, so the app and the tests can import them without a Convex backend.
  */
 
-/** The checks a new ship runs, in order. The worker stops at the first failure. */
+/**
+ * The checks a new ship runs, in order (engine/ship.py CHECKS has the same names and labels). The worker stops at
+ * the first failure; a warning (passed with notes) doesn't stop it. To add a check, add it here and in CHECKS.
+ */
 export const SHIP_CHECKS = [
   { name: "types", label: "Types check" },
   { name: "lint", label: "Lint" },
   { name: "tests", label: "All tests pass" },
   { name: "build", label: "Production build" },
   { name: "pages", label: "Every page loads" },
+  { name: "security", label: "Security" },
+  { name: "accessibility", label: "Accessibility" },
+  { name: "speed", label: "Speed" },
 ] as const;
 
-export type ShipCheckStatus = "running" | "passed" | "failed";
+/** warning: passed with notes (its detail says what); the ship goes on. */
+export type ShipCheckStatus = "running" | "passed" | "warning" | "failed";
+
+/** The status a ship_check event reports ("running" for anything unknown). */
+export const checkStatus = (s: unknown): ShipCheckStatus =>
+  s === "passed" || s === "warning" || s === "failed" ? s : "running";
+
+/** A check that passed, with or without warnings. */
+export const checkPassed = (status: string) => status === "passed" || status === "warning";
 export type ShipCheck = { name: string; label: string; status: ShipCheckStatus; detail?: string };
 export type ShipRunState = "checking" | "deploying" | "live" | "failed";
 
@@ -71,14 +85,15 @@ function setCheck(list: ShipCheck[] | undefined, c: ShipCheck): ShipCheck[] {
 
 const labelOf = (name: string) => SHIP_CHECKS.find((c) => c.name === name)?.label ?? name;
 
-/** Whether every one of the five checks has passed. */
+/** Whether every check has passed (a warning counts as passed). */
 export const allChecksPassed = (checks: { name: string; status: string }[] | undefined) =>
-  SHIP_CHECKS.every((c) => (checks ?? []).some((x) => x.name === c.name && x.status === "passed"));
+  SHIP_CHECKS.every((c) => (checks ?? []).some((x) => x.name === c.name && checkPassed(x.status)));
 
 /**
  * What engine.record changes on the project row for the ship events; merged into its patch last.
- * ship_started: shipping (checks for a new ship, straight to deploying for a rollback). ship_check: that check's state;
- * once all five passed it is deploying. ship_live: production, plus a new version unless it was a rollback.
+ * ship_started: shipping (checks for a new ship, straight to deploying for a rollback). ship_check: that check's state
+ * (with its detail when it has one: the output of a failure, the notes of a warning, a passed check's summary);
+ * once all passed it is deploying. ship_live: production, plus a new version unless it was a rollback.
  * ship_failed: the reason (and the failing check). The ship run's project_finished puts the status back to ship.from
  * (shipping never changes whether the app is built), and a ship that never said how it ended counts as failed.
  */
@@ -95,9 +110,9 @@ export function shipPatch(p: Row, kind: string, data: Record<string, unknown> | 
     case "ship_check": {
       const name = String(d.name ?? "");
       if (!name) return {};
-      const status: ShipCheckStatus = d.status === "passed" || d.status === "failed" ? d.status : "running";
+      const status = checkStatus(d.status);
       const check: ShipCheck = { name, label: String(d.label ?? labelOf(name)), status,
-                                 ...(status === "failed" && typeof d.detail === "string" ? { detail: d.detail } : {}) };
+                                 ...(status !== "running" && typeof d.detail === "string" ? { detail: d.detail } : {}) };
       const checks = setCheck(ship.checks, check);
       const state: ShipRunState = status === "failed" ? "failed" : allChecksPassed(checks) ? "deploying" : "checking";
       return { ship: { ...ship, state, checks } };
@@ -141,7 +156,7 @@ export function shipForWorker(p: Row): { ship: { from: string; rollbackTo: numbe
   return { ship, versions: p.versions ?? [], production: p.production ?? null };
 }
 
-/** Run the five checks, tag the next version and deploy it to production. */
+/** Run the checks, tag the next version and deploy it to production. */
 export const shipNow = mutationGeneric({
   args: { key: v.string(), id: v.id("projects") },
   handler: async (ctx, { key, id }) => {

@@ -137,6 +137,9 @@ class NextSupabaseStack(PythonStack):
     template = TEMPLATES / "next-supabase"
     reserved |= {"src/lib/pglite.ts", "src/lib/runtime.ts", "src/lib/auth.ts", "src/lib/session.ts", "src/lib/migrate.ts",
                  "src/lib/owner.ts", "src/lib/studio-bridge.tsx"}
+    # The check scripts (the integration check's and the Ship screen's): template files, never a task's.
+    reserved |= {"scripts/app-server.mjs", "scripts/check-app.mjs", "scripts/check-security.mjs",
+                 "scripts/check-a11y.mjs", "scripts/check-speed.mjs"}
 
     # ---------------------------------------------------------------- integration
     integration = True
@@ -168,6 +171,15 @@ class NextSupabaseStack(PythonStack):
         routes = " ".join(shlex.quote(r) for r in pages)
         return ("npx tsc --noEmit -p . && npx eslint --max-warnings=0 src/app && NO_COLOR=1 npx vitest run && "
                 f"NEXT_TELEMETRY_DISABLED=1 npx next build && node scripts/check-app.mjs {routes}").strip()
+
+    def ship_check_cmds(self, pages: list[str]) -> dict[str, str]:
+        """The Ship screen's checks after the integration check's (engine/ship.py CHECKS), by name. Each runs after
+        the production build, exits 0 (passed), 10 (passed with warnings) or anything else (failed), and ends its
+        output with a short summary. See docs/ship.md."""
+        routes = " ".join(shlex.quote(r) for r in pages)
+        return {"security": "node scripts/check-security.mjs",
+                "accessibility": f"node scripts/check-a11y.mjs {routes}".strip(),
+                "speed": f"node scripts/check-speed.mjs {routes}".strip()}
 
     IMPORT_RE = re.compile(r"""(?:from\s+|import\s*\(\s*|require\(\s*)["']@/([^"']+)["']""")
 

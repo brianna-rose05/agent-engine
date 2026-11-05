@@ -89,7 +89,7 @@ describe("shipPatch: the project row", () => {
     p = play(p, [live(1, 140), ...passAll(141)]);
     expect(p.versions).toHaveLength(1);
     expect(p.versions![0].at).toBe(130000); // the first time it went live
-    expect(p.ship!.checks).toHaveLength(5);
+    expect(p.ship!.checks).toHaveLength(SHIP_CHECKS.length);
     expect(p.ship!.checks).toEqual(once.ship!.checks);
   });
 
@@ -201,9 +201,9 @@ describe("shipping in the app", () => {
     let s = reduce(built(), ev(10, "ship_started", { version: null, rollback: false }));
     expect(s.status).toBe("shipping");
     expect(shipRunning(s)).toBe(true);
-    expect(shipChecks(s.ship!.run).map((c) => c.status)).toEqual(["pending", "pending", "pending", "pending", "pending"]);
+    expect(shipChecks(s.ship!.run).map((c) => c.status)).toEqual(SHIP_CHECKS.map(() => "pending"));
     s = checks(11).slice(0, 3).reduce(reduce, s);
-    expect(shipChecks(s.ship!.run).map((c) => c.status)).toEqual(["passed", "running", "pending", "pending", "pending"]);
+    expect(shipChecks(s.ship!.run).map((c) => c.status)).toEqual(["passed", "running", ...SHIP_CHECKS.slice(2).map(() => "pending")]);
     expect(shipChecks(s.ship!.run).map((c) => c.label)).toEqual(SHIP_CHECKS.map((c) => c.label));
     s = checks(11).reduce(reduce, s);
     expect(s.ship!.run!.state).toBe("deploying");
@@ -216,6 +216,43 @@ describe("shipping in the app", () => {
     expect(s.feed.some((f) => f.text === "Version 1 is live at https://x.vercel.app." && f.tone === "good" && f.channel === "build")).toBe(true);
     expect(s.feed.filter((f) => f.text.startsWith("Finished:"))).toHaveLength(tallies);
     expect(s.history!.repo).toBe("https://github.com/me/studio-x");
+  });
+
+  it("lists security, accessibility and speed after the page check", () => {
+    expect(SHIP_CHECKS.map((c) => c.name)).toEqual(["types", "lint", "tests", "build", "pages", "security", "accessibility", "speed"]);
+    expect(SHIP_CHECKS.slice(5).map((c) => c.label)).toEqual(["Security", "Accessibility", "Speed"]);
+  });
+
+  it("a warning keeps its notes, the ship goes on, and the live message names it", () => {
+    const notes = "WARN [moderate] region: on /book phone\nPassed with warnings: 1 moderate problem.";
+    const table = "Page  Response  JS (gzip)\n/     40 ms     102 kB";
+    let s = reduce(built(), ev(10, "ship_started", { version: null, rollback: false }));
+    s = checks(11).map((e) => (e.data as { name?: string }).name === "accessibility" && (e.data as { status?: string }).status === "passed"
+      ? { ...e, data: { ...e.data, status: "warning", detail: notes } }
+      : (e.data as { name?: string }).name === "speed" && (e.data as { status?: string }).status === "passed"
+        ? { ...e, data: { ...e.data, detail: table } } : e).reduce(reduce, s);
+    const list = shipChecks(s.ship!.run);
+    expect(list.find((c) => c.name === "accessibility")).toEqual({ name: "accessibility", label: "Accessibility", status: "warning", detail: notes });
+    expect(list.find((c) => c.name === "speed")).toEqual({ name: "speed", label: "Speed", status: "passed", detail: table });
+    expect(s.ship!.run!.state).toBe("deploying");              // a warning counts as passed
+    s = reduce(s, ev(40, "ship_live", { url: "https://x.vercel.app", version: 1, tag: "v1", sha: "s1", rollback: false, database: "x-prod" }));
+    expect(s.feed.at(-1)!.text).toBe("Version 1 is live at https://x.vercel.app. Accessibility passed with warnings: see the Ship screen.");
+    expect(s.feed.at(-1)!.tone).toBe("good");
+  });
+
+  it("the project row keeps a warning's notes and deploys after it", () => {
+    const events = passAll(101).map(([k, d, t]) => (d.name === "speed" && d.status === "passed"
+      ? [k, { ...d, status: "warning", detail: "WARN /book: 450 kB of JS" }, t] : [k, d, t]) as [string, Record<string, unknown>, number]);
+    const p = play(queued(), [["ship_started", { version: null, rollback: false }, 100], ...events]);
+    expect(p.ship!.state).toBe("deploying");
+    expect(p.ship!.checks!.find((c) => c.name === "speed")).toEqual(
+      { name: "speed", label: "Speed", status: "warning", detail: "WARN /book: 450 kB of JS" });
+    expect(allChecksPassed(p.ship!.checks)).toBe(true);
+    expect(allChecksPassed(p.ship!.checks!.map((c) => (c.name === "speed" ? { ...c, status: "running" } : c)))).toBe(false);
+    // a running check carries no detail, and an unknown status counts as running
+    const q = play(queued(), [["ship_started", { version: null, rollback: false }, 100],
+                              ["ship_check", { name: "speed", label: "Speed", status: "weird", detail: "x" }, 101]]);
+    expect(q.ship!.checks).toEqual([{ name: "speed", label: "Speed", status: "running" }]);
   });
 
   it("a failed check shows its detail and says which check failed", () => {
@@ -236,7 +273,7 @@ describe("shipping in the app", () => {
     expect(s.status).toBe("done");
     expect(s.ship!.run!.state).toBe("failed");
     expect(s.ship!.versions).toEqual([]);
-    expect(shipChecks(s.ship!.run).slice(2).map((c) => c.status)).toEqual(["pending", "pending", "pending"]);
+    expect(shipChecks(s.ship!.run).slice(2).map((c) => c.status)).toEqual(SHIP_CHECKS.slice(2).map(() => "pending"));
   });
 
   it("a failure that isn't a check says so, and mentions production is as it was", () => {

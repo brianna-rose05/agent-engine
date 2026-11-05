@@ -11,8 +11,8 @@ import engine.ship
 from engine.deploy import DeployResult, deploy_production, production_name
 from engine.events import Emitter, ListSink
 from engine.interfaces import ExecResult
-from engine.ship import (CHECKS, DETAIL_CHARS, ShipError, check_commands, create_version_tag, next_version,
-                         plan_pages, run_checks, run_ship, version_sha)
+from engine.ship import (CHECKS, DETAIL_CHARS, INTEGRATION_CHECKS, WARN_EXIT, Check, ShipError, check_commands,
+                         create_version_tag, next_version, plan_pages, run_checks, run_ship, version_sha)
 from engine.stacks import NextSupabaseStack
 from tests.test_deploy import FakeVercel
 
@@ -133,7 +133,41 @@ def test_check_commands_are_the_stack_integration_check_in_order():
         ("tests", "All tests pass", "NO_COLOR=1 npx vitest run"),
         ("build", "Production build", "NEXT_TELEMETRY_DISABLED=1 npx next build"),
         ("pages", "Every page loads", "node scripts/check-app.mjs / /staff/schedule"),
+        ("security", "Security", "node scripts/check-security.mjs"),
+        ("accessibility", "Accessibility", "node scripts/check-a11y.mjs / /staff/schedule"),
+        ("speed", "Speed", "node scripts/check-speed.mjs / /staff/schedule"),
     ]
+    # the first five are exactly the integration check, so the two never drift
+    stack = NextSupabaseStack(link_node_modules=False)
+    assert " && ".join(c for _, _, c in cmds[:INTEGRATION_CHECKS]) == stack.integration_check_cmd(["/", "/staff/schedule"])
+    # every check script is a template file no task may own, and upgrades bring it to old projects
+    for _, _, cmd in cmds[INTEGRATION_CHECKS - 1:]:
+        script = cmd.split()[1]
+        assert script in stack.reserved and script in stack.template_files()
+    assert "scripts/app-server.mjs" in stack.reserved and "scripts/app-server.mjs" in stack.template_files()
+
+
+def test_check_commands_need_a_command_for_every_check():
+    class Partial(NextSupabaseStack):
+        def ship_check_cmds(self, pages):
+            return {"security": "node scripts/check-security.mjs", "speed": "node scripts/check-speed.mjs"}
+    with pytest.raises(ShipError, match="accessibility"):
+        check_commands(Partial(link_node_modules=False), PAGES)
+
+
+def test_checks_list_is_easy_to_extend(monkeypatch):
+    """A new check (the designer's review, say) is one entry in CHECKS plus its command from the stack."""
+    class WithDesign(NextSupabaseStack):
+        def ship_check_cmds(self, pages):
+            return {**super().ship_check_cmds(pages), "design": "node scripts/check-design.mjs"}
+    monkeypatch.setattr(engine.ship, "CHECKS", [*CHECKS, Check("design", "Design review", report=True)])
+    stack = WithDesign(link_node_modules=False)
+    assert check_commands(stack, PAGES)[-1] == ("design", "Design review", "node scripts/check-design.mjs")
+    sink, emit = collect()
+    box = FakeBox(fail={"check-design": (WARN_EXIT, "WARN low contrast on /book")})
+    assert run_checks(box, stack, PAGES, emit) is None
+    assert events(sink)[-1][1] == {"name": "design", "label": "Design review", "status": "warning",
+                                   "detail": "WARN low contrast on /book"}
 
 
 def test_plan_pages_reads_plan_json_and_falls_back_to_home(tmp_path):
@@ -151,8 +185,58 @@ def test_checks_run_in_order_and_all_pass(long):
     assert run_checks(box, stack, PAGES, emit) is None
     assert box.cmds == [c for _, _, c in check_commands(stack, PAGES)]
     got = [(d["name"], d["status"]) for k, d in events(sink)]
-    assert got == [(n, s) for n, _ in CHECKS for s in ("running", "passed")]
-    assert all("detail" not in d for _, d in events(sink))
+    assert got == [(c.name, s) for c in CHECKS for s in ("running", "passed")]
+    # a passed check has no detail, except the ones that report a summary (security, accessibility, speed)
+    with_detail = {d["name"] for _, d in events(sink) if "detail" in d}
+    assert with_detail == {c.name for c in CHECKS if c.report} == {"security", "accessibility", "speed"}
+    assert all(d["detail"] == "ok" for _, d in events(sink) if "detail" in d)
+
+
+def test_warnings_dont_stop_the_ship_but_a_failed_later_check_does(monkeypatch):
+    monkeypatch.setenv("VERCEL_TOKEN", "vtok-abcdef123456")
+    a11y = "x" * 5000 + f"\nWARN [moderate] region: on /book phone\nPassed with warnings: 1 problem. {ADMIN} vtok-abcdef123456"
+    sink, emit = collect()
+    box = FakeBox(fail={"check-security": (WARN_EXIT, "WARN dependency: moderate postcss"),
+                        "check-a11y": (WARN_EXIT, a11y),
+                        "check-speed": (1, "FAIL /book: 1400 kB of JS (limit 1024 kB)\nSpeed check failed")})
+    assert run_checks(box, NextSupabaseStack(link_node_modules=False), PAGES, emit, (ADMIN,)) == "speed"
+    got = [(d["name"], d["status"]) for _, d in events(sink)]
+    assert got[-6:] == [("security", "running"), ("security", "warning"), ("accessibility", "running"),
+                        ("accessibility", "warning"), ("speed", "running"), ("speed", "failed")]
+    detail = events(sink)[-3][1]["detail"]                      # accessibility's notes: scrubbed and short
+    assert len(detail) <= DETAIL_CHARS and "WARN [moderate] region" in detail
+    assert "pw-Sup3rSecret" not in detail and "vtok-abcdef123456" not in detail and "neon.tech" not in detail
+    assert events(sink)[-1][1]["detail"].startswith("FAIL /book: 1400 kB")
+
+
+def test_only_the_reporting_checks_can_pass_with_warnings():
+    """Exit code 10 from tsc or the build is a failure like any other: only the new checks use it for warnings."""
+    sink, emit = collect()
+    box = FakeBox(fail={"npx tsc": (WARN_EXIT, "error TS1")})
+    assert run_checks(box, NextSupabaseStack(link_node_modules=False), PAGES, emit) == "types"
+    assert events(sink)[-1][1]["status"] == "failed"
+
+
+def test_a_ship_with_warnings_goes_live(repos):
+    work, _ = repos
+    f = Fakes()
+    f.box = FakeBox(fail={"check-a11y": (WARN_EXIT, "Passed with warnings: 2 moderate problems")})
+    status, evs = ship(work, f)
+    assert status == "live" and f.deployed[0]["ref"] == "v1"
+    warned = [d for k, d in evs if k == "ship_check" and d["status"] == "warning"]
+    assert warned == [{"name": "accessibility", "label": "Accessibility", "status": "warning",
+                       "detail": "Passed with warnings: 2 moderate problems"}]
+
+
+def test_a_failed_security_check_ships_nothing_and_says_which(repos):
+    work, _ = repos
+    f = Fakes()
+    f.box = FakeBox(fail={"check-security": (1, "FAIL secret: src/lib/keys.ts:3: private key\nSecurity check failed")})
+    status, evs = ship(work, f)
+    assert status == "failed" and evs[-1][1]["check"] == "security"
+    assert "security check failed" in evs[-1][1]["reason"].lower()
+    assert not any("check-a11y" in c or "check-speed" in c for c in f.box.cmds)
+    assert not f.deployed and next_version(work) == 1
 
 
 def test_checks_stop_at_the_first_failure_with_a_short_scrubbed_detail(monkeypatch):
@@ -210,7 +294,7 @@ def test_a_new_ship_checks_provisions_tags_and_deploys_the_tag(repos):
     status, evs = ship(work, f)
     assert status == "live"
     kinds = [k for k, _ in evs]
-    assert kinds == ["ship_started"] + ["ship_check"] * 10 + ["ship_live"]
+    assert kinds == ["ship_started"] + ["ship_check"] * 2 * len(CHECKS) + ["ship_live"]
     assert evs[0][1] == {"version": None, "rollback": False}
     sha = sh(["rev-parse", "main"], work)
     assert f.box.cmds[0] == f"git checkout -q {sha}" and f.box.exited          # checks ran on the tagged commit
@@ -370,7 +454,7 @@ def test_worker_ship_mode_end_to_end_without_network(repos, tmp_path, monkeypatc
     code, sent, upgraded, previews, f = run_worker(monkeypatch, tmp_path, bare, {"from": "done", "rollbackTo": None})
     kinds = [k for k, _ in sent]
     assert code == 0
-    assert kinds == ["ship_started"] + ["ship_check"] * 10 + ["ship_live", "project_finished"]
+    assert kinds == ["ship_started"] + ["ship_check"] * 2 * len(CHECKS) + ["ship_live", "project_finished"]
     assert sent[-1][1] == {"status": "done", "repo": str(bare)}
     assert sent[-2][1]["tag"] == "v1" and sent[-2][1]["database"] == "app_remote_git_prod"
     assert upgraded == [0]                                       # the template update came before the tag

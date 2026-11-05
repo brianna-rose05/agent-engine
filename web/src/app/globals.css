@@ -32,6 +32,8 @@
   --color-you: #bf4468;
   --color-check-bg: #fdf4de;
   --color-check: #9c6f12;
+  --color-warn-bg: #fff4dc;
+  --color-warn: #9a5b00;
   --color-bad-bg: #ffecec;
   --color-bad: #c03a3a;
 }

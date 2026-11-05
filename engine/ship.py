@@ -4,8 +4,9 @@ See docs/ship.md.
     status = run_ship(repo, "studio-garden-ab12cd", events.emit, stack=stack, open_box=lambda: DaytonaSandbox(...))
     # -> "live" or "failed"; every step is an event (ship_started, ship_check..., ship_live | ship_failed)
 
-A new ship runs five checks in one sandbox on main (no agents, no model spend), stopping at the first that
-fails; then provisions the production database `app_<slug>_prod` (POSTGRES_ADMIN_URL is required: production
+A new ship runs the checks (CHECKS: types, lint, tests, build, pages, security, accessibility, speed) in one
+sandbox on main (no agents, no model spend), stopping at the first that fails (a check that passes with warnings
+doesn't stop it); then provisions the production database `app_<slug>_prod` (POSTGRES_ADMIN_URL is required: production
 never runs on the in-memory local mode); then tags main as the next version `v<n>` (annotated, pushed, never
 forced, moved or deleted once pushed); then deploys that tag to the production Vercel project.
 A rollback (`rollback_to=n`) skips the checks and the tagging and deploys the existing tag `v<n>`.
@@ -21,7 +22,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NamedTuple
 
 from engine.databases import database_name, provision_database
 from engine.databases import scrub as scrub_urls
@@ -30,13 +31,31 @@ from engine.engine import git
 from engine.gitlock import repo_lock
 
 TAG_PREFIX = "v"
-DETAIL_CHARS = 1500                 # the end of a failed check's output, shown in the app
+DETAIL_CHARS = 1500                 # the end of a check's output, shown in the app
 REASON_CHARS = 300
 CHECK_TIMEOUT_S = 15 * 60
 BUILD_TIMEOUT_S = 25 * 60
-# (name, label) of each check, in order; the commands are the pieces of the stack's integration check
-CHECKS = [("types", "Types check"), ("lint", "Lint"), ("tests", "All tests pass"),
-          ("build", "Production build"), ("pages", "Every page loads")]
+# A check's command exits with this code when it passed with notes: the ship goes on, and the app shows the notes
+# (status "warning"). Any other non-zero code fails the check. The template's scripts/app-server.mjs has the same.
+WARN_EXIT = 10
+
+
+class Check(NamedTuple):
+    """One ship check. The first five commands are the pieces of the stack's integration check; the others come
+    from stack.ship_check_cmds(pages) by name. `report`: its output is shown even when it passes (a summary)."""
+    name: str
+    label: str
+    timeout: int = CHECK_TIMEOUT_S
+    report: bool = False
+
+
+# Every check, in order. To add one: append it here, return its command from the stack's ship_check_cmds, and add
+# it to SHIP_CHECKS in web/convex/ship.ts (same name and label).
+CHECKS = [Check("types", "Types check"), Check("lint", "Lint"), Check("tests", "All tests pass"),
+          Check("build", "Production build", BUILD_TIMEOUT_S), Check("pages", "Every page loads"),
+          Check("security", "Security", report=True), Check("accessibility", "Accessibility", report=True),
+          Check("speed", "Speed", report=True)]
+INTEGRATION_CHECKS = 5              # how many of CHECKS are the integration check's pieces
 # Values of these settings are scrubbed from everything a ship reports
 SECRET_ENV = ("POSTGRES_ADMIN_URL", "VERCEL_TOKEN", "GITHUB_TOKEN", "PROJECTS_GITHUB_TOKEN", "ANTHROPIC_API_KEY",
               "DAYTONA_API_KEY", "CONVEX_DEPLOY_KEY", "BENCH_GITHUB_TOKEN")
@@ -59,11 +78,18 @@ def scrub(text: str, *secrets: str) -> str:
 
 # -------------------------------------------------------------------- checks
 def check_commands(stack, pages: list[str]) -> list[tuple[str, str, str]]:
-    """(name, label, command) per check, split from the stack's own integration check so the two never drift."""
+    """(name, label, command) per check: the first ones split from the stack's own integration check so the two
+    never drift, the rest (security, accessibility, speed...) from stack.ship_check_cmds(pages)."""
     parts = [p.strip() for p in stack.integration_check_cmd(pages).split(" && ")]
-    if len(parts) != len(CHECKS):
-        raise ShipError(f"expected {len(CHECKS)} checks in the stack's integration check, found {len(parts)}")
-    return [(name, label, cmd) for (name, label), cmd in zip(CHECKS, parts)]
+    if len(parts) != INTEGRATION_CHECKS:
+        raise ShipError(f"expected {INTEGRATION_CHECKS} checks in the stack's integration check, found {len(parts)}")
+    extra = getattr(stack, "ship_check_cmds", lambda _pages: {})(pages)
+    cmds = dict(zip([c.name for c in CHECKS], parts))
+    for c in CHECKS[INTEGRATION_CHECKS:]:
+        if not extra.get(c.name):
+            raise ShipError(f"the stack has no command for the {c.label.lower()} check")
+        cmds[c.name] = extra[c.name]
+    return [(c.name, c.label, cmds[c.name]) for c in CHECKS]
 
 
 def plan_pages(repo: Path) -> list[str]:
@@ -83,20 +109,27 @@ def _tail(output: str, *secrets: str) -> str:
 
 def run_checks(box, stack, pages: list[str], emit: Callable, secrets: tuple[str, ...] = ()) -> str | None:
     """Runs the checks in order in `box` (a sandbox on the version to ship), emitting ship_check running, then
-    passed or failed, for each. Stops at the first failure. Returns the failed check's name, or None."""
+    passed, warning (passed with notes: exit code WARN_EXIT) or failed, for each. A warning doesn't stop the ship;
+    the first failure does. Returns the failed check's name, or None."""
     run = getattr(box, "exec_long", None)
+    spec = {c.name: c for c in CHECKS}
     for name, label, cmd in check_commands(stack, pages):
         emit("ship_check", name=name, label=label, status="running")
-        timeout = BUILD_TIMEOUT_S if name == "build" else CHECK_TIMEOUT_S
+        timeout = spec[name].timeout
         try:
             r = run(cmd, timeout=timeout) if run else box.exec(cmd, timeout=timeout)
             code, output = r.code, r.output
         except Exception as e:                  # the sandbox itself failed: this check didn't pass
             code, output = 1, f"{type(e).__name__}: {e}"
-        if code != 0:
+        if code == WARN_EXIT and spec[name].report:
+            emit("ship_check", name=name, label=label, status="warning", detail=_tail(output, *secrets))
+        elif code != 0:
             emit("ship_check", name=name, label=label, status="failed", detail=_tail(output, *secrets))
             return name
-        emit("ship_check", name=name, label=label, status="passed")
+        elif spec[name].report and (detail := _tail(output, *secrets)):
+            emit("ship_check", name=name, label=label, status="passed", detail=detail)
+        else:
+            emit("ship_check", name=name, label=label, status="passed")
     return None
 
 
@@ -198,7 +231,7 @@ def run_ship(repo: Path, slug: str, emit: Callable, *, stack=None, rollback_to: 
                 except Exception as e:      # the sandbox deletes itself when idle; the ship goes on
                     log(f"ship: couldn't delete the check sandbox ({type(e).__name__}); check the Daytona dashboard")
             if failed:
-                label = dict(CHECKS).get(failed, failed)
+                label = {c.name: c.label for c in CHECKS}.get(failed, failed)
                 return fail(f"The {label.lower()} check failed, so nothing was shipped. Fix it and ship again.",
                             check=failed)
 
