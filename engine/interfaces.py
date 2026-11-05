@@ -32,6 +32,13 @@ class Task:
     # stop_when(claim) -> a reason when the agent's final claim means this task can't be done this way (a quick change
     # that needs a change request): the task ends "blocked" with that reason, without checks or more tries.
     stop_when: Callable[[str], str | None] | None = field(default=None, repr=False)
+    # review_failure(attempts, diff) -> the tech lead's verdict, once the last attempt has failed (docs/tech-lead.md):
+    # {"decision": "retry" | "escalate", "note", "question", "stronger_model", "tech_lead_error"?}. `attempts` are the
+    # engine's Attempt records, `diff` the last failed attempt's changes. None: no review (the task fails as before).
+    review_failure: Callable[[list, str], dict] | None = field(default=None, repr=False)
+    # The dev agent for the tech lead's extra attempts when it asks for a stronger model (never used otherwise).
+    stronger_agent: object | None = field(default=None, repr=False)
+    first_feedback: str | None = None                           # feedback for this run's first attempt (owner's answer)
 
 
 class SandboxUnavailable(RuntimeError):

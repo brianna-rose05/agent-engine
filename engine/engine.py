@@ -19,6 +19,13 @@ from engine.gitlock import repo_lock
 from engine.interfaces import Agent, Sandbox, SandboxLost, SandboxUnavailable, Task
 
 MAX_ATTEMPTS = 3
+EXTRA_ATTEMPTS = 2             # tries the tech lead can add after reviewing a failed task (docs/tech-lead.md)
+MAX_DIFF_CHARS = 8000          # of the last failed attempt's diff, for the tech lead
+STRONGEST_MODELS = ("sonnet",)  # the strongest dev model the tech lead may switch to (never opus)
+TECH_LEAD_FAILED_QUESTION = ("The tech lead couldn't review this feature after the dev's tries failed. Should the team "
+                             "try again as it is, or should the feature be described differently or dropped?")
+RETRY_FAILED_QUESTION = ("The dev still couldn't finish this feature after the tech lead's guidance. How exactly "
+                         "should it work, or should it be simplified or dropped?")
 OK = ("merged", "passed")      # statuses that let dependent tasks start
 
 
@@ -181,10 +188,11 @@ class Engine:
 
     def _run_task(self, task: Task) -> Result:
         res = Result(task.id, task.title)
-        feedback = None
+        feedback = task.first_feedback               # e.g. the owner's answer to the tech lead's question
         emit = self.events.emit
         agent = task.agent or self.agent
         disputes, last_fixed = 0, False
+        review, last_diff = None, ""                 # the tech lead's verdict (once per task), the last failed diff
         try:
             verdict = task.already_done() if task.already_done is not None else None
             if verdict == "unconfirmed" and self._out_of_budget(res):
@@ -239,6 +247,8 @@ class Engine:
                         res.status = self.merge(box.branch, task.id)
                         return res
                     feedback = f"Your previous attempt was rejected: {reason}." + (f"\nTest output:\n{out}" if out else "")
+                    if task.review_failure is not None:      # for the tech lead, before the sandbox is gone
+                        last_diff = self._attempt_diff(box)
                 if attempts.redo:                    # the sandbox dropped mid-attempt: run that attempt again
                     continue
                 # One review per task, plus a second when the first found and fixed bad tests (they often come in
@@ -246,7 +256,7 @@ class Engine:
                 # feature to two more tests whose setup the schema refused.
                 may_dispute = disputes == 0 or (disputes == 1 and last_fixed)
                 if (not ok and reason == "acceptance tests failed" and task.dispute and may_dispute
-                        and n < (task.max_attempts or self.max_attempts)):
+                        and n < attempts.limit):
                     # A referee (a different model from the one that wrote the tests) checks the failing tests
                     # against the spec before the next try. Regression: in both live builds, features were
                     # lost to QA tests that contradicted the spec while the dev's code was right.
@@ -265,9 +275,65 @@ class Engine:
                                     "they have been corrected. Implement the task exactly as the doc comments say.")
                     else:
                         feedback += "\nA reviewer checked these tests against the spec and confirmed they are right."
+                if n == attempts.limit and task.review_failure is not None and review is None:
+                    # Every try failed. Before giving up, the tech lead (a stronger model than a Haiku dev) reviews
+                    # the attempts once: up to two more tries with its guidance, or one question for the owner.
+                    # Regression: Pawfect build 7 ended 24/25 with a failed feature and no explanation.
+                    review = self._review(task, res, last_diff, agent)
+                    if review is None:                   # the budget kept the review from happening
+                        return res
+                    if review["decision"] != "retry":
+                        return self._escalate(res, review["question"])
+                    attempts.limit += EXTRA_ATTEMPTS     # attempt numbers go on: 4, 5
+                    agent = review.get("agent") or agent
+                    feedback = f"Your tech lead reviewed the failed attempts: {review['note']}\n{feedback}"
+            if review is not None:                       # the tech lead's extra tries failed too: no second review
+                return self._escalate(res, review.get("question") or RETRY_FAILED_QUESTION)
             res.status = "failed"
         except Exception as e:                                  # infra problems are reported, not hidden
             res.status, res.error = "error", f"{type(e).__name__}: {e}"
+        return res
+
+    def _attempt_diff(self, box: Sandbox) -> str:
+        """The failed attempt's changes against the commit it started from, new files included, for the tech
+        lead. Never fails the attempt (the sandbox is about to close anyway)."""
+        try:
+            r = box.exec("git add -A -N . >/dev/null 2>&1; git diff $(git merge-base HEAD main)")
+        except Exception:
+            return ""
+        diff = r.output
+        return diff if len(diff) <= MAX_DIFF_CHARS else diff[:MAX_DIFF_CHARS - 20] + "\n... (diff cut)"
+
+    def _review(self, task: Task, res: Result, diff: str, agent) -> dict | None:
+        """Run the task's tech lead review and tell the app. Returns the verdict (normalize_review), with "agent"
+        set when the extra tries should use the stronger dev agent; None when the budget stopped it (the result
+        is then marked stopped, as for any attempt the budget keeps from starting)."""
+        if self._out_of_budget(res):
+            return None
+        self.events.emit("task_status", task.id, status="reviewing", attempt=res.attempts[-1].n)
+        try:
+            v = task.review_failure(list(res.attempts), diff)
+        except Exception as e:
+            v = {"decision": "escalate", "note": f"{type(e).__name__}: {e}", "tech_lead_error": True}
+        v = normalize_review(v)
+        if v.get("tech_lead_error") and self._out_of_budget(res):
+            return None                              # the reviewer was stopped by the budget, not broken
+        event = {"decision": v["decision"], "note": v["note"], "stronger_model": v["stronger_model"]}
+        if v["decision"] == "escalate":
+            event["question"] = v["question"]
+        if v.get("tech_lead_error"):
+            event["tech_lead_error"] = True
+        stronger = task.stronger_agent
+        if v["stronger_model"] and stronger is not None and stronger is not agent and not _strongest(agent):
+            v["agent"] = stronger
+            event["model"] = getattr(stronger, "model", None) or "sonnet"
+        self.events.emit("tech_lead_review", task.id, **event)
+        return v
+
+    def _escalate(self, res: Result, question: str) -> Result:
+        """The task ends failed with one question for the owner (the app shows it with an answer box)."""
+        self.events.emit("escalated", res.task, question=question)
+        res.status, res.error = "failed", f"Needs you: {question}"[:300]
         return res
 
     def _out_of_budget(self, res: Result) -> bool:
@@ -421,6 +487,29 @@ class _Activity:
         self.emit(notes)
 
 
+def normalize_review(v) -> dict:
+    """A tech lead verdict the engine can act on, whatever came back: {decision, note, question, stronger_model,
+    tech_lead_error?}. Anything unusable is an escalation with tech_lead_error, so a broken review never
+    quietly retries or drops the task."""
+    if not isinstance(v, dict) or v.get("decision") not in ("retry", "escalate"):
+        v = {"decision": "escalate", "note": v.get("note", "") if isinstance(v, dict) else "", "tech_lead_error": True}
+    out = {"decision": v["decision"], "note": " ".join(str(v.get("note") or "").split())[:1500],
+           "stronger_model": v.get("stronger_model") is True and v["decision"] == "retry"}
+    question = " ".join(str(v.get("question") or "").split())
+    if v.get("tech_lead_error"):
+        out["tech_lead_error"], question = True, TECH_LEAD_FAILED_QUESTION
+    elif out["decision"] == "escalate" and not question:
+        question = TECH_LEAD_FAILED_QUESTION
+    out["question"] = question[:280]                  # "Needs you: " + question fits Result.error's 300
+    return out
+
+
+def _strongest(agent) -> bool:
+    """True when the agent already runs the strongest model the tech lead may pick (or a stronger one)."""
+    model = str(getattr(agent, "model", "") or "").lower()
+    return any(m in model for m in (*STRONGEST_MODELS, "opus"))
+
+
 def _takes(fn, name: str) -> bool:
     try:
         params = inspect.signature(fn).parameters
@@ -431,7 +520,8 @@ def _takes(fn, name: str) -> bool:
 
 class _Attempts:
     """Attempt numbers 1..limit. An attempt whose sandbox was lost (`redo` set) runs again under the same
-    number, so infrastructure failures never use up the agent's tries."""
+    number, so infrastructure failures never use up the agent's tries. `limit` may grow while iterating (the tech
+    lead's extra tries): the numbers then go on from where they were."""
 
     def __init__(self, limit: int):
         self.limit, self.redo, self.infra_used = limit, False, 0

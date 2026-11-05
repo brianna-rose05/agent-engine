@@ -916,3 +916,158 @@ def test_old_web_projects_get_current_template_files_but_keep_their_pages(tmp_pa
     assert git(repo, "rev-parse", "HEAD~1").strip() == before                  # exactly one new commit
     assert upgrade_template(repo, stack) == []                                 # nothing to do the second time
     assert default_stack().template_files() == {}
+
+
+# --------------------------------------------------------------------------- tech lead (docs/tech-lead.md)
+class NeverFixesT2(ScriptedTeam):
+    """Gets every feature right except late fees (T2), on every try."""
+    def run(self, task, box, attempt, feedback):
+        rep = super().run(task, box, attempt, feedback)
+        if task.id == "T2":
+            box.write_file("fees.py", "def late_fee_cents(loan, tool, today):\n    return 1\n")
+        return rep
+
+
+class TechLead:
+    """Writes a verdict file the way a model might: inside a code fence, with words around it."""
+    model = "sonnet"
+
+    def __init__(self, verdict: str):
+        self.verdict, self.seen = verdict, []
+
+    def run(self, task, box, attempt, feedback):
+        self.seen.append((task, box.exec("cat acceptance/test_fees.py").output))
+        box.write_file(f"review/{task.id.removesuffix('-techlead')}-techlead.json", self.verdict)
+        return AgentReport("done")
+
+
+def go_lead(tmp_path, team, tech_lead, stronger_dev=None):
+    from engine.events import Emitter, ListSink
+    sink = ListSink()
+    repo = build_project_repo(tmp_path / "r")
+    eng = Engine(repo, team, lambda t, n: LocalWorktreeSandbox(repo, t.id, n), events=Emitter(sink))
+    _, results = run_project(DESCRIPTION, repo, eng, python=sys.executable, tech_lead=tech_lead,
+                             stronger_dev=stronger_dev)
+    return repo, {r.task: r for r in results}, sink.events
+
+
+def test_tech_lead_reviews_a_failed_feature_and_its_retry_on_a_stronger_dev_merges(tmp_path):
+    verdict = ('Here is my verdict:\n```json\n{"decision": "retry", "note": "late_fee_cents must charge 300 cents per '
+               'day late, capped at 5000.", "stronger_model": "true"}\n```\n')
+    lead = TechLead(verdict)
+    repo, res, events = go_lead(tmp_path, NeverFixesT2(FIXTURE), lead, stronger_dev=ScriptedTeam(FIXTURE))
+    assert res["T2"].status == "merged" and [a.n for a in res["T2"].attempts] == [1, 2, 3, 4]
+    assert res["T3"].status == "merged"                                    # no longer blocked
+    assert len(lead.seen) == 1
+    task, tests_seen = lead.seen[0]
+    assert task.id == "T2-techlead" and task.role == "tech_lead" and not task.merge and task.max_attempts == 1
+    assert "def test_" in tests_seen                                      # the hidden tests, written in for it
+    assert "acceptance/test_fees.py" in task.spec and "review/T2-techlead.json" in task.spec
+    assert "+    return 1" in task.spec                                   # the last failed attempt's diff
+    assert "Attempt 3: acceptance tests failed" in task.spec and "late_fee_cents for one loan" in task.spec
+    review = [e.data for e in events if e.kind == "tech_lead_review"]
+    assert review == [{"decision": "retry", "note": "late_fee_cents must charge 300 cents per day late, capped at 5000.",
+                       "stronger_model": True, "model": "sonnet"}]
+    assert not [e for e in events if e.kind == "escalated"]
+    assert "review/" not in git(repo, "ls-tree", "-r", "--name-only", "main")       # nothing of it merged
+    assert "acceptance" not in git(repo, "ls-tree", "-r", "--name-only", "main")
+
+
+def test_tech_lead_question_reaches_the_owner(tmp_path):
+    q = "Should late fees stop at $50, as the description says, or keep growing?"
+    lead = TechLead(json.dumps({"decision": "escalate", "note": "The cap is unclear.", "question": q}))
+    _, res, events = go_lead(tmp_path, NeverFixesT2(FIXTURE), lead)
+    assert res["T2"].status == "failed" and res["T2"].error == f"Needs you: {q}" and len(res["T2"].attempts) == 3
+    assert [e.data for e in events if e.kind == "escalated"] == [{"question": q}]
+    assert [e.task_id for e in events if e.kind == "escalated"] == ["T2"]
+    assert res["T3"].status == "blocked"
+
+
+@pytest.mark.parametrize("verdict", ["", "not json", '{"decision": "retry"}', '{"decision": "escalate", "note": "x"}'])
+def test_a_missing_or_invalid_verdict_file_escalates_with_tech_lead_error(tmp_path, verdict):
+    from engine.engine import TECH_LEAD_FAILED_QUESTION
+    _, res, events = go_lead(tmp_path, NeverFixesT2(FIXTURE), TechLead(verdict))
+    assert res["T2"].status == "failed" and res["T2"].error == f"Needs you: {TECH_LEAD_FAILED_QUESTION}"
+    review = [e.data for e in events if e.kind == "tech_lead_review"]
+    assert len(review) == 1 and review[0]["tech_lead_error"] is True and review[0]["decision"] == "escalate"
+
+
+def test_parse_tech_lead_verdict():
+    from engine.project import parse_tech_lead_verdict as parse
+    assert parse('{"decision": "Retry", "note": " fix  it ", "stronger_model": true}') == {
+        "decision": "retry", "note": "fix it", "question": "", "stronger_model": True}
+    assert parse('x {"decision": "escalate", "question": "A or B?", "stronger_model": true} y') == {
+        "decision": "escalate", "note": "", "question": "A or B?", "stronger_model": False}
+    assert parse('{"decision": "retry", "note": "n", "stronger_model": "no"}')["stronger_model"] is False
+    for bad in ("", "[1]", "{", '{"decision": "retry"}', '{"decision": "escalate"}', '{"decision": "skip", "note": "n"}'):
+        assert parse(bad) is None, bad
+
+
+def test_only_feature_dev_tasks_get_the_tech_lead(tmp_path):
+    from engine.project import resume_tasks, tasks_from_change
+    from engine.quick import quick_task
+    from engine.stacks import NextSupabaseStack
+    eng = Engine(tmp_path, ScriptedTeam(FIXTURE), lambda t, n: None)
+    lead, strong, ref = object(), object(), object()
+    tasks = {t.id: t for t in tasks_from_plan(PLAN, sys.executable, engine=eng, referee=ref, tech_lead=lead,
+                                              stronger_dev=strong)}
+    for tid in ("T1", "T2", "T3"):
+        assert tasks[tid].review_failure is not None and tasks[tid].stronger_agent is strong
+        assert tasks[f"{tid}-qa"].review_failure is None
+    # without a tech lead (offline runs, the benchmark): no review, exactly as before
+    assert all(t.review_failure is None for t in tasks_from_plan(PLAN, sys.executable, engine=eng, referee=ref))
+    # change requests: both kinds of task ("change" and "new") get it
+    change = {r.id: r for r in tasks_from_change(CHANGE, PLAN, default_stack(sys.executable), engine=eng,
+                                                 referee=ref, tech_lead=lead)}
+    assert {tid for tid, t in change.items() if t.review_failure} == {t["id"] for t in CHANGE["tasks"]}
+    # the integrator and quick changes never do
+    web_plan = json.loads((WEB / "plan" / "plan.json").read_text())
+    stack = NextSupabaseStack(link_node_modules=False)
+    todo = resume_tasks(web_plan, "x", stack, set(), engine=eng, tech_lead=lead)
+    assert next(t for t in todo if t.id == "INT").review_failure is None
+    assert any(t.review_failure for t in todo)
+    assert quick_task(1, "Make the heading green", web_plan, stack).review_failure is None
+
+
+def test_owner_answers_become_the_first_feedback_of_that_feature_only():
+    from engine.project import owner_feedback, resume_tasks
+    answers = {"T2": "Stop at $50.", "T1": "merged already", "T3-qa": "never for QA"}
+    todo = {t.id: t for t in resume_tasks(PLAN, DESCRIPTION, default_stack(sys.executable), {"PLAN", "T1"},
+                                          answers=answers)}
+    assert set(todo) == {"T2-qa", "T2", "T3-qa", "T3"}
+    assert todo["T2"].first_feedback == "The project owner answered the tech lead's question: Stop at $50."
+    assert todo["T2-qa"].first_feedback is None and todo["T3"].first_feedback is None
+    assert todo["T3-qa"].first_feedback is None
+    assert owner_feedback("  yes  ", "Cap at $50?") == "The project owner answered the tech lead's question (Cap at $50?): yes"
+    assert len(owner_feedback("x" * 5000)) < 2100
+
+
+def test_an_owner_answer_reaches_the_dev_on_a_retry(tmp_path):
+    from engine.project import resume_project
+    repo = build_project_repo(tmp_path / "r")
+    eng = Engine(repo, NeverFixesT2(FIXTURE), lambda t, n: LocalWorktreeSandbox(repo, t.id, n))
+    plan, results = run_project(DESCRIPTION, repo, eng, python=sys.executable)
+    assert {r.task: r.status for r in results}["T2"] == "failed"
+    seen = []
+
+    class Records(ScriptedTeam):
+        def run(self, task, box, attempt, feedback):
+            seen.append((task.id, attempt, feedback))
+            return super().run(task, box, attempt, feedback)
+
+    eng2 = Engine(repo, Records(FIXTURE), lambda t, n: LocalWorktreeSandbox(repo, t.id, n))
+    again = {r.task: r.status for r in resume_project(plan, DESCRIPTION, repo, eng2, {"PLAN", "T1"},
+                                                     stack=default_stack(sys.executable),
+                                                     answers={"T2": "Stop at $50."})}
+    assert again["T2"] == "merged" and again["T3"] == "merged"
+    assert ("T2", 1, "The project owner answered the tech lead's question: Stop at $50.") in seen
+    assert all(f is None for tid, n, f in seen if tid != "T2")
+
+
+def test_worker_reads_owner_answers_and_builds_sonnet_tech_lead_agents():
+    from worker import owner_answers, tech_lead_agents
+    assert owner_answers({}) == {} and owner_answers({"answers": None}) == {} and owner_answers({"answers": "x"}) == {}
+    assert owner_answers({"answers": {"T2": "  Stop at $50. ", "T3": "", "T4": 5, "T5": "y" * 3000}}) == {
+        "T2": "Stop at $50.", "T5": "y" * 2000}
+    lead, dev = tech_lead_agents(0.5)
+    assert lead.model == dev.model == "sonnet" and lead is not dev and lead.budget_usd == 0.5

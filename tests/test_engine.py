@@ -1,6 +1,8 @@
 """End-to-end engine behavior with real git, local sandboxes, and scripted agents."""
 import subprocess
 
+import pytest
+
 from benchmark.suite import HERE, build_repo, load_tasks
 from engine.agents.scripted import ReferenceAgent, SloppyAgent
 from engine.engine import Engine
@@ -415,3 +417,220 @@ def test_a_failed_commit_is_an_error_not_a_silent_merge(tmp_path):
                  " && chmod +x hooks/pre-commit")
         with pytest.raises(RuntimeError, match="commit failed"):
             box.publish("blocked by a hook")
+
+
+# ------------------------------------------------------------------ tech lead (docs/tech-lead.md)
+BROKEN_PAYMENTS = "from store import *  # noqa\n\n# looks finished, isn't\n"
+
+
+class NeverFixes:
+    """A Haiku-like dev that never gets B6 right; it also adds a test file of its own (a new, untracked file)."""
+    model = "haiku"
+
+    def __init__(self, cost=0.0):
+        self.seen, self.cost = [], cost
+
+    def run(self, task, box, attempt, feedback):
+        self.seen.append((attempt, feedback))
+        box.write_file("payments.py", BROKEN_PAYMENTS)
+        box.write_file("tests/agent_test_payments_mine.py", "def test_mine():\n    assert True\n")
+        return AgentReport("done", cost_usd=self.cost)
+
+
+class Stronger(ReferenceAgent):
+    model = "sonnet"
+
+    def __init__(self):
+        super().__init__(HERE / "solutions")
+        self.seen = []
+
+    def run(self, task, box, attempt, feedback):
+        self.seen.append((attempt, feedback))
+        return super().run(task, box, attempt, feedback)
+
+
+def lead_task(verdict, calls, stronger=None):
+    task = load_tasks(["B6"])[0]
+
+    def review(attempts, diff):
+        calls.append((list(attempts), diff))
+        if isinstance(verdict, Exception):
+            raise verdict
+        return verdict
+    task.review_failure, task.stronger_agent = review, stronger
+    return task
+
+
+def lead_engine(repo, agent, budget=None):
+    from engine.events import Emitter, ListSink
+    sink = ListSink()
+    return Engine(repo, agent, lambda t, n: LocalWorktreeSandbox(repo, t.id, n), events=Emitter(sink),
+                  budget=budget), sink
+
+
+def kinds(sink, *names):
+    return [(e.kind, e.data) for e in sink.events if e.kind in names]
+
+
+def test_tech_lead_retry_on_a_stronger_model_succeeds_on_attempt_4(tmp_path):
+    """Pawfect build 7 ended 24/25: a feature failed its 3 tries and the owner got no explanation. Now the tech lead
+    reviews it first; its retry runs on the stronger dev agent with its note, and the attempt numbers go on."""
+    repo = build_repo(tmp_path / "r")
+    calls, dev, strong = [], NeverFixes(), Stronger()
+    verdict = {"decision": "retry", "note": "Use the deposit rule from the doc comment.", "stronger_model": True}
+    eng, sink = lead_engine(repo, dev)
+    r = eng.run_task(lead_task(verdict, calls, strong))
+    assert r.status == "merged" and [a.n for a in r.attempts] == [1, 2, 3, 4]
+    assert [s[0] for s in dev.seen] == [1, 2, 3] and [s[0] for s in strong.seen] == [4]
+    fb = strong.seen[0][1]
+    assert fb.startswith("Your tech lead reviewed the failed attempts: Use the deposit rule from the doc comment.")
+    assert "acceptance tests failed" in fb                                   # ...plus the last failure
+    assert len(calls) == 1 and [a.n for a in calls[0][0]] == [1, 2, 3]
+    assert ("task_status", {"status": "reviewing", "attempt": 3}) in kinds(sink, "task_status")
+    assert kinds(sink, "tech_lead_review") == [("tech_lead_review", {
+        "decision": "retry", "note": "Use the deposit rule from the doc comment.", "stronger_model": True,
+        "model": "sonnet"})]
+    assert not kinds(sink, "escalated")
+    statuses = [e.data.get("status") for e in sink.events if e.kind == "task_status"]
+    assert statuses.index("reviewing") < statuses.index("working", statuses.index("reviewing"))
+    assert [e.data["n"] for e in sink.events if e.kind == "attempt_finished"] == [1, 2, 3, 4]
+
+
+def test_the_last_failed_diff_reaches_the_tech_lead_new_files_included(tmp_path):
+    repo = build_repo(tmp_path / "r")
+    calls = []
+    eng, _ = lead_engine(repo, NeverFixes())
+    eng.run_task(lead_task({"decision": "escalate", "question": "Q?"}, calls))
+    attempts, diff = calls[0]
+    assert "+# looks finished, isn't" in diff and "payments.py" in diff
+    assert "agent_test_payments_mine.py" in diff and "+def test_mine():" in diff     # untracked, still shown
+    assert "tests/test_payments.py" not in diff                                    # hidden tests never leak in
+    assert attempts[-1].reason == "acceptance tests failed" and attempts[-1].test_output
+
+
+def test_the_diff_for_the_tech_lead_is_capped(tmp_path):
+    from engine.engine import MAX_DIFF_CHARS
+    repo = build_repo(tmp_path / "r")
+    calls = []
+
+    class Huge(NeverFixes):
+        def run(self, task, box, attempt, feedback):
+            box.write_file("payments.py", "x = 1\n" * 5000)
+            return AgentReport("done")
+
+    eng, _ = lead_engine(repo, Huge())
+    eng.run_task(lead_task({"decision": "escalate", "question": "Q?"}, calls))
+    assert len(calls[0][1]) <= MAX_DIFF_CHARS and calls[0][1].endswith("(diff cut)")
+
+
+def test_tech_lead_escalates_with_one_question_for_the_owner(tmp_path):
+    repo = build_repo(tmp_path / "r")
+    calls, dev = [], NeverFixes()
+    q = "The spec says deposits are 20% but the contract caps them at $50. Which one wins: 20%, or the $50 cap?"
+    eng, sink = lead_engine(repo, dev)
+    r = eng.run_task(lead_task({"decision": "escalate", "note": "Spec and contract disagree.", "question": q,
+                                "stronger_model": True}, calls, Stronger()))
+    assert r.status == "failed" and r.error == f"Needs you: {q}" and len(r.attempts) == 3
+    assert len(dev.seen) == 3
+    assert kinds(sink, "tech_lead_review") == [("tech_lead_review", {
+        "decision": "escalate", "note": "Spec and contract disagree.", "question": q, "stronger_model": False})]
+    assert kinds(sink, "escalated") == [("escalated", {"question": q})]
+    final = [e.data for e in sink.events if e.kind == "task_status"][-1]
+    assert final["status"] == "failed" and final["error"] == f"Needs you: {q}"
+
+
+def test_a_long_question_still_fits_the_error():
+    from engine.engine import normalize_review
+    v = normalize_review({"decision": "escalate", "question": "Which? " * 100})
+    assert len(f"Needs you: {v['question']}") <= 300
+
+
+def test_a_retry_that_still_fails_escalates_without_a_second_review(tmp_path):
+    from engine.engine import RETRY_FAILED_QUESTION
+    repo = build_repo(tmp_path / "r")
+    calls, dev = [], NeverFixes()
+    eng, sink = lead_engine(repo, dev)
+    # no stronger agent available: the same dev makes the extra tries
+    r = eng.run_task(lead_task({"decision": "retry", "note": "Read the doc comment.", "stronger_model": True}, calls))
+    assert r.status == "failed" and [a.n for a in r.attempts] == [1, 2, 3, 4, 5]
+    assert len(calls) == 1 and [s[0] for s in dev.seen] == [1, 2, 3, 4, 5]
+    assert dev.seen[3][1].startswith("Your tech lead reviewed the failed attempts: Read the doc comment.")
+    assert "tech lead" not in (dev.seen[4][1] or "")                    # attempt 5 gets the usual feedback
+    assert "model" not in kinds(sink, "tech_lead_review")[0][1]
+    assert kinds(sink, "escalated") == [("escalated", {"question": RETRY_FAILED_QUESTION})]
+    assert r.error == f"Needs you: {RETRY_FAILED_QUESTION}"[:300]
+    assert len([e for e in sink.events if e.data.get("status") == "reviewing"]) == 1
+
+
+def test_a_dev_already_on_sonnet_keeps_its_agent(tmp_path):
+    repo = build_repo(tmp_path / "r")
+    dev, strong = NeverFixes(), Stronger()
+    dev.model = "sonnet"
+    eng, sink = lead_engine(repo, dev)
+    r = eng.run_task(lead_task({"decision": "retry", "note": "n", "stronger_model": True}, [], strong))
+    assert r.status == "failed" and len(dev.seen) == 5 and not strong.seen
+    assert "model" not in kinds(sink, "tech_lead_review")[0][1]
+
+
+@pytest.mark.parametrize("verdict", [RuntimeError("API Error: 529 overloaded"), None, "retry",
+                                     {"decision": "maybe"}, {"note": "no decision"},
+                                     {"decision": "escalate", "note": "x", "tech_lead_error": True}])
+def test_a_broken_tech_lead_escalates_with_tech_lead_error(tmp_path, verdict):
+    from engine.engine import TECH_LEAD_FAILED_QUESTION
+    repo = build_repo(tmp_path / "r")
+    eng, sink = lead_engine(repo, NeverFixes())
+    r = eng.run_task(lead_task(verdict, []))
+    assert r.status == "failed" and r.error == f"Needs you: {TECH_LEAD_FAILED_QUESTION}" and len(r.attempts) == 3
+    review = kinds(sink, "tech_lead_review")[0][1]
+    assert review["decision"] == "escalate" and review["tech_lead_error"] is True
+    assert review["question"] == TECH_LEAD_FAILED_QUESTION and review["stronger_model"] is False
+    assert kinds(sink, "escalated") == [("escalated", {"question": TECH_LEAD_FAILED_QUESTION})]
+
+
+def test_no_review_when_the_budget_is_spent(tmp_path):
+    from engine.budget import Budget
+    repo = build_repo(tmp_path / "r")
+    calls = []
+    eng, sink = lead_engine(repo, NeverFixes(cost=0.4), budget=Budget(1.0))
+    r = eng.run_task(lead_task({"decision": "retry", "note": "n"}, calls))
+    assert r.status == "stopped" and len(r.attempts) == 3 and calls == []
+    assert not kinds(sink, "tech_lead_review", "escalated")
+    assert not [e for e in sink.events if e.data.get("status") == "reviewing"]
+
+
+def test_no_extra_attempt_when_the_review_used_up_the_budget(tmp_path):
+    from engine.budget import Budget
+    repo = build_repo(tmp_path / "r")
+    budget = Budget(1.0)
+    dev = NeverFixes(cost=0.3)
+
+    def review(attempts, diff):
+        budget.add(0.2)                     # the reviewer's own cost uses up the rest
+        return {"decision": "retry", "note": "n"}
+
+    task = load_tasks(["B6"])[0]
+    task.review_failure = review
+    eng, sink = lead_engine(repo, dev, budget=budget)
+    r = eng.run_task(task)
+    assert r.status == "stopped" and len(r.attempts) == 3 and len(dev.seen) == 3
+    assert not kinds(sink, "escalated")
+
+
+def test_tasks_without_a_review_hook_fail_exactly_as_before(tmp_path):
+    repo = build_repo(tmp_path / "r")
+    dev = NeverFixes()
+    eng, sink = lead_engine(repo, dev)
+    r = eng.run_task(load_tasks(["B6"])[0])
+    assert r.status == "failed" and r.error == "" and len(r.attempts) == 3 and len(dev.seen) == 3
+    assert not kinds(sink, "tech_lead_review", "escalated")
+    assert not [e for e in sink.events if e.data.get("status") == "reviewing"]
+
+
+def test_first_feedback_reaches_the_first_attempt(tmp_path):
+    repo = build_repo(tmp_path / "r")
+    strong = Stronger()
+    task = load_tasks(["B6"])[0]
+    task.first_feedback = "The project owner answered the tech lead's question: use the cap."
+    eng, _ = lead_engine(repo, strong)
+    assert eng.run_task(task).status == "merged"
+    assert strong.seen == [(1, "The project owner answered the tech lead's question: use the cap.")]

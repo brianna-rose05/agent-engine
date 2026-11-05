@@ -162,6 +162,22 @@ def checkpoint_label(change: dict | None, resume: bool, quick: dict | None = Non
     return "Retry finished" if resume else "Build finished"
 
 
+def tech_lead_agents(budget_usd: float):
+    """(tech lead, stronger dev): both Sonnet, never Opus. The engine uses the stronger dev only for the tech lead's
+    extra tries, and only when the project's own dev model isn't already Sonnet."""
+    from engine.agents.claude_cli import ClaudeCLIAgent
+    return ClaudeCLIAgent(model="sonnet", budget_usd=budget_usd), ClaudeCLIAgent(model="sonnet", budget_usd=budget_usd)
+
+
+def owner_answers(project: dict) -> dict[str, str]:
+    """The owner's answers to the tech lead's questions on the project row (`answers: {taskId: text}`), as plain
+    text of at most 2000 characters each; anything else on the row is ignored."""
+    raw = project.get("answers")
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): v.strip()[:2000] for k, v in raw.items() if isinstance(v, str) and v.strip()}
+
+
 def ship_sandbox(repo_url: str, token: str, run_id: str, stack):
     """One web sandbox on main for the ship checks (engine/ship.py runs them; no agent is installed or run)."""
     from engine.sandboxes.daytona_sandbox import DaytonaSandbox
@@ -282,6 +298,9 @@ def main():
     # wiring every page is one big task: more turns, time and budget (cap $1.00)
     integrator = ClaudeCLIAgent(model=project["model"], max_turns=90, budget_usd=min(1.00, a.budget * 2),
                                 timeout_s=45 * 60)
+    # The tech lead reviews a feature whose tries all failed (docs/tech-lead.md): a stronger model than a Haiku dev.
+    # Its extra tries run on `stronger_dev` when it asks for a stronger model.
+    tech_lead, stronger_dev = tech_lead_agents(a.budget)
     approve = with_fresh_budget(wait_for_decision(backend.project), backend.project, engine.budget)
     status = "failed"
     results = []
@@ -295,19 +314,23 @@ def main():
             planned, results = change_project(int(change["n"]), change["text"], project["description"], repo, engine,
                                               approve=approve, stack=stack,
                                               parallel=stack.parallel, save_tests=out / "hidden_tests",
-                                              referee=referee, integrator=integrator)
+                                              referee=referee, integrator=integrator,
+                                              tech_lead=tech_lead, stronger_dev=stronger_dev)
             status = "failed" if planned is None else "rejected" if len(results) == 1 else finished(results)
             return
         if resume:
             plan = json.loads((repo / "plan.json").read_text())
             results = resume_project(plan, project["description"], repo, engine, set(project.get("merged") or []),
                                      stack=stack, parallel=stack.parallel, save_tests=out / "hidden_tests",
-                                     referee=referee, integrator=integrator)
+                                     referee=referee, integrator=integrator,
+                                     tech_lead=tech_lead, stronger_dev=stronger_dev,
+                                     answers=owner_answers(project))
             status = finished(results)
             return
         plan, results = run_project(project["description"], repo, engine, "python3",
                                     parallel=stack.parallel, approve=approve, stack=stack,
-                                    save_tests=out / "hidden_tests", referee=referee, integrator=integrator)
+                                    save_tests=out / "hidden_tests", referee=referee, integrator=integrator,
+                                    tech_lead=tech_lead, stronger_dev=stronger_dev)
         if plan is None:
             status = "failed"
         elif len(results) == 1:
