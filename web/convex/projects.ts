@@ -47,7 +47,8 @@ export const get = queryGeneric({
                  budgetUsd: budgetOf(p), costUsd: p.costUsd,
                  canChange: Boolean(p.repo) && canRequestChange(p.status, Boolean(p.plan), false),
                  changes: ((p.changes ?? []) as ChangeRequest[]).map((c) => ({ n: c.n, text: c.text, at: c.at })),
-                 createdAt: p._creationTime, error: p.error ?? null, wizard: p.wizard ?? null, previewUrl: p.previewUrl ?? null },
+                 createdAt: p._creationTime, error: p.error ?? null, wizard: p.wizard ?? null, previewUrl: p.previewUrl ?? null,
+                 durableDb: Boolean(p.durableDb) },
       events: events.map((e) => ({ kind: e.kind, task_id: e.taskId, data: e.data, ts: e.ts })),
     };
   },

@@ -25,7 +25,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -q claude-agent-sdk daytona pytest
+      - run: pip install -q claude-agent-sdk daytona pytest "psycopg[binary]"
       - name: Check the id looks like a Convex id
         env:
           PROJECT_ID: ${{ inputs.project_id }}
@@ -38,6 +38,7 @@ jobs:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}       # optional: without it, no preview link
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}   # optional: deploy under a team instead of the user
+          POSTGRES_ADMIN_URL: ${{ secrets.POSTGRES_ADMIN_URL }}  # optional: a durable database per preview (docs/databases.md)
           PROJECT_ID: ${{ inputs.project_id }}
         run: |
           git config --global user.email "engine@agents.local"

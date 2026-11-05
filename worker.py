@@ -75,15 +75,41 @@ def create_repo(name: str, token: str, description: str) -> str:
         raise
 
 
-def publish_preview(results, repo: Path, repo_url: str, events, deploy=None, merged_before=()) -> None:
+def provision_for_preview(project_name: str, events, provision=None) -> dict | None:
+    """The preview's durable database (docs/databases.md) when POSTGRES_ADMIN_URL is set: created on first use,
+    found again on every later run. Returns the env for the deploy, or None (local mode). Never raises, and never
+    lets a connection string or password reach an event or the log."""
+    admin = os.environ.get("POSTGRES_ADMIN_URL", "").strip()
+    if not admin:
+        return None
+    from engine.databases import database_name, provision_database, scrub
+    try:
+        url = (provision or provision_database)(admin, project_name)
+    except Exception as e:
+        reason = scrub(str(e) or type(e).__name__, admin)[:300]
+        events.emit("database_failed", reason=reason)
+        print(f"database: failed ({reason}); deploying in local mode")
+        return None
+    name = database_name(project_name)
+    events.emit("database_ready", name=name)
+    print(f"database: {name} ready")
+    return {"DATABASE_URL": url}
+
+
+def publish_preview(results, repo: Path, repo_url: str, events, deploy=None, merged_before=(), provision=None) -> None:
     """Once the integration task has merged, deploy main to Vercel and tell the app where it lives (on a
-    retry where INT merged earlier, redeploy if anything new merged). Never raises: a preview is a bonus."""
+    retry where INT merged earlier, redeploy if anything new merged). With POSTGRES_ADMIN_URL set, the preview
+    gets its own durable Postgres first; if that fails it still deploys, in local mode. Never raises: a preview
+    is a bonus."""
     merged_now = {r.task for r in results if r.status == "merged"}
     if "INT" not in merged_now and not ("INT" in merged_before and merged_now):
         return
     try:
         from engine.deploy import deploy_preview
-        r = (deploy or deploy_preview)(repo, project_name=repo_url.rstrip("/").rsplit("/", 1)[-1], log=print)
+        project_name = repo_url.rstrip("/").rsplit("/", 1)[-1]
+        env = provision_for_preview(project_name, events, provision)
+        extra = {"env": env} if env else {}
+        r = (deploy or deploy_preview)(repo, project_name=project_name, log=print, **extra)
         if r.status == "ready":
             events.emit("preview_ready", url=r.url)
         elif r.status == "skipped":

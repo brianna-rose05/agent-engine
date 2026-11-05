@@ -9,6 +9,7 @@ export const initialState = (): ProjectState => ({
   cost_usd: 0,
   now: 0,
   preview_url: null,
+  durable_db: false,
   changes: [],
   change: null,
   budget_reached: null,
@@ -66,6 +67,7 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
   const tasks = { ...s.tasks };
   const feed = [...s.feed];
   let { status, plan, cost_usd, preview_url, budget_reached } = s;
+  let durable_db = Boolean(s.durable_db);
   let changes = s.changes;
   let quicks = s.quicks;
   const setQuick = (n: number, next: Partial<QuickState>) => {
@@ -313,7 +315,26 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
       if (typeof url !== "string" || !url.startsWith("https://")) break;
       preview_url = url;
       say({ who: "engine", channel: "build", tone: "good",
-            text: `Preview is live at ${url}. It runs without a real database, so preview data resets.` });
+            text: durable_db ? `Preview is live at ${url}. Its data is kept in the app's own database.`
+                             : `Preview is live at ${url}. It runs without a real database, so preview data resets.` });
+      break;
+    }
+    case "database_ready": {
+      // docs/databases.md: the preview's own Postgres. Once a project has one it keeps it (the name never changes).
+      const name = (e.data as { name?: unknown }).name;
+      const first = !durable_db;
+      durable_db = true;
+      if (first) {
+        say({ who: "engine", channel: "build", tone: "good",
+              text: `The app has its own database${typeof name === "string" ? ` (${name})` : ""}, so preview data is kept between visits and deploys.` });
+      }
+      break;
+    }
+    case "database_failed": {
+      const d = e.data as { reason?: string };
+      say({ who: "engine", channel: "build", tone: "warn",
+            text: `Couldn't set up the app's database: ${d.reason ?? "unknown error"}.` +
+                  (durable_db ? " The preview keeps using the database it already has." : " The preview runs without one, so its data resets.") });
       break;
     }
     case "preview_failed": {
@@ -329,7 +350,7 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
       break;
     }
   }
-  return { status, plan, tasks, feed, cost_usd, now: Math.max(s.now, e.t), preview_url, changes, change: changes.at(-1) ?? null,
+  return { status, plan, tasks, feed, cost_usd, now: Math.max(s.now, e.t), preview_url, durable_db, changes, change: changes.at(-1) ?? null,
            budget_reached, quicks };
 }
 

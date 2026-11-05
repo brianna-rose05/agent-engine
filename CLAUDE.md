@@ -5,7 +5,7 @@ how well coding agents complete tasks. See README.md for the full picture.
 
 ## Setup (only if `.venv` is missing)
 ```bash
-python3 -m venv .venv && source .venv/bin/activate && pip install -q claude-agent-sdk daytona pytest
+python3 -m venv .venv && source .venv/bin/activate && pip install -q claude-agent-sdk daytona pytest "psycopg[binary]"
 ```
 Always run commands with the venv active: `source .venv/bin/activate && ...`
 

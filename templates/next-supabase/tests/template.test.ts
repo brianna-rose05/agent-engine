@@ -84,3 +84,95 @@ describe("template sign-in (local mode)", () => {
     await b.pg.close();
   });
 });
+
+describe("template migrations (shared by local mode and production Postgres)", () => {
+  const tmpMigrations = async (files: Record<string, string>) => {
+    const { mkdtempSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = mkdtempSync(join(tmpdir(), "migrations-"));
+    for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, name), body);
+    return { dir, add: (name: string, body: string) => writeFileSync(join(dir, name), body) };
+  };
+
+  it("applies new migrations in order, records them, and a second run applies nothing", async () => {
+    const { PGlite } = await import("@electric-sql/pglite");
+    const { migrate } = await import("@/lib/migrate");
+    const { pgliteRunner } = await import("@/lib/pglite");
+    const m = await tmpMigrations({
+      "0002_b.sql": "alter table things add column note text;",
+      "0001_a.sql": "create table things (id uuid primary key default gen_random_uuid(), owner uuid references auth.users(id));",
+      "README.md": "not a migration",
+    });
+    const pg = new PGlite();
+    const run = pgliteRunner(pg);
+    expect(await migrate(run, { dir: m.dir })).toEqual(["0001_a.sql", "0002_b.sql"]);
+    expect(await migrate(run, { dir: m.dir })).toEqual([]);              // shim re-runs cleanly, nothing re-applied
+    m.add("0003_c.sql", "create index things_owner on things (owner);");
+    expect(await migrate(run, { dir: m.dir })).toEqual(["0003_c.sql"]);
+    const { rows } = await pg.query<{ name: string }>("select name from app_meta.migrations order by name");
+    expect(rows.map((r) => r.name)).toEqual(["0001_a.sql", "0002_b.sql", "0003_c.sql"]);
+    await pg.close();
+  });
+
+  it("names the migration that failed", async () => {
+    const { PGlite } = await import("@electric-sql/pglite");
+    const { migrate } = await import("@/lib/migrate");
+    const { pgliteRunner } = await import("@/lib/pglite");
+    const m = await tmpMigrations({ "0001_bad.sql": "create table oops (;" });
+    const pg = new PGlite();
+    await expect(migrate(pgliteRunner(pg), { dir: m.dir })).rejects.toThrow(/migration 0001_bad\.sql failed/);
+    await pg.close();
+  });
+
+  it("production path: takes the lock first, holds the advisory lock for the whole transaction", async () => {
+    const { PGlite } = await import("@electric-sql/pglite");
+    const { advisoryXactLock, migrate } = await import("@/lib/migrate");
+    const { pgliteRunner } = await import("@/lib/pglite");
+    const m = await tmpMigrations({ "0001_a.sql": "create table a (id int primary key);" });
+    const pg = new PGlite();
+    const seen: string[] = [];
+    let locksDuring = -1;
+    await pg.transaction(async (tx) => {
+      const inner = pgliteRunner(tx);
+      const spy = {
+        exec: (sql: string) => (seen.push(sql.trim().split("\n")[0]), inner.exec(sql)),
+        query: <T,>(sql: string, params?: unknown[]) => (seen.push(sql), inner.query<T>(sql, params)),
+      };
+      await migrate(spy, { dir: m.dir, lock: advisoryXactLock });
+      locksDuring = (await tx.query<{ n: number }>(
+        "select count(*)::int as n from pg_locks where locktype = 'advisory' and granted")).rows[0].n;
+    });
+    expect(seen[0]).toMatch(/^select pg_advisory_xact_lock\(\d+\)$/);    // before the shim or any migration
+    expect(locksDuring).toBe(1);
+    const after = await pg.query<{ n: number }>("select count(*)::int as n from pg_locks where locktype = 'advisory'");
+    expect(after.rows[0].n).toBe(0);                                      // released at commit
+    await pg.close();
+  });
+
+  it("the lock is pluggable and runs before anything else", async () => {
+    const { PGlite } = await import("@electric-sql/pglite");
+    const { migrate } = await import("@/lib/migrate");
+    const { pgliteRunner } = await import("@/lib/pglite");
+    const m = await tmpMigrations({ "0001_a.sql": "select 1;" });
+    const pg = new PGlite();
+    const order: string[] = [];
+    const inner = pgliteRunner(pg);
+    const spy = { exec: (s: string) => (order.push("exec"), inner.exec(s)), query: inner.query };
+    await migrate(spy, { dir: m.dir, lock: async () => void order.push("lock") });
+    expect(order[0]).toBe("lock");
+    expect(order.length).toBeGreaterThan(1);
+    await pg.close();
+  });
+
+  it("the shim keeps an existing auth.uid() (a real Supabase database) and is safe to run twice", async () => {
+    const { PGlite } = await import("@electric-sql/pglite");
+    const { AUTH_SHIM } = await import("@/lib/migrate");
+    const pg = new PGlite();
+    await pg.exec("create schema auth; create function auth.uid() returns uuid language sql stable as $$ select '00000000-0000-0000-0000-000000000001'::uuid $$;");
+    await pg.exec(AUTH_SHIM);
+    await pg.exec(AUTH_SHIM);
+    expect((await pg.query<{ id: string }>("select auth.uid() as id")).rows[0].id).toBe("00000000-0000-0000-0000-000000000001");
+    await pg.close();
+  });
+});

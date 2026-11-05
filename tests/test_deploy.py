@@ -15,8 +15,10 @@ class FakeVercel:
     """Records every request; answers like the Vercel API. `states` are the readyStates the polls return."""
 
     def __init__(self, states=("BUILDING", "READY"), project_exists=False, error_message="Command failed: next build",
-                 teams=None):
+                 teams=None, env_keys=(), env_failed=None):
         self.calls = []
+        self.env_keys = list(env_keys)
+        self.env_failed = env_failed
         self.teams = teams
         self.states = list(states)
         self.project_exists = project_exists
@@ -32,8 +34,13 @@ class FakeVercel:
             return (200, b'{"id":"prj_1"}') if self.project_exists else (404, b'{"error":{"code":"not_found"}}')
         if method == "POST" and path == "/v11/projects":
             return 200, b'{"id":"prj_1"}'
+        if method == "GET" and path.endswith("/env"):
+            return 200, json.dumps({"envs": [{"key": k, "type": "sensitive", "value": ""} for k in self.env_keys]}).encode()
         if method == "POST" and path.endswith("/env"):
-            return 201, b'{"created":[],"failed":[]}'
+            items = json.loads(body)
+            failed = [{"error": {"code": "bad", "envVarKey": i["key"], "value": i["value"],
+                                 "message": f"rejected {i['value']}"}} for i in items if i["key"] == self.env_failed]
+            return 201, json.dumps({"created": [], "failed": failed}).encode()
         if method == "POST" and path == "/v2/files":
             assert hashlib.sha1(body).hexdigest() == headers["x-vercel-digest"]
             assert headers["Content-Length"] == str(len(body))
@@ -162,7 +169,7 @@ def run_worker_preview(results, deploy_result, merged_before=()):
     sink = ListSink()
     calls = []
 
-    def fake(repo, project_name, log):
+    def fake(repo, project_name, log, env=None):
         calls.append(project_name)
         return DeployResult(*deploy_result)
     publish_preview(results, Path("/nowhere"), "https://github.com/me/studio-x-abc123", Emitter(sink), deploy=fake,
@@ -211,3 +218,108 @@ def test_several_teams_or_none_leave_the_scope_alone(tmp_path):
         http = FakeVercel(teams=teams)
         assert deploy(make_repo(tmp_path / str(len(teams))), http).status == "ready"
         assert not [c for c in http.calls if "teamId=" in c[1]]
+
+
+# ------------------------------------------------------------------ durable database env
+DB_URL = "postgresql://owner:pw-SECRET-1@ep-x-pooler.neon.tech/app_studio_x_abc123?sslmode=require"
+
+
+def env_posts(http):
+    return [json.loads(c[3]) for c in http.find("POST", "/env")]
+
+
+def test_without_env_nothing_but_telemetry_is_set(tmp_path):
+    http = FakeVercel()
+    assert deploy(make_repo(tmp_path), http).status == "ready"
+    assert env_posts(http) == [[{"key": "NEXT_TELEMETRY_DISABLED", "value": "1", "type": "plain",
+                                 "target": ["production", "preview"]}]]
+    assert not http.find("GET", "/env")                       # no listing, no session secret
+
+
+def test_database_url_and_a_new_session_secret_are_set_as_sensitive(tmp_path):
+    http = FakeVercel()
+    r = deploy(make_repo(tmp_path), http, env={"DATABASE_URL": DB_URL})
+    assert r.status == "ready", r.reason
+    plain, secret = env_posts(http)
+    assert [e["key"] for e in plain] == ["NEXT_TELEMETRY_DISABLED"]
+    by_key = {e["key"]: e for e in secret}
+    assert set(by_key) == {"DATABASE_URL", "APP_SESSION_SECRET"}
+    assert all(e["type"] == "sensitive" and e["target"] == ["production", "preview"] for e in secret)
+    assert by_key["DATABASE_URL"]["value"] == DB_URL
+    assert len(by_key["APP_SESSION_SECRET"]["value"]) == 64
+    assert all("upsert=true" in c[1] for c in http.find("POST", "/env"))
+    # env is set before the deployment is created, so the build and the first request see it
+    order = [c[1].split("?")[0].rsplit("/", 1)[-1] for c in http.calls if c[0] == "POST"]
+    assert order.index("env") < order.index("deployments")
+
+
+def test_an_existing_session_secret_is_kept(tmp_path):
+    http = FakeVercel(project_exists=True, env_keys=["NEXT_TELEMETRY_DISABLED", "APP_SESSION_SECRET", "DATABASE_URL"])
+    assert deploy(make_repo(tmp_path), http, env={"DATABASE_URL": DB_URL}).status == "ready"
+    assert [e["key"] for e in env_posts(http)[1]] == ["DATABASE_URL"]    # not rotated: sessions survive redeploys
+
+
+def test_env_failures_fail_the_deploy_without_leaking_values(tmp_path):
+    http = FakeVercel(env_failed="DATABASE_URL")
+    r = deploy(make_repo(tmp_path), http, env={"DATABASE_URL": DB_URL})
+    assert r.status == "failed" and "DATABASE_URL" in r.reason
+    assert "pw-SECRET-1" not in r.reason and DB_URL not in r.reason
+    assert not http.find("POST", "/v13/deployments")
+
+    def http_err(method, url, headers, body):
+        if method == "POST" and "/env" in url and body and b"DATABASE_URL" in body:
+            return 400, json.dumps({"error": {"message": f"invalid value {DB_URL}"}}).encode()
+        return FakeVercel()(method, url, headers, body)
+    r = deploy(make_repo(tmp_path / "b"), http_err, env={"DATABASE_URL": DB_URL})
+    assert r.status == "failed" and "pw-SECRET-1" not in r.reason
+
+
+# ------------------------------------------------------------------ worker: durable database
+ADMIN_URL = "postgresql://neondb_owner:ADMIN-PW-9@ep-x.neon.tech/neondb?sslmode=require"
+
+
+def run_worker_db(monkeypatch, provision, admin=ADMIN_URL):
+    from engine.deploy import DeployResult
+    from worker import publish_preview
+    if admin:
+        monkeypatch.setenv("POSTGRES_ADMIN_URL", admin)
+    else:
+        monkeypatch.delenv("POSTGRES_ADMIN_URL", raising=False)
+    sink, deploys, provisions = ListSink(), [], []
+
+    def fake_deploy(repo, project_name, log, **kw):
+        deploys.append((project_name, kw))
+        return DeployResult("ready", url="https://x.vercel.app")
+
+    def fake_provision(admin_url, slug):
+        provisions.append((admin_url, slug))
+        return provision(admin_url, slug)
+    publish_preview([Result("INT", "i", "merged")], Path("/nowhere"), "https://github.com/me/studio-x-abc123",
+                    Emitter(sink), deploy=fake_deploy, provision=fake_provision)
+    return provisions, deploys, [(e.kind, e.data) for e in sink.events]
+
+
+def test_worker_provisions_the_database_and_passes_it_to_the_deploy(monkeypatch):
+    url = "postgresql://neondb_owner:ADMIN-PW-9@ep-x.neon.tech/app_studio_x_abc123?sslmode=require"
+    provisions, deploys, evs = run_worker_db(monkeypatch, lambda a, s: url)
+    assert provisions == [(ADMIN_URL, "studio-x-abc123")]
+    assert deploys == [("studio-x-abc123", {"env": {"DATABASE_URL": url}})]
+    assert evs == [("database_ready", {"name": "app_studio_x_abc123"}),
+                   ("preview_ready", {"url": "https://x.vercel.app"})]
+    assert "ADMIN-PW-9" not in json.dumps(evs)
+
+
+def test_worker_still_deploys_in_local_mode_when_provisioning_fails(monkeypatch):
+    def boom(admin_url, slug):
+        raise RuntimeError(f"could not connect to {admin_url} (password ADMIN-PW-9)")
+    _, deploys, evs = run_worker_db(monkeypatch, boom)
+    assert deploys == [("studio-x-abc123", {})]                 # no env: local mode, exactly as before
+    assert [k for k, _ in evs] == ["database_failed", "preview_ready"]
+    reason = evs[0][1]["reason"]
+    assert "could not connect" in reason and "ADMIN-PW-9" not in reason and "neon.tech" not in reason
+
+
+def test_worker_without_an_admin_url_behaves_as_before(monkeypatch):
+    provisions, deploys, evs = run_worker_db(monkeypatch, lambda a, s: "x", admin=None)
+    assert provisions == [] and deploys == [("studio-x-abc123", {})]
+    assert evs == [("preview_ready", {"url": "https://x.vercel.app"})]

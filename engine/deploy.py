@@ -5,8 +5,12 @@
 
 The repo's committed files (`git ls-tree` of main, never node_modules or any .env file) are uploaded
 to /v2/files by sha1, then one production deployment of a per-project Vercel project is created with
-`framework: nextjs` and polled until READY or ERROR. The app runs in local mode (no DATABASE_URL), so the
-preview needs no database; its data lives in memory and resets.
+`framework: nextjs` and polled until READY or ERROR.
+
+Without `env`, the app runs in local mode (no DATABASE_URL): its data lives in memory and resets. With
+`env={"DATABASE_URL": ...}` (worker.py, from engine/databases.py) those variables are set on the Vercel project
+as `sensitive` (encrypted, never readable back) for production and preview, plus an APP_SESSION_SECRET that is
+generated once per project and then kept, so redeploys don't sign everyone out. Values never appear in errors.
 
 The token is only ever sent in the Authorization header: never in a URL, an error message or an event.
 The HTTP layer is injectable (`http=`) so tests run against a fake.
@@ -17,6 +21,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import subprocess
 import time
 import urllib.error
@@ -29,7 +34,10 @@ from typing import Callable, Protocol
 API = "https://api.vercel.com"
 TIMEOUT_S = 10 * 60
 POLL_S = 5.0
-ENV = {"NEXT_TELEMETRY_DISABLED": "1"}          # never DATABASE_URL: previews run in local mode
+ENV = {"NEXT_TELEMETRY_DISABLED": "1"}          # plain settings every preview gets
+TARGETS = ["production", "preview"]
+SECRET_TYPE = "sensitive"                       # encrypted and write-only (production/preview targets only)
+SESSION_SECRET = "APP_SESSION_SECRET"
 SKIP_DIRS = {"node_modules", ".next", ".vercel", ".git"}
 MAX_FILE_BYTES = 50 * 1024 * 1024
 
@@ -90,6 +98,7 @@ class Vercel:
         self.token = token
         self.team_id = team_id
         self.http = http
+        self.secrets: list[str] = []            # values scrubbed from every error, like the token
 
     def url(self, path: str, **query) -> str:
         if self.team_id:
@@ -129,16 +138,37 @@ class Vercel:
         return teams[0]["id"] if len(teams) == 1 else None
 
     def scrub(self, text: str) -> str:
-        return text.replace(self.token, "***") if self.token else text
+        for secret in [self.token, *self.secrets]:
+            if secret:
+                text = text.replace(secret, "***")
+        return text
+
+    def set_env(self, name: str, items: list[dict]) -> None:
+        """Upserts env vars. Vercel answers 201 even when some fail, listing them in `failed`."""
+        _, d = self.call("POST", f"/v10/projects/{urllib.parse.quote(name)}/env", items, upsert="true")
+        failed = [f.get("error") or {} for f in d.get("failed") or [] if isinstance(f, dict)]
+        if failed:
+            e = failed[0] if isinstance(failed[0], dict) else {}
+            key = e.get("envVarKey") or e.get("key") or "?"
+            raise DeployError(self.scrub(f"Vercel could not set {key}: {e.get('message') or e.get('code') or 'failed'}")[:300])
+
+    def env_keys(self, name: str) -> set[str]:
+        _, d = self.call("GET", f"/v10/projects/{urllib.parse.quote(name)}/env")
+        return {e.get("key") for e in d.get("envs") or [] if isinstance(e, dict)}
 
     # ---------------------------------------------------------------- steps
-    def ensure_project(self, name: str) -> None:
+    def ensure_project(self, name: str, env: dict[str, str] | None = None) -> None:
         status, _ = self.call("GET", f"/v9/projects/{urllib.parse.quote(name)}", ok=(200, 404))
         if status == 404:
             self.call("POST", "/v11/projects", {"name": name, "framework": "nextjs"})
-        targets = ["production", "preview"]
-        self.call("POST", f"/v10/projects/{urllib.parse.quote(name)}/env",
-                  [{"key": k, "value": v, "type": "plain", "target": targets} for k, v in ENV.items()], upsert="true")
+        self.set_env(name, [{"key": k, "value": v, "type": "plain", "target": TARGETS} for k, v in ENV.items()])
+        if not env:
+            return
+        env = dict(env)
+        if SESSION_SECRET not in env and SESSION_SECRET not in self.env_keys(name):
+            env[SESSION_SECRET] = secrets.token_hex(32)    # once per project: rotating it signs everyone out
+        self.secrets += [v for v in env.values() if v]
+        self.set_env(name, [{"key": k, "value": v, "type": SECRET_TYPE, "target": TARGETS} for k, v in env.items()])
 
     def upload(self, data: bytes) -> str:
         sha = hashlib.sha1(data).hexdigest()
@@ -172,13 +202,15 @@ def deploy_preview(repo: Path, project_name: str, token: str | None = None, team
                    http: Http = urllib_http, files: list[tuple[str, bytes]] | None = None,
                    timeout_s: float = TIMEOUT_S, poll_s: float = POLL_S,
                    sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
-                   log: Callable[[str], None] = lambda _m: None) -> DeployResult:
-    """Deploy `repo`'s main branch. Never raises: every problem comes back as a failed result."""
+                   log: Callable[[str], None] = lambda _m: None, env: dict[str, str] | None = None) -> DeployResult:
+    """Deploy `repo`'s main branch, with `env` set on the project as secrets (see the module doc). Never raises:
+    every problem comes back as a failed result."""
     token = token if token is not None else os.environ.get("VERCEL_TOKEN", "")
     team_id = team_id if team_id is not None else (os.environ.get("VERCEL_TEAM_ID") or None)
     if not token:
         return DeployResult("skipped", reason="no VERCEL_TOKEN")
     v = Vercel(token, team_id, http)
+    v.secrets = [x for x in (env or {}).values() if x]
     if not team_id:
         v.team_id = v.find_team()
     name = project_slug(project_name)
@@ -189,7 +221,7 @@ def deploy_preview(repo: Path, project_name: str, token: str | None = None, team
         big = [p for p, d in files if len(d) > MAX_FILE_BYTES]
         if big:
             return DeployResult("failed", reason=f"file too large to deploy: {big[0]}")
-        v.ensure_project(name)
+        v.ensure_project(name, env)
         log(f"uploading {len(files)} files to Vercel project {name}")
         manifest = [{"file": p, "sha": v.upload(d), "size": len(d)} for p, d in files]
         d = v.create_deployment(name, manifest)

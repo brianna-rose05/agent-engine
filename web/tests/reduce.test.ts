@@ -125,3 +125,37 @@ describe("integration without a failed screen", () => {
     expect(s.feed.at(-1)!.tone).toBe("warn");
   });
 });
+
+describe("durable preview database (docs/databases.md)", () => {
+  const finished = () => reduce(initialState(), ev(0, "project_finished", null, { status: "done" }));
+
+  it("database_ready marks the project durable and the preview message stops saying data resets", () => {
+    let s = reduce(finished(), ev(1, "database_ready", null, { name: "app_studio_x_abc123" }));
+    expect(s.durable_db).toBe(true);
+    expect(s.feed.at(-1)).toMatchObject({ channel: "build", tone: "good" });
+    expect(s.feed.at(-1)!.text).toContain("app_studio_x_abc123");
+    s = reduce(s, ev(2, "preview_ready", null, { url: "https://studio-x.vercel.app" }));
+    expect(s.feed.at(-1)!.text).not.toContain("resets");
+    expect(s.feed.at(-1)!.text).toContain("kept");
+    const n = s.feed.length;
+    s = reduce(s, ev(3, "database_ready", null, { name: "app_studio_x_abc123" }));   // a later deploy: no repeat
+    expect(s.feed.length).toBe(n);
+  });
+
+  it("database_failed warns and leaves the project in local mode", () => {
+    let s = reduce(finished(), ev(1, "database_failed", null, { reason: "OperationalError: timeout" }));
+    expect(s.durable_db).toBe(false);
+    expect(s.feed.at(-1)).toMatchObject({ channel: "build", tone: "warn" });
+    expect(s.feed.at(-1)!.text).toContain("timeout");
+    expect(s.feed.at(-1)!.text).toContain("resets");
+    s = reduce(s, ev(2, "preview_ready", null, { url: "https://studio-x.vercel.app" }));
+    expect(s.feed.at(-1)!.text).toContain("preview data resets");
+  });
+
+  it("a failure after a database exists keeps it durable", () => {
+    let s = reduce(finished(), ev(1, "database_ready", null, { name: "app_x" }));
+    s = reduce(s, ev(2, "database_failed", null, { reason: "timeout" }));
+    expect(s.durable_db).toBe(true);
+    expect(s.feed.at(-1)!.text).toContain("keeps using");
+  });
+});

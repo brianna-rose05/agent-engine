@@ -9,7 +9,9 @@ import { AppError } from "./errors";
  *
  * Two backends with the same behavior:
  * - Supabase Auth, when NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY are set (production).
- * - Local accounts stored in the app database, otherwise (local mode, previews and automated checks).
+ * - Local accounts stored in the app database, otherwise (local mode, automated checks, and previews on
+ *   their own Postgres). The session cookie is signed with APP_SESSION_SECRET when set (the deployer sets
+ *   it), otherwise with a secret kept in the database.
  */
 export interface Auth {
   /** Creates the login and signs the person in. Returns their user id (the id in auth.users). */

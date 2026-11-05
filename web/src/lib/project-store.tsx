@@ -28,6 +28,7 @@ type Store = {
   wizard?: Wizard | null;       // setup wizard state (live mode)
   canRetry?: boolean;           // a stopped build that can retry only what failed
   previewUrl?: string | null;   // live preview of the finished app (Vercel), once deployed
+  durableDb?: boolean;          // the preview has its own database, so its data is kept (docs/databases.md)
   canChange: boolean;           // the owner can ask for a change now (docs/change-requests.md)
   changeHistory: ChangeRequest[]; // the change requests asked so far, oldest first
   requestChange: (text: string) => Promise<void>; // throws with a message to show when it can't be sent
@@ -120,7 +121,7 @@ function useDemo(): Omit<Store, "project" | "mode"> {
 }
 
 type LiveData = {
-  project: Project & { status: string; error: string | null; wizard: Wizard | null; canRetry?: boolean; previewUrl?: string | null;
+  project: Project & { status: string; error: string | null; wizard: Wizard | null; canRetry?: boolean; previewUrl?: string | null; durableDb?: boolean;
                       canChange?: boolean; changes?: ChangeRequest[]; budgetUsd?: number; costUsd?: number };
   events: { kind: EngineEvent["kind"]; task_id: string | null; data: Record<string, unknown>; ts: number }[];
 } | null;
@@ -150,6 +151,7 @@ function LiveProvider({ id, children }: { id: string; children: React.ReactNode 
     speed: 1, setSpeed: () => {}, restart: () => {}, clock: state.now, duration: state.now, t0,
     liveStatus: data?.project.status, liveError: data?.project.error ?? null, wizard: data?.project.wizard ?? null, canRetry: Boolean(data?.project.canRetry),
     previewUrl: data?.project.previewUrl ?? state.preview_url,
+    durableDb: Boolean(data?.project.durableDb) || Boolean(state.durable_db),
     canChange: Boolean(data?.project.canChange),
     changeHistory: data?.project.changes ?? [],
     budgetUsd: data?.project.budgetUsd,

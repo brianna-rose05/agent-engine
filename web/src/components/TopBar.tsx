@@ -13,7 +13,7 @@ import { StatusPill } from "./ui";
 const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
 export function TopBar() {
-  const { project, state, mode, speed, setSpeed, restart, clock: t, duration, liveStatus, canRetry, previewUrl } = useProject();
+  const { project, state, mode, speed, setSpeed, restart, clock: t, duration, liveStatus, canRetry, previewUrl, durableDb } = useProject();
   const preview = previewUrl ?? state.preview_url;
   const fs = features(state);
   const done = fs.filter((f) => f.column === "done").length;
@@ -45,7 +45,7 @@ export function TopBar() {
             {clock(state.now)}
           </span>
           <span className="rounded-md bg-surface px-2 py-0.5 text-xs ring-1 ring-line">{project.model}</span>
-          {preview && <OpenPreview url={preview} />}
+          {preview && <OpenPreview url={preview} durable={Boolean(durableDb ?? state.durable_db)} />}
           {mode === "live" && canRetry && <RetryFailed id={project.id} />}
           {mode === "live" && ["failed", "done", "rejected", "stopped"].includes(liveStatus ?? "") && <Rebuild id={project.id} quiet={canRetry || Boolean(preview)} />}
 
@@ -78,15 +78,16 @@ export function TopBar() {
   );
 }
 
-/** The finished app, deployed to Vercel in local mode (in-memory database), so its data doesn't last. */
-function OpenPreview({ url }: { url: string }) {
+/** The finished app on Vercel. Without its own database (docs/databases.md) it runs in local mode, an in-memory
+ *  database, so its data doesn't last: say so. With one, the data is kept and there is nothing to warn about. */
+function OpenPreview({ url, durable }: { url: string; durable: boolean }) {
   return (
     <span className="flex items-center gap-2">
-      <a href={url} target="_blank" rel="noopener noreferrer" title={`${url}. Preview data resets.`}
+      <a href={url} target="_blank" rel="noopener noreferrer" title={durable ? url : `${url}. Preview data resets.`}
         className="flex items-center gap-1.5 rounded-lg bg-ink px-3 py-1 text-xs font-medium text-white hover:opacity-90">
         <ExternalLink size={12} /> Open preview
       </a>
-      <span className="text-xs text-muted">Preview data resets</span>
+      {!durable && <span className="text-xs text-muted">Preview data resets</span>}
     </span>
   );
 }

@@ -14,6 +14,7 @@ export type EngineEvent = {
     | "preview_ready"
     | "preview_failed"
     | "preview_skipped"
+    | "database_ready" | "database_failed" // docs/databases.md
     | "agent_activity"
     | "change_started"
     | "change_plan_ready"
@@ -108,6 +109,7 @@ export type ProjectState = {
   cost_usd: number;
   now: number;
   preview_url: string | null; // live preview of the finished app, once deployed
+  durable_db?: boolean;        // the preview has its own Postgres (database_ready), so its data is kept
   changes: ChangeState[];      // change requests, oldest first
   change: ChangeState | null;  // the latest one (the same object as changes.at(-1))
   budget_reached: { spent: number; budget: number } | null; // the latest run hit its spending limit
