@@ -4,6 +4,7 @@ import { composeSpec } from "./wizard";
 import type { ChangeRequest } from "./changes";
 import { budgetOf } from "./budget";
 import { notifyFor } from "./notifications";
+import { checkpointPatch, mergedTasks } from "./checkpoints";
 
 /*
  * What the engine (worker.py in GitHub Actions) calls. Authenticated with ENGINE_SECRET, which both sides
@@ -21,20 +22,22 @@ export const projectForWorker = queryGeneric({
     const p = await ctx.db.get(projectId);
     if (!p) return null;
     const change = p.mode === "change";
+    const rollingBack = p.mode === "rollback"; // docs/checkpoints.md
     let merged: string[] = [];
     let repo = p.repo ?? null;
-    if (p.resume || change) {
+    if (p.resume || change || rollingBack) {
       // what a retry or a change keeps: every task whose latest status is merged
       const events = await ctx.db.query("events").withIndex("by_project_ts", (q) => q.eq("projectId", projectId)).collect();
-      const last: Record<string, string> = {};
       for (const e of events) {
-        if (e.kind === "task_status" && e.taskId) last[e.taskId] = e.data?.status;
         if (e.kind === "project_finished" && e.data?.repo) repo ??= e.data.repo;
       }
-      merged = Object.keys(last).filter((k) => last[k] === "merged").sort();
+      // rolled-away tasks don't count (docs/checkpoints.md); a rollback carries its target's list onto its new checkpoint
+      merged = mergedTasks(events);
+      if (rollingBack) merged = (p.checkpoints ?? []).find((c: { n: number }) => c.n === p.rollback?.n)?.merged ?? merged;
     }
     const latest = change ? ((p.changes ?? []) as ChangeRequest[]).at(-1) : undefined;
-    return { resume: Boolean(p.resume), mode: change ? "change" : p.resume ? "resume" : "build",
+    return { resume: Boolean(p.resume), mode: change ? "change" : rollingBack ? "rollback" : p.resume ? "resume" : "build",
+             rollback: rollingBack ? { n: p.rollback?.n } : null,
              change: latest ? { n: latest.n, text: latest.text } : null,
              repo, merged, plan: p.resume || change ? p.plan ?? null : null, name: p.name,
              description: composeSpec(p.name, p.description, p.wizard), model: p.model, status: p.status, planNote: p.planNote ?? "",
@@ -89,6 +92,7 @@ export const record = mutationGeneric({
       patch.status = "building";
       patch.resume = false;
     }
+    Object.assign(patch, checkpointPatch(p, kind, data, ts)); // checkpoints and rollback (docs/checkpoints.md)
     if (Object.keys(patch).length) await ctx.db.patch(projectId, patch);
   },
 });

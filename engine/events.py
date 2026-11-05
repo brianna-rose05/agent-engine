@@ -16,6 +16,8 @@ Event kinds and their data:
                      tasks that never started end with task_status "stopped", the run with project_finished "stopped"
     agent_activity   {attempt, note, notes}   what a running agent is doing ("Wrote src/x.ts"),
                      at most one every ~10 s per task; note is the latest of notes
+    checkpoint_created {n, tag, sha, label, merged}   a save point (engine/checkpoints.py, docs/checkpoints.md)
+    rollback_started {n} / rollback_done {to, n, sha} / rollback_failed {n, reason}
 A sink must never break a run: errors inside a sink are swallowed by `emit`.
 """
 from __future__ import annotations

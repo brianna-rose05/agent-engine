@@ -24,6 +24,8 @@ export default defineSchema({
     pendingChange: v.optional(v.any()), // the latest planned change (changes/{n}.json) from change_plan_ready
     changeFrom: v.optional(v.string()), // status before the running change, restored if the change is sent back
     budgetUsd: v.optional(v.number()), // spending limit in $, enforced by the engine (convex/budget.ts, engine/budget.py)
+    checkpoints: v.optional(v.array(v.any())), // save points, oldest first: {n, tag, sha, label, at, merged} (convex/checkpoints.ts)
+    rollback: v.optional(v.any()), // the running/last rollback: {n, from} (from = status before it, restored if it fails)
   }),
   events: defineTable({
     projectId: v.id("projects"),

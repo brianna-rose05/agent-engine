@@ -17,7 +17,8 @@ export type EngineEvent = {
     | "agent_activity"
     | "change_started"
     | "change_plan_ready"
-    | "budget_reached";
+    | "budget_reached"
+    | "checkpoint_created" | "rollback_started" | "rollback_done" | "rollback_failed"; // docs/checkpoints.md
   task_id: string | null;
   data: Record<string, unknown>;
 };
@@ -38,6 +39,7 @@ export type ChangeState = {
   pages: string[];
   decision: "planning" | "pending" | "approved" | "rejected";
   before: ProjectStatus;   // status before the change started, restored if it is sent back
+  rolled_back?: boolean;   // its work was rolled away by a rollback to an earlier checkpoint (off the board)
 };
 
 export type Attempt = {
@@ -97,6 +99,17 @@ export type ProjectState = {
   changes: ChangeState[];      // change requests, oldest first
   change: ChangeState | null;  // the latest one (the same object as changes.at(-1))
   budget_reached: { spent: number; budget: number } | null; // the latest run hit its spending limit
+  history?: HistoryState;      // checkpoints and rollbacks (lib/history.ts); absent until the first one
+};
+
+/** A save point (checkpoint_created): a `checkpoint-<n>` tag on main in the project's repo. */
+export type CheckpointState = { n: number; tag: string; sha: string; label: string; t: number; merged: string[] | null };
+
+export type HistoryState = {
+  checkpoints: CheckpointState[];                         // oldest first
+  current: number | null;                                 // the checkpoint main is at now, if any
+  rolling: { n: number; before: ProjectStatus } | null;   // a rollback in progress
+  repo: string | null;                                    // the project's GitHub repo (from project_finished)
 };
 
 export type Project = {
