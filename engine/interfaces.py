@@ -43,6 +43,11 @@ class Task:
     # (docs/reviewer.md): {"verdict": "approve" | "changes", "comments": [...]}. `second` is True once the reviewer has
     # asked for changes on this task in this run (then only a security problem may block). None: merge as before.
     review_code: Callable[[str, bool], dict] | None = field(default=None, repr=False)
+    # review_plan(files, round) -> the architect's verdict on a plan (or change plan) that passed its checks, before it
+    # merges and before the owner is asked to approve it (docs/architect.md): {"verdict": "approve" | "changes",
+    # "comments": [...]}. `files` are the planner's files ({path: contents}); `round` is 1, then 2 for the plan the
+    # planner wrote with the architect's comments. None: no architect review (merge as before).
+    review_plan: Callable[[dict, int], dict] | None = field(default=None, repr=False)
 
 
 class SandboxUnavailable(RuntimeError):

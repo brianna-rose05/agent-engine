@@ -32,6 +32,10 @@ MAX_REVIEW_COMMENTS = 8
 SECOND_REVIEW_NOTE = "Only a security problem can hold a feature back a second time, so these comments don't block it."
 REVIEW_ERROR_NOTE = "The reviewer couldn't review this attempt, so it merges on its passing tests."
 SCRUBBED_NOTE = "Its comments pointed at the hidden tests, which the dev never sees, so they were dropped."
+# The architect (docs/architect.md): reviews a plan's contracts before the owner is asked to approve it.
+ARCHITECT_CHANGES = "the architect requested changes"   # the reason on a plan the architect sent back
+MAX_ARCHITECT_COMMENTS = 8
+MAX_PLAN_FILE_CHARS = 60000    # of each planner file handed to the architect (plans and stubs are far smaller)
 OK = ("merged", "passed")      # statuses that let dependent tasks start
 
 
@@ -200,6 +204,8 @@ class Engine:
         disputes, last_fixed = 0, False
         review, last_diff = None, ""                 # the tech lead's verdict (once per task), the last failed diff
         code_changes = 0                             # the code reviewer's "changes" verdicts so far (docs/reviewer.md)
+        architect_rounds = 0                         # the architect's reviews of this plan so far (docs/architect.md)
+        architect_said = ""                          # its comments when it sent the plan back
         try:
             verdict = task.already_done() if task.already_done is not None else None
             if verdict == "unconfirmed" and self._out_of_budget(res):
@@ -219,6 +225,7 @@ class Engine:
                     return res
                 t0 = time.time()
                 to_review = None                      # a passing attempt, published, waiting for its code review
+                to_architect = None                   # a passing plan, published, waiting for the architect
                 with self._open_sandbox(task, n, attempts) as box:
                     for path, body in task.setup_files.items():
                         box.write_file(path, body)
@@ -244,6 +251,12 @@ class Engine:
                         to_review = (self._attempt_diff(box), changed, out, round(time.time() - t0, 1))
                         box.publish(f"{task.id}: {task.title}")
                         branch = box.branch
+                    elif ok and task.merge and task.review_plan is not None:
+                        # The architect reviews the plan's contracts before it merges and before the owner sees it.
+                        # Its files are read now and the plan is published, so this sandbox closes during the review.
+                        to_architect = (self._plan_files(box), changed, out, round(time.time() - t0, 1))
+                        box.publish(f"{task.id}: {task.title}")
+                        branch = box.branch
                     else:
                         self._attempt(res, task, n, rep, ok, reason, changed, out, round(time.time() - t0, 1))
                         if ok:
@@ -255,9 +268,32 @@ class Engine:
                             res.status = self.merge(box.branch, task.id)
                             return res
                         feedback = f"Your previous attempt was rejected: {reason}." + (f"\nTest output:\n{out}" if out else "")
+                        if architect_said:                       # a replan that failed its checks: keep the comments
+                            feedback += "\n\nThe architect's comments on your earlier plan still apply:\n" + architect_said
                         if task.review_failure is not None:      # for the tech lead, before the sandbox is gone
                             last_diff = self._attempt_diff(box)
                 if attempts.redo:                    # the sandbox dropped mid-attempt: run that attempt again
+                    continue
+                if to_architect is not None:
+                    # The architect (docs/architect.md). Approve merges the plan. Changes on the first review sends
+                    # it back to the planner once, with the comments, as one extra try. On the second review its
+                    # comments go to the owner as warnings with the plan: the owner decides the architecture.
+                    files, changed, out, seconds = to_architect
+                    architect_rounds += 1
+                    v = self._architect(task, n, files, architect_rounds)
+                    if v["verdict"] == "approve" or v.get("warnings"):
+                        self._attempt(res, task, n, rep, True, "", changed, out, seconds)
+                        emit("task_status", task.id, status="merging", attempt=n)
+                        res.status = self.merge(branch, task.id)
+                        return res
+                    ok, reason = False, ARCHITECT_CHANGES
+                    listed = architect_said = "\n".join(f"- {c}" for c in v["comments"])
+                    self._attempt(res, task, n, rep, False, reason, changed, listed, seconds)
+                    feedback = ("Your plan passed the automated checks, but the architect (a different model) reviewed "
+                                "its contracts and requested changes before the owner sees it. This try starts from the "
+                                "repo as it was before your plan, so write the whole plan again, with these fixed and "
+                                "everything else that was right kept:\n" + listed)
+                    attempts.limit += 1               # one more try for the replan; the others stay for the checks
                     continue
                 if to_review is not None:
                     # The code review (docs/reviewer.md). Its verdict decides the attempt: approve merges it; changes
@@ -355,6 +391,45 @@ class Engine:
             event["review_error"] = True
         emit("code_review", task.id, **event)
         return v
+
+    def _architect(self, task: Task, n: int, files: dict[str, str], rnd: int) -> dict:
+        """The architect's verdict on a plan that passed its checks (docs/architect.md), normalized: {verdict,
+        comments, round, warnings?, architect_error?, skipped?}. Planning is never blocked by the architect itself: a
+        crashed or unusable review approves (architect_error), and so does a spending limit that doesn't allow one
+        (skipped). "changes" on a later round carries warnings: the plan goes to the owner with the comments."""
+        emit = self.events.emit
+        if self.budget is not None and not self.budget.allows_start():
+            v = {"verdict": "approve", "comments": [], "round": rnd, "skipped": True}
+            emit("architect_review", task.id, **v)
+            return v
+        emit("task_status", task.id, status="architect_reviewing", attempt=n)
+        try:
+            v = task.review_plan(files, rnd)
+        except Exception as e:
+            v = {"architect_error": True, "note": f"{type(e).__name__}: {e}"}
+        v = normalize_architect_review(v)
+        if v.get("architect_error") and self.budget is not None and not self.budget.allows_start():
+            v = {"verdict": "approve", "comments": [], "skipped": True}   # stopped by the limit, not broken
+        v["round"] = rnd
+        if rnd > 1 and v["verdict"] == "changes":
+            v["warnings"] = True
+        emit("architect_review", task.id, **v)
+        return v
+
+    def _plan_files(self, box: Sandbox) -> dict[str, str]:
+        """The files a planner wrote, as they stand after its checks ({path: contents}), for the architect. Files it
+        deleted are left out. Never fails the attempt: the architect can still read the repo."""
+        files: dict[str, str] = {}
+        try:
+            names = box.exec("git diff --name-only $(git merge-base HEAD main); "
+                             "git ls-files --others --exclude-standard").output.split()
+            for path in sorted(set(names)):
+                r = box.exec(f"cat {shlex.quote(path)}")
+                if r.code == 0:
+                    files[path] = r.output[:MAX_PLAN_FILE_CHARS]
+        except Exception:
+            pass
+        return files
 
     def _attempt_diff(self, box: Sandbox) -> str:
         """The failed attempt's changes against the commit it started from, new files included, for the tech
@@ -589,6 +664,21 @@ def normalize_code_review(v, hidden_tests=()) -> dict:
         if not any(str(c).strip() for c in raw):        # "changes" with nothing to change: not a usable review
             return {"verdict": "approve", "comments": [], "review_error": True, "note": REVIEW_ERROR_NOTE}
         return {"verdict": "approve", "comments": [], "note": SCRUBBED_NOTE}
+    return {"verdict": v["verdict"], "comments": comments}
+
+
+def normalize_architect_review(v) -> dict:
+    """An architect verdict the engine can act on, whatever came back: {verdict: approve | changes, comments,
+    architect_error?}. Comments are one plain line each, at most MAX_ARCHITECT_COMMENTS. Anything unusable (no verdict,
+    "changes" with nothing to change, a crash) approves with architect_error: the architect never blocks planning."""
+    if not isinstance(v, dict) or v.get("verdict") not in ("approve", "changes") or v.get("architect_error"):
+        return {"verdict": "approve", "comments": [], "architect_error": True}
+    raw = v.get("comments")
+    raw = [raw] if isinstance(raw, str) else raw if isinstance(raw, list) else []
+    comments = [c for c in (" ".join(str(x).split())[:500] for x in raw if isinstance(x, (str, int, float))) if c]
+    comments = comments[:MAX_ARCHITECT_COMMENTS]
+    if v["verdict"] == "changes" and not comments:
+        return {"verdict": "approve", "comments": [], "architect_error": True}
     return {"verdict": v["verdict"], "comments": comments}
 
 

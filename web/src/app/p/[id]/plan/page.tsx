@@ -13,6 +13,7 @@ import { BudgetLine } from "@/components/Budget";
 import { estimateBuild } from "@/lib/estimate";
 import { QuickChangeBox } from "@/components/QuickChange";
 import { PmCard } from "@/components/PM";
+import { ArchitectReading, ArchitectVerdict, ArchitectWarnings } from "@/components/Architect";
 import { pmSuggestion, priorityName } from "@/lib/pm";
 import { priorityOf } from "../../../../../convex/pm";
 
@@ -63,6 +64,8 @@ export default function PlanPage() {
   const pm = estimate && !changeWaiting && budgetUsd !== undefined
     ? pmSuggestion(plan.tasks, estimate, spentUsd ?? state.cost_usd, budgetUsd) : null;
   const pmCard = pm && pm.kind !== "fits" ? pm : null;
+  // the architect's review of what you're approving: the change's plan, or the build plan (docs/architect.md)
+  const architect = changeWaiting ? changeWaiting.architect : state.architect;
   const decide = async (deferred?: string[]) => {
     setBusy(true);
     setApproveError(null);
@@ -86,6 +89,7 @@ export default function PlanPage() {
           <h2 className="text-2xl font-semibold tracking-tight">
             {plan.tasks.length} features, {parallelNow} can start right away
           </h2>
+          {!change && <div className="mt-1.5"><ArchitectVerdict review={state.architect} /></div>}
         </div>
         <div className="flex flex-wrap items-center gap-2 text-sm text-muted">
           <FileCode2 size={15} strokeWidth={1.6} /> Shared contract
@@ -156,6 +160,9 @@ export default function PlanPage() {
                 </div>
                 {pmCard && budgetUsd !== undefined && (
                   <div className="basis-full"><PmCard suggestion={pmCard} budget={budgetUsd} /></div>
+                )}
+                {architect?.warnings && (
+                  <div className="basis-full"><ArchitectWarnings review={architect} /></div>
                 )}
                 <ShieldCheck className="text-you" size={20} strokeWidth={1.6} />
                 <p className="mr-auto text-sm">
@@ -353,6 +360,7 @@ function PlannerAtWork() {
         contract they&apos;ll all use. This usually takes 10 to 25 minutes. You&apos;ll approve it before anything is built.
       </p>
       <Elapsed elapsed={elapsed} />
+      {planner?.status === "architect_reviewing" && <ArchitectReading />}
       <PlannerNotes notes={planner?.notes ?? []} empty="Reading your description…" />
     </div>
   );
@@ -427,6 +435,7 @@ function ChangeAtWork({ change }: { change: ChangeState }) {
         anything is built.
       </p>
       <Elapsed elapsed={elapsed} />
+      {planner?.status === "architect_reviewing" && <ArchitectReading />}
       <div className="w-full max-w-xl">
         <PlannerNotes notes={planner?.notes ?? []} empty="Reading the code and your request…" />
       </div>
@@ -444,6 +453,7 @@ function ChangeReview({ change }: { change: ChangeState }) {
       </h2>
       <p className="mt-1 text-sm text-muted">You asked: &ldquo;{change.text}&rdquo;</p>
       {change.summary && <p className="mt-3 text-[15px] leading-relaxed">{change.summary}</p>}
+      {change.architect && <div className="mt-3"><ArchitectVerdict review={change.architect} /></div>}
       {change.contracts.length > 0 && (
         <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-muted">
           <FileCode2 size={15} strokeWidth={1.6} /> Contract edits
