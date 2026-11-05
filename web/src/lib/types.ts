@@ -9,6 +9,7 @@ export type EngineEvent = {
     | "plan_ready"
     | "plan_decision"
     | "dispute_resolved"
+    | "tech_lead_review" | "escalated" // the tech lead reviews a feature that failed its tries (dev -> tech lead -> you)
     | "build_resumed"
     | "project_finished"
     | "preview_ready"
@@ -73,7 +74,7 @@ export type TaskState = {
   title: string;
   role: Role;
   depends_on: string[];
-  status: string; // queued | working | checking | merging | merged | passed | failed | blocked | error | stopped
+  status: string; // queued | working | checking | disputing | reviewing | merging | merged | passed | failed | blocked | error | stopped
   attempt: number;
   attempts: Attempt[];
   cost_usd: number;
@@ -81,6 +82,20 @@ export type TaskState = {
   since: number; // when the current status began
   started?: number; // when it first started working (the planner's elapsed timer)
   notes?: string[]; // what its agent did last ("Wrote src/x.ts"), newest last, current try only
+  review?: TechLeadReview; // the tech lead's latest review of this task's failed tries (this run)
+  question?: string;       // the tech lead's open question for you (escalated): answer it to retry
+  retry_model?: string;    // the model the tech lead's extra tries ran on ("sonnet"), when it moved to a stronger one
+};
+
+/** The tech lead's verdict on a feature that used all its tries (tech_lead_review). */
+export type TechLeadReview = {
+  decision: "retry" | "escalate";
+  note: string;            // its guidance for the dev agent, in plain English
+  question?: string;       // escalate only: its question for you
+  stronger_model: boolean;
+  model?: string;          // the dev model for the extra tries, when it moved to a stronger one
+  error?: boolean;         // the tech lead couldn't review (its run failed): escalated with a generic question
+  t: number;
 };
 
 export type ProjectStatus =
@@ -96,7 +111,7 @@ export type ProjectStatus =
 
 export type FeedItem = {
   t: number;
-  who: Role | "engine" | "you";
+  who: Role | "engine" | "you" | "tech lead";
   channel: "planning" | "tests" | "build";
   text: string;
   tone?: "good" | "warn" | "bad";

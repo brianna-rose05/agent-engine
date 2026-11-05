@@ -46,7 +46,8 @@ export const projectForWorker = queryGeneric({
              change: latest ? { n: latest.n, text: latest.text } : null, quick,
              repo, merged, plan: p.resume || change ? p.plan ?? null : null, name: p.name,
              description: composeSpec(p.name, p.description, p.wizard), model: p.model, status: p.status, planNote: p.planNote ?? "",
-             budgetUsd: budgetOf(p), costUsd: p.costUsd };
+             budgetUsd: budgetOf(p), costUsd: p.costUsd,
+             answers: p.answers ?? {} }; // owner answers to the tech lead, {taskId: text} (convex/answers.ts)
   },
 });
 

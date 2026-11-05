@@ -32,6 +32,7 @@ export default defineSchema({
     ship: v.optional(v.any()), // the running/last ship: {from, rollbackTo: n|null, state?, checks?: [{name, label, status, detail?}], reason?}
     versions: v.optional(v.array(v.any())), // shipped versions, oldest first: {n, tag, sha, url, at, label?}
     production: v.optional(v.any()), // what production runs now: {url, version, at}
+    answers: v.optional(v.record(v.string(), v.string())), // owner answers to the tech lead: {taskId: text} (convex/answers.ts)
   }),
   events: defineTable({
     projectId: v.id("projects"),
@@ -43,7 +44,7 @@ export default defineSchema({
   // written by engine:record (convex/notifications.ts); ts in milliseconds since epoch
   notifications: defineTable({
     projectId: v.id("projects"),
-    kind: v.string(), // needs_approval | finished | budget_reached | preview_ready
+    kind: v.string(), // needs_approval | needs_you | finished | budget_reached | preview_ready
     title: v.string(),
     body: v.string(),
     ts: v.number(),

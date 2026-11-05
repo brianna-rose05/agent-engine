@@ -11,7 +11,7 @@ import { checkOwner } from "./owner";
  * set in Convex; without them, nothing is sent and nothing is logged.
  */
 
-export type NotificationKind = "needs_approval" | "finished" | "budget_reached" | "preview_ready";
+export type NotificationKind = "needs_approval" | "needs_you" | "finished" | "budget_reached" | "preview_ready";
 export type Note = { kind: NotificationKind; title: string; body: string; email: boolean };
 
 const dollars = (x: unknown) => `$${Number(x ?? 0).toFixed(2)}`;
@@ -39,6 +39,13 @@ export function notificationFor(kind: string, data: Record<string, unknown> | nu
     case "budget_reached":
       return { kind: "budget_reached", title: `${project} reached its spending limit`, email: false,
                body: `${dollars(d.spent)} of ${dollars(d.budget)} spent. Running agents finish; nothing new starts.` };
+    case "escalated": {
+      // the tech lead couldn't get a failed feature through and has a question only the owner can answer
+      const q = typeof d.question === "string" ? d.question.trim() : "";
+      return { kind: "needs_you", title: `${project}: the tech lead needs you`, email: true,
+               body: q ? (q.length > 300 ? `${q.slice(0, 297)}...` : q)
+                       : "A feature failed and the tech lead has a question for you. Answer it on the board to retry." };
+    }
     case "preview_ready":
       return typeof d.url === "string" && d.url.startsWith("https://")
         ? { kind: "preview_ready", title: `${project}: preview is live`, body: d.url, email: false }
@@ -55,11 +62,22 @@ export const notificationPath = (projectId: string, kind: string) =>
 /** Whether email is set up (both settings present). Never exposes the key. */
 export const emailEnabled = () => Boolean(process.env.RESEND_API_KEY && process.env.NOTIFY_EMAIL);
 
+type StoredNote = { projectId: string; kind: string; title: string; body: string; read: boolean };
+
+/** Whether an unread notification for the same project already says exactly this. */
+export const isDuplicate = (unread: StoredNote[], projectId: string, n: Pick<Note, "kind" | "title" | "body">) =>
+  unread.some((x) => !x.read && String(x.projectId) === projectId && x.kind === n.kind && x.title === n.title && x.body === n.body);
+
 /** Called by engine:record for every event (except agent_activity). */
 export async function notifyFor(ctx: GenericMutationCtx<GenericDataModel>, projectId: GenericId<"projects">, projectName: string, kind: string,
                                 data: Record<string, unknown> | null | undefined) {
   const n = notificationFor(kind, data, projectName);
   if (!n) return;
+  if (n.kind === "needs_you") {
+    // the same question already waiting unread (e.g. a resent event) isn't worth a second alert or email
+    const unread = await ctx.db.query("notifications").withIndex("by_read", (q) => q.eq("read", false)).take(200);
+    if (isDuplicate(unread as unknown as StoredNote[], String(projectId), n)) return;
+  }
   await ctx.db.insert("notifications", { projectId, kind: n.kind, title: n.title, body: n.body, ts: Date.now(), read: false });
   if (n.email && emailEnabled()) {
     await ctx.scheduler.runAfter(0, anyApi.notifications.sendEmail,

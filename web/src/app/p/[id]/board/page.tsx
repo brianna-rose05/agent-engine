@@ -7,7 +7,8 @@ import { ArrowRight, CircleCheck, Clock3, RefreshCw, X } from "lucide-react";
 import { useProject } from "@/lib/project-store";
 import { COLUMNS, INTEGRATION, features, money, type Column, type Feature } from "@/lib/reduce";
 import type { TaskState } from "@/lib/types";
-import { Avatar, Mono } from "@/components/ui";
+import { Avatar, Mono, TaskStatusPill } from "@/components/ui";
+import { RetriedOn, TechLeadThread } from "@/components/TechLead";
 import { Feed } from "@/components/Feed";
 import { ChangeRequestBox } from "@/components/ChangeRequest";
 import { QuickChangeBox } from "@/components/QuickChange";
@@ -110,8 +111,10 @@ function Card({ f, now, onOpen, titles }: { f: Feature; now: number; onOpen: () 
   const doing =
     f.column === "tests" ? `Writing tests · ${since(now, f.qa)}s`
     : f.column === "building" ? `Building · ${since(now, f.dev)}s`
+    : f.reviewing ? "Tech lead reviewing the failed tries"
     : f.column === "checking" ? (integ ? "Building the app and opening every page" : "Running hidden tests")
     : f.column === "done" ? `Verified · ${money(f.cost_usd)}`
+    : f.question ? `Tech lead asks: ${f.question}`
     : f.column === "attention" ? (f.dev?.error || f.qa?.error || "Stopped after 3 tries")
     : f.waitingOn.length ? (integ ? `Waiting for ${f.waitingOn.length} feature${f.waitingOn.length > 1 ? "s" : ""} to merge`
                                   : `Waiting on ${f.waitingOn.map((d) => titles[d] ?? d).join(", ")}`)
@@ -136,14 +139,18 @@ function Card({ f, now, onOpen, titles }: { f: Feature; now: number; onOpen: () 
             <CircleCheck size={14} strokeWidth={1.8} />
           </span>
         ) : (
-          <Avatar who={f.active ?? (f.column === "attention" ? "engine" : testsDone ? "dev" : "qa")} size={24} active={!!f.active} />
+          <Avatar who={f.reviewing || f.question ? "tech lead" : f.active ?? (f.column === "attention" ? "engine" : testsDone ? "dev" : "qa")}
+            size={24} active={!!f.active} />
         )}
         <span className="text-[11px] font-medium text-faint">{f.id}</span>
-        {f.tries > 1 && (
-          <span className="ml-auto flex items-center gap-1 rounded-full bg-check-bg px-1.5 py-0.5 text-[11px] text-check">
-            <RefreshCw size={10} strokeWidth={2} /> try {f.tries}
-          </span>
-        )}
+        <span className="ml-auto flex items-center gap-1">
+          <RetriedOn model={f.retry_model} compact />
+          {f.tries > 1 && (
+            <span className="flex items-center gap-1 rounded-full bg-check-bg px-1.5 py-0.5 text-[11px] text-check">
+              <RefreshCw size={10} strokeWidth={2} /> try {f.tries}
+            </span>
+          )}
+        </span>
       </div>
       <p className="text-[14px] font-medium leading-snug">{f.title}</p>
       <div className="flex gap-1" aria-label="Tests, build, verified">
@@ -166,7 +173,7 @@ function Drawer({ f, onClose }: { f: Feature; onClose: () => void }) {
     <div className="rounded-xl border border-line p-3">
       <p className="mb-2 flex items-center gap-2 text-sm font-medium">
         <Avatar who={label === "Tests" ? "qa" : "dev"} size={22} /> {label}
-        <span className="ml-auto text-xs font-normal text-faint">{t ? t.status : "not started"}</span>
+        <span className="ml-auto"><TaskStatusPill status={t?.status} /></span>
       </p>
       {t?.attempts.length ? (
         <ol className="flex flex-col gap-1.5">
@@ -220,6 +227,7 @@ function Drawer({ f, onClose }: { f: Feature; onClose: () => void }) {
           </button>
         </div>
         <p className="text-sm leading-relaxed text-muted">{f.spec}</p>
+        {f.dev && <TechLeadThread task={f.dev} />}
         {row("Tests", f.qa)}
         {row("Build", f.dev)}
         <p className="text-sm text-muted">
