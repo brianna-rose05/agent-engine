@@ -27,6 +27,8 @@ export default defineSchema({
     budgetUsd: v.optional(v.number()), // spending limit in $, enforced by the engine (convex/budget.ts, engine/budget.py)
     checkpoints: v.optional(v.array(v.any())), // save points, oldest first: {n, tag, sha, label, at, merged} (convex/checkpoints.ts)
     rollback: v.optional(v.any()), // the running/last rollback: {n, from} (from = status before it, restored if it fails)
+    comments: v.optional(v.array(v.any())), // comment pins on the preview, oldest first: {n, path, pathKnown, x, y, viewport, text, at, status, sentAs?} (convex/comments.ts)
+    commentSeq: v.optional(v.number()), // the highest pin number given so far, so a deleted pin's number isn't reused
     quicks: v.optional(v.array(v.any())), // quick changes, oldest first: {n, text, at, result?, reason?} (convex/quick.ts)
     // Ship to production (convex/ship.ts). status is "shipping" while a ship runs, then back to ship.from.
     ship: v.optional(v.any()), // the running/last ship: {from, rollbackTo: n|null, state?, checks?: [{name, label, status, detail?}], reason?}

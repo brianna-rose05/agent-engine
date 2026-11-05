@@ -654,16 +654,27 @@ How to wire it (read AGENTS.md first):
   - "not_configured": "Owner setup isn't configured for this app."
   Link it from the sign-in page's footer as "Owner setup". It must load without a session.
 - A simple header with links to the main pages in src/app/layout.tsx, styled with the look in the brief.
+- The root layout src/app/layout.tsx MUST render the template's Studio bridge inside <body>:
+  `import {{ StudioBridge }} from "@/lib/studio-bridge";` and `<StudioBridge />`. It tells Studio's preview which
+  page is open (nothing else) so the owner's comment pins land on the right page. Keep it if you rewrite the layout.
 - You may only edit files under src/app/, src/middleware.ts, and your own tests under tests/unit/.
 
 Before saying DONE, run all of this and fix anything that fails:
 {check}"""
 
 
-def integration_check(stack: PythonStack, pages: list[str]):
+def integration_check(stack: PythonStack, pages: list[str], bridge: bool = False):
+    """The whole-app check. With `bridge` (the integrator's, not a quick change's: apps built before the bridge
+    existed get it on their next integration), the root layout must also render the template's StudioBridge."""
     cmd = stack.integration_check_cmd(pages)
+    bridge_problem = getattr(stack, "bridge_problem", None) if bridge else None
 
     def check(box: Sandbox) -> tuple[bool, str, str]:
+        if bridge_problem:
+            r = box.exec("cat src/app/layout.tsx")
+            problem = bridge_problem(r.output if r.code == 0 else None)
+            if problem:
+                return False, f"{problem} (the Studio bridge; see the instructions)", problem
         r = box.exec(cmd, timeout=1500)
         tail = failure_excerpt(r.output)
         if r.code != 0:
@@ -711,7 +722,7 @@ def integration_task(plan: dict, description: str, stack: PythonStack, agent=Non
     return Task("INT", "Integrate: pages, sign-in and data" if not change else "Integrate the change: pages and data",
                 spec, list(stack.integration_scope), "", role="dev", agent=agent,
                 depends_on=[t["id"] for t in waits_on if t["id"] not in ui], waits_for=ui,
-                check=integration_check(stack, pages))
+                check=integration_check(stack, pages, bridge=True))
 
 
 # -------------------------------------------------------------------- run

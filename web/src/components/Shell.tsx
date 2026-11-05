@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Hash, History, KanbanSquare, ListChecks, ListTree, Plus, Rocket, Sparkles } from "lucide-react";
+import { Hash, History, KanbanSquare, ListChecks, ListTree, MessageSquarePlus, Plus, Rocket, Sparkles } from "lucide-react";
 import { useQuery } from "convex/react";
 import { api, liveEnabled, useOwner } from "@/lib/convex";
 import { money } from "@/lib/reduce";
@@ -26,7 +26,8 @@ export function Shell({
         ...(projectNav.id !== "demo" ? [{ href: `${base}/setup`, label: "Setup", Icon: ListChecks }] : []),
         { href: `${base}/plan`, label: "Plan", Icon: ListTree },
         { href: `${base}/board`, label: "Board", Icon: KanbanSquare },
-        ...(projectNav.id !== "demo" ? [{ href: `${base}/history`, label: "History", Icon: History }, // docs/checkpoints.md
+        ...(projectNav.id !== "demo" ? [{ href: `${base}/preview`, label: "Preview", Icon: MessageSquarePlus }, // comment pins (convex/comments.ts)
+                                        { href: `${base}/history`, label: "History", Icon: History }, // docs/checkpoints.md
                                         { href: `${base}/ship`, label: "Ship", Icon: Rocket }] : []), // convex/ship.ts
       ]
     : [];

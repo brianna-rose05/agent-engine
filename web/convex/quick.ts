@@ -1,6 +1,6 @@
-import { mutationGeneric, queryGeneric } from "convex/server";
+import { mutationGeneric, queryGeneric, type AnyDataModel, type GenericMutationCtx } from "convex/server";
 import { anyApi } from "convex/server";
-import { ConvexError, v } from "convex/values";
+import { ConvexError, v, type GenericId } from "convex/values";
 
 import { checkOwner } from "./owner";
 
@@ -87,25 +87,34 @@ export const forProject = queryGeneric({
   },
 });
 
+/**
+ * Start a quick change on a project row: every rule a quick change has (a repo, a finished app, the text), then the
+ * row patch and the worker. Shared by requestQuickChange and comment pins sent as a quick change (convex/comments.ts),
+ * so both follow exactly the same rules. Returns the quick change's number.
+ */
+export async function startQuickChange(ctx: GenericMutationCtx<AnyDataModel>, id: GenericId<"projects">, text: string): Promise<number> {
+  const p = await ctx.db.get(id);
+  if (!p) throw new ConvexError("This project doesn't exist any more.");
+  if (!p.repo) throw new ConvexError("This project has no repo yet, so there's nothing to change.");
+  if (!canRequestQuickChange(p.status, true, false)) {
+    throw new ConvexError(p.status === "failed"
+      ? "Quick changes are for an app that's finished. Retry the build or ask for a change request instead."
+      : "The team is still working on this project. Ask for a quick change once it has finished.");
+  }
+  const checked = checkQuickText(text);
+  if (!checked.ok) throw new ConvexError(checked.message);
+  const quicks = (p.quicks ?? []) as QuickChange[];
+  const entry: QuickChange = { n: nextQuickNumber(quicks), text: checked.text, at: Date.now() };
+  await ctx.db.patch(id, { status: "queued", mode: "quick", resume: false, error: undefined, quicks: [...quicks, entry] });
+  await ctx.scheduler.runAfter(0, anyApi.projects.startWorker, { projectId: id });
+  return entry.n;
+}
+
 /** Ask for a quick change to a built project: one UI task, checked like the whole app, merged without approval. */
 export const requestQuickChange = mutationGeneric({
   args: { ...owner, id: v.id("projects"), text: v.string() },
   handler: async (ctx, { key, id, text }) => {
     checkOwner(key);
-    const p = await ctx.db.get(id);
-    if (!p) throw new ConvexError("This project doesn't exist any more.");
-    if (!p.repo) throw new ConvexError("This project has no repo yet, so there's nothing to change.");
-    if (!canRequestQuickChange(p.status, true, false)) {
-      throw new ConvexError(p.status === "failed"
-        ? "Quick changes are for an app that's finished. Retry the build or ask for a change request instead."
-        : "The team is still working on this project. Ask for a quick change once it has finished.");
-    }
-    const checked = checkQuickText(text);
-    if (!checked.ok) throw new ConvexError(checked.message);
-    const quicks = (p.quicks ?? []) as QuickChange[];
-    const entry: QuickChange = { n: nextQuickNumber(quicks), text: checked.text, at: Date.now() };
-    await ctx.db.patch(id, { status: "queued", mode: "quick", resume: false, error: undefined, quicks: [...quicks, entry] });
-    await ctx.scheduler.runAfter(0, anyApi.projects.startWorker, { projectId: id });
-    return entry.n;
+    return startQuickChange(ctx, id, text);
   },
 });

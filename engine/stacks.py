@@ -136,7 +136,7 @@ class NextSupabaseStack(PythonStack):
                 "src/test/db.ts", "src/app/layout.tsx"}
     template = TEMPLATES / "next-supabase"
     reserved |= {"src/lib/pglite.ts", "src/lib/runtime.ts", "src/lib/auth.ts", "src/lib/session.ts", "src/lib/migrate.ts",
-                 "src/lib/owner.ts"}
+                 "src/lib/owner.ts", "src/lib/studio-bridge.tsx"}
 
     # ---------------------------------------------------------------- integration
     integration = True
@@ -147,6 +147,20 @@ class NextSupabaseStack(PythonStack):
     integration_scope = ["src/app/*", "src/middleware.ts", "tests/unit/*"]
     # Pages every web app has, whatever its plan lists: the owner claims the app there (src/lib/owner.ts).
     required_pages = ("/owner-setup",)
+    # The root layout renders the template's StudioBridge (src/lib/studio-bridge.tsx), which tells Studio's preview
+    # page which page is open when the app is framed there (comment pins). The integrator's check verifies it.
+    BRIDGE_IMPORT_RE = re.compile(r"""import\s*\{[^}]*\bStudioBridge\b[^}]*\}\s*from\s*["']@/lib/studio-bridge["']""")
+    BRIDGE_RENDER_RE = re.compile(r"<StudioBridge\s*/>")
+
+    def bridge_problem(self, layout: str | None) -> str | None:
+        """Why src/app/layout.tsx (its text, None when missing) doesn't render the Studio bridge, or None."""
+        if layout is None:
+            return "src/app/layout.tsx is missing"
+        if not self.BRIDGE_IMPORT_RE.search(layout):
+            return 'src/app/layout.tsx must import { StudioBridge } from "@/lib/studio-bridge"'
+        if not self.BRIDGE_RENDER_RE.search(layout):
+            return "src/app/layout.tsx must render <StudioBridge /> inside <body>"
+        return None
 
     def integration_check_cmd(self, pages: list[str]) -> str:
         """The whole app: types, lint, every test, a production build, and every page answering without a
@@ -314,6 +328,9 @@ AGENTS_MD = """# Team rules (Next.js + Supabase)
 - The app runs without any accounts in local mode (no DATABASE_URL): an in-process Postgres with the
   migrations applied, and local logins. `node scripts/check-app.mjs /route ...` (after `npx next build`)
   starts it and checks every page answers without a server error.
+- The root layout (src/app/layout.tsx) renders `<StudioBridge />` from src/lib/studio-bridge.tsx (a template file)
+  inside <body>. When the app is shown inside Studio's preview it tells Studio which page is open, and nothing else.
+  Keep it whenever the layout is rewritten.
 - Previews run on a real, durable Postgres: the app applies new migrations on its first request there. So
   migrations are plain Postgres that also runs on PGlite, and once merged they are never edited: change the
   schema with a new, higher-numbered migration.

@@ -355,6 +355,63 @@ def test_owner_ts_is_a_reserved_template_file_that_upgrades_reach(tmp_path):
     assert "src/lib/owner.ts" in git(repo, "ls-tree", "-r", "--name-only", "HEAD").split()
 
 
+def test_studio_bridge_is_a_reserved_template_file_that_upgrades_reach(tmp_path):
+    """Comment pins in Studio's preview need the page path from inside the cross-origin iframe: the template's
+    StudioBridge posts it. It's a template file (no task may own it) and old projects get it on upgrade."""
+    from engine.stacks import NextSupabaseStack, upgrade_template
+    stack = NextSupabaseStack(link_node_modules=False)
+    assert "src/lib/studio-bridge.tsx" in stack.reserved
+    body = stack.template_files()["src/lib/studio-bridge.tsx"].decode()
+    assert "window.parent === window" in body and '"studio:path"' in body and "location.pathname" in body
+    assert "document.cookie" not in body and "fetch(" not in body              # posts the path only
+    assert stack.bridge_problem((stack.template / "src/app/layout.tsx").read_text()) is None   # the template renders it
+    plan = json.loads((WEB / "plan" / "plan.json").read_text())
+    taken = dict(plan, tasks=[dict(plan["tasks"][0], module="src/lib/studio-bridge.tsx"), *plan["tasks"][1:]])
+    assert any("'src/lib/studio-bridge.tsx'" in m for m in plan_problems(taken, stack))
+    repo = build_project_repo(tmp_path / "r", stack)
+    (repo / "src/lib/studio-bridge.tsx").unlink()                         # a project built before the bridge
+    git(repo, "add", "-A")
+    git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "old project")
+    assert upgrade_template(repo, stack) == ["src/lib/studio-bridge.tsx"]
+
+
+def test_integrator_must_render_the_studio_bridge_and_its_check_verifies_it():
+    from engine.interfaces import ExecResult
+    from engine.project import integration_task
+    from engine.quick import quick_task
+    from engine.stacks import AGENTS_MD, NextSupabaseStack
+    stack = NextSupabaseStack(link_node_modules=False)
+    plan = json.loads((WEB / "plan" / "plan.json").read_text())
+    t = integration_task(plan, "A booking site", stack)
+    assert 'import { StudioBridge } from "@/lib/studio-bridge";' in t.spec and "<StudioBridge />" in t.spec
+    assert "StudioBridge" in AGENTS_MD and "src/lib/studio-bridge.tsx" in AGENTS_MD
+    assert stack.bridge_problem((WEB / "integration" / "src/app/layout.tsx").read_text()) is None  # the scripted one
+
+    class Box:
+        def __init__(self, layout):
+            self.layout, self.ran = layout, []
+
+        def exec(self, cmd, timeout=None):
+            self.ran.append(cmd)
+            if cmd == "cat src/app/layout.tsx":
+                return ExecResult(1, "No such file") if self.layout is None else ExecResult(0, self.layout)
+            return ExecResult(0, "all good")
+
+    plain = "export default function L({ children }) { return <html><body>{children}</body></html>; }"
+    imported = 'import { StudioBridge } from "@/lib/studio-bridge";\n' + plain
+    for layout, why in ((None, "missing"), (plain, "must import"), (imported, "must render")):
+        box = Box(layout)
+        ok, reason, _ = t.check(box)
+        assert not ok and why in reason and len(box.ran) == 1, (layout, reason)          # the build never ran
+    good = imported.replace("{children}</body>", "<StudioBridge />{children}</body>")
+    box = Box(good)
+    assert t.check(box)[0] and len(box.ran) == 2
+    # a quick change doesn't require it: older apps keep working until their next integration adds it
+    q = quick_task(1, "Make the Book button green", plan, stack)
+    box = Box(plain)
+    assert q.check(box)[0] and box.ran == [stack.integration_check_cmd(["/", "/sign-up", "/book"])]
+
+
 @web
 def test_web_dev_work_that_fails_types_or_tests_is_rejected(tmp_path):
     class Sloppy(ScriptedTeam):
