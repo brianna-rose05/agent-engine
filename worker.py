@@ -3,7 +3,7 @@
 Reads the project from Convex, creates its own private GitHub repo, plans it, waits for the owner to
 approve the plan in the app, then builds it in Daytona sandboxes, streaming every step back to Convex.
 Started by the `Worker` workflow, which the app triggers when a project is created, retried
-(`resume`) or changed (`mode: "change"`, docs/change-requests.md)."""
+(`resume`), changed (`mode: "change"`, docs/change-requests.md) or quickly edited (`mode: "quick"`, engine/quick.py)."""
 from __future__ import annotations
 
 import argparse
@@ -22,12 +22,14 @@ from engine.convex_sink import ConvexBackend
 from engine.engine import Engine
 from engine.events import Emitter, JsonlSink
 from engine.project import change_project, resume_project, run_project
+from engine.quick import quick_blocked, quick_project
 from engine.stacks import NextSupabaseStack
 from run_benchmark import load_env
 
 ROOT = Path(__file__).parent
 APPROVAL_TIMEOUT_S = 60 * 60
 OWNER = "brianna-rose05"
+QUICK_BUDGET_USD, QUICK_TURNS = 0.50, 40         # a quick change is one small UI task
 # git reads the token from the environment, so it is never written into a URL, a file or a command line
 CREDENTIALS = '!f() { echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f'
 
@@ -120,10 +122,13 @@ def main():
     out = ROOT / "results" / f"{datetime.now():%Y%m%d-%H%M%S}-worker-{a.project_id[-8:]}"
     stack = NextSupabaseStack(link_node_modules=False)
     change = project.get("change") if project.get("mode") == "change" else None
-    resume = bool(project.get("resume")) and not change
+    quick = project.get("quick") if project.get("mode") == "quick" else None
+    resume = bool(project.get("resume")) and not change and not quick
     if change and not change.get("text"):
         raise SystemExit("change run without a change request")
-    if resume or change:                        # retry what failed, or change it: continue in the project's own repo
+    if quick is not None and not quick.get("text"):
+        raise SystemExit("quick run without a quick change request")
+    if resume or change or quick:               # retry, change or quick change: continue in the project's own repo
         if not project.get("repo"):
             raise SystemExit("nothing to retry or change: this project has no repo yet")
         repo_url, repo = project["repo"], out / "repo"
@@ -151,6 +156,11 @@ def main():
     status = "failed"
     results = []
     try:
+        if quick:                               # one UI task, the whole-app check, no plan or approval
+            agent = ClaudeCLIAgent(model=project["model"], max_turns=QUICK_TURNS, budget_usd=min(QUICK_BUDGET_USD, a.budget))
+            results = quick_project(int(quick["n"]), quick["text"], repo, engine, stack, agent=agent)
+            status = "blocked" if quick_blocked(results) else finished(results)
+            return
         if change:                              # plan only the change, wait for approval, build it in the same repo
             planned, results = change_project(int(change["n"]), change["text"], project["description"], repo, engine,
                                               approve=wait_for_decision(backend.project), stack=stack,
@@ -180,7 +190,7 @@ def main():
         # a rejected change merged (and reverted) only its plan: nothing new to deploy
         publish_preview(results if status != "rejected" else [], repo, repo_url, events,
                         merged_before=set(project.get("merged") or []))
-        if status not in ("done", "rejected"):
+        if status not in ("done", "rejected", "blocked"):     # blocked: a quick change that needs a change request
             sys.exit(1)
 
 

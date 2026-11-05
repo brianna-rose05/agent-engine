@@ -40,7 +40,8 @@ class SloppyAgent(ReferenceAgent):
 class ScriptedTeam:
     """Plays every role from a project fixture folder (plan/, acceptance/, solutions/), so the
     whole plan -> QA -> build pipeline can be tested without an API key. Change requests come from
-    changes/<n>/ in the same layout, picked by the task id (C1PLAN, C1T2, C1T2-qa...)."""
+    changes/<n>/ in the same layout, picked by the task id (C1PLAN, C1T2, C1T2-qa...); quick change n (Q<n>)
+    writes the files under quick/<n>/."""
 
     def __init__(self, fixture: Path):
         self.fixture = Path(fixture)
@@ -55,6 +56,12 @@ class ScriptedTeam:
             plan_dir = root / "plan"
             for f in sorted(x for x in plan_dir.rglob("*") if x.is_file()):
                 box.write_file(str(f.relative_to(plan_dir)), f.read_text())
+        elif re.fullmatch(r"Q\d+", task.id):       # a quick change: quick/<n>/ holds the edited files
+            src = self.fixture / "quick" / task.id[1:]
+            for f in sorted(x for x in src.rglob("*") if x.is_file() and x.name != "claim.txt"):
+                box.write_file(str(f.relative_to(src)), f.read_text())
+            claim = src / "claim.txt"                  # optional: what the agent says at the end (default DONE)
+            return AgentReport(claim.read_text().strip() if claim.exists() else "done")
         elif task.id == "INT":                     # the integrator: pages and server actions
             src = self.fixture / "integration"
             for f in sorted(x for x in src.rglob("*") if x.is_file()):

@@ -2,6 +2,7 @@ import { mutationGeneric, queryGeneric } from "convex/server";
 import { ConvexError, v } from "convex/values";
 import { composeSpec } from "./wizard";
 import type { ChangeRequest } from "./changes";
+import { quickForWorker, quickPatch } from "./quick";
 
 /*
  * What the engine (worker.py in GitHub Actions) calls. Authenticated with ENGINE_SECRET, which both sides
@@ -21,7 +22,8 @@ export const projectForWorker = queryGeneric({
     const change = p.mode === "change";
     let merged: string[] = [];
     let repo = p.repo ?? null;
-    if (p.resume || change) {
+    const quick = quickForWorker(p); // mode "quick": {n, text} (convex/quick.ts)
+    if (p.resume || change || quick) {
       // what a retry or a change keeps: every task whose latest status is merged
       const events = await ctx.db.query("events").withIndex("by_project_ts", (q) => q.eq("projectId", projectId)).collect();
       const last: Record<string, string> = {};
@@ -32,8 +34,8 @@ export const projectForWorker = queryGeneric({
       merged = Object.keys(last).filter((k) => last[k] === "merged").sort();
     }
     const latest = change ? ((p.changes ?? []) as ChangeRequest[]).at(-1) : undefined;
-    return { resume: Boolean(p.resume), mode: change ? "change" : p.resume ? "resume" : "build",
-             change: latest ? { n: latest.n, text: latest.text } : null,
+    return { resume: Boolean(p.resume), mode: change ? "change" : quick ? "quick" : p.resume ? "resume" : "build",
+             change: latest ? { n: latest.n, text: latest.text } : null, quick,
              repo, merged, plan: p.resume || change ? p.plan ?? null : null, name: p.name,
              description: composeSpec(p.name, p.description, p.wizard), model: p.model, status: p.status, planNote: p.planNote ?? "" };
   },
@@ -85,6 +87,7 @@ export const record = mutationGeneric({
       patch.status = "building";
       patch.resume = false;
     }
+    Object.assign(patch, quickPatch(p, kind, data)); // quick changes: status and the entry's result (convex/quick.ts)
     if (Object.keys(patch).length) await ctx.db.patch(projectId, patch);
   },
 });

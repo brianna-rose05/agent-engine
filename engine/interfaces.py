@@ -29,6 +29,9 @@ class Task:
     max_attempts: int | None = None                             # overrides the engine's retry limit
     # dispute(failure_output) -> True if the hidden tests were wrong and have been corrected.
     dispute: Callable[[str], bool] | None = field(default=None, repr=False)
+    # stop_when(claim) -> a reason when the agent's final claim means this task can't be done this way (a quick change
+    # that needs a change request): the task ends "blocked" with that reason, without checks or more tries.
+    stop_when: Callable[[str], str | None] | None = field(default=None, repr=False)
 
 
 class SandboxUnavailable(RuntimeError):

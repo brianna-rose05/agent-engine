@@ -16,7 +16,9 @@ export type EngineEvent = {
     | "preview_skipped"
     | "agent_activity"
     | "change_started"
-    | "change_plan_ready";
+    | "change_plan_ready"
+    | "quick_started"
+    | "quick_blocked";
   task_id: string | null;
   data: Record<string, unknown>;
 };
@@ -37,6 +39,15 @@ export type ChangeState = {
   pages: string[];
   decision: "planning" | "pending" | "approved" | "rejected";
   before: ProjectStatus;   // status before the change started, restored if it is sent back
+};
+
+/** One quick change (engine/quick.py): one UI task Q{n}, checked like the whole app, merged without approval. */
+export type QuickState = {
+  n: number;
+  text: string;
+  result: "running" | "done" | "failed" | "blocked";
+  reason?: string;         // why it needs a change request (quick_blocked)
+  before: ProjectStatus;   // status before it started, restored if it didn't merge
 };
 
 export type Attempt = {
@@ -94,6 +105,7 @@ export type ProjectState = {
   preview_url: string | null; // live preview of the finished app, once deployed
   changes: ChangeState[];      // change requests, oldest first
   change: ChangeState | null;  // the latest one (the same object as changes.at(-1))
+  quicks: QuickState[];        // quick changes, oldest first
 };
 
 export type Project = {

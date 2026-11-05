@@ -46,7 +46,8 @@ export function ChangeRequestBox({ compact = false }: { compact?: boolean }) {
         <div className="mr-auto min-w-0">
           <h3 id="change-request-title" className="text-sm font-medium">Request a change</h3>
           <p className="text-xs text-muted">
-            The planner plans only the change, you approve it, and the team builds it in the same repo. Merged work stays.
+            For features and data. The planner plans only the change, you approve it, and the team builds it in the
+            same repo. Merged work stays.
           </p>
         </div>
         {!open && (

@@ -9,6 +9,7 @@ import { currentPlanner, layers } from "@/lib/reduce";
 import type { ChangeState, Plan, TaskState } from "@/lib/types";
 import { Avatar, Mono } from "@/components/ui";
 import { ChangeRequestBox } from "@/components/ChangeRequest";
+import { QuickChangeBox } from "@/components/QuickChange";
 
 export default function PlanPage() {
   const { state, approve, sendBack, project, liveStatus, liveError } = useProject();
@@ -155,7 +156,8 @@ export default function PlanPage() {
         )}
       </AnimatePresence>
 
-      <div className="mt-8">
+      <div className="mt-8 flex flex-col gap-3 empty:hidden">
+        <QuickChangeBox />
         <ChangeRequestBox />
       </div>
 

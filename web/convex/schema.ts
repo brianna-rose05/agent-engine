@@ -23,6 +23,7 @@ export default defineSchema({
     changes: v.optional(v.array(v.any())), // change requests, oldest first: {n, text, at} (convex/changes.ts)
     pendingChange: v.optional(v.any()), // the latest planned change (changes/{n}.json) from change_plan_ready
     changeFrom: v.optional(v.string()), // status before the running change, restored if the change is sent back
+    quicks: v.optional(v.array(v.any())), // quick changes, oldest first: {n, text, at, result?, reason?} (convex/quick.ts)
   }),
   events: defineTable({
     projectId: v.id("projects"),
