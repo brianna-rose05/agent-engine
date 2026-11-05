@@ -4,7 +4,8 @@ Reads the project from Convex, creates its own private GitHub repo, plans it, wa
 approve the plan in the app, then builds it in Daytona sandboxes, streaming every step back to Convex.
 Started by the `Worker` workflow, which the app triggers when a project is created, retried
 (`resume`), changed (`mode: "change"`, docs/change-requests.md), rolled back (`mode: "rollback"`,
-docs/checkpoints.md) or quickly edited (`mode: "quick"`, engine/quick.py)."""
+docs/checkpoints.md), quickly edited (`mode: "quick"`, engine/quick.py) or shipped to production
+(`mode: "ship"`, docs/ship.md)."""
 from __future__ import annotations
 
 import argparse
@@ -161,6 +162,49 @@ def checkpoint_label(change: dict | None, resume: bool, quick: dict | None = Non
     return "Retry finished" if resume else "Build finished"
 
 
+def ship_sandbox(repo_url: str, token: str, run_id: str, stack):
+    """One web sandbox on main for the ship checks (engine/ship.py runs them; no agent is installed or run)."""
+    from engine.sandboxes.daytona_sandbox import DaytonaSandbox
+    return DaytonaSandbox(repo_url, "SHIP", 1, github_token=token, run_id=run_id, **stack.daytona_options())
+
+
+def run_ship_mode(project: dict, backend, out: Path, token: str, stack) -> None:
+    """Mode "ship" (docs/ship.md): ship main as the next version, or (ship.rollbackTo) redeploy an earlier
+    version to production. Never touches the preview. Always ends with project_finished {status: "done"}:
+    shipping never changes whether the app is built. Exits 1 if the ship failed."""
+    from engine.ship import run_ship
+    ship = project.get("ship") or {}
+    rollback_to = ship.get("rollbackTo")
+    rollback_to = int(rollback_to) if rollback_to is not None else None
+    repo_url, repo = project["repo"], out / "repo"
+    out.mkdir(parents=True, exist_ok=True)
+    events = Emitter(backend, JsonlSink(out / "events.jsonl"))
+    status = "failed"
+    try:
+        try:
+            subprocess.run(["git", "-c", f"credential.helper={CREDENTIALS}", "clone", "-q", repo_url, str(repo)],
+                           check=True, capture_output=True)
+            subprocess.run(["git", "config", "credential.helper", CREDENTIALS], cwd=repo, check=True)
+        except Exception:
+            events.emit("ship_started", version=rollback_to, rollback=rollback_to is not None)
+            events.emit("ship_failed", reason="Couldn't download the project's repo from GitHub. Try again.")
+            return
+        if rollback_to is None:                 # before tagging, so the version includes the current template
+            try:
+                if files := upgrade_template(repo, stack):
+                    events.emit("template_updated", files=files)
+            except Exception as e:
+                print(f"template: not updated ({type(e).__name__})")
+        slug = repo_url.rstrip("/").rsplit("/", 1)[-1]        # the repo name, as for previews
+        status = run_ship(repo, slug, events.emit, stack=stack, rollback_to=rollback_to,
+                          open_box=lambda: ship_sandbox(repo_url, token, out.name, stack))
+    finally:
+        events.emit("project_finished", status="done", repo=repo_url)
+        print(f"project ship: {status} ({repo_url})")
+        if status != "live":
+            sys.exit(1)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--project-id", required=True)
@@ -191,6 +235,11 @@ def main():
         raise SystemExit("change run without a change request")
     if quick is not None and not quick.get("text"):
         raise SystemExit("quick run without a quick change request")
+    if project.get("mode") == "ship":           # no agents: checks, a version tag, a production deploy
+        if not project.get("repo"):
+            raise SystemExit("nothing to ship: this project has no repo yet")
+        run_ship_mode(project, backend, out, token, stack)
+        return
     template_updated: list[str] = []
     if resume or change or rollback_to or quick:   # retry, change, rollback or quick change: the project's own repo
         if not project.get("repo"):
