@@ -13,6 +13,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Callable
 
+from engine.budget import STOPPED, Budget
 from engine.events import Emitter
 from engine.gitlock import repo_lock
 from engine.interfaces import Agent, Sandbox, SandboxLost, SandboxUnavailable, Task
@@ -100,6 +101,7 @@ class Result:
     task: str
     title: str
     status: str = "queued"      # merged | passed (verified, not merged) | failed | merge_conflict | error | blocked
+                                # | stopped (the project's spending limit was reached before it could start or retry)
     attempts: list[Attempt] = field(default_factory=list)
     error: str = ""
 
@@ -127,9 +129,10 @@ def git(args: list[str], repo: Path) -> subprocess.CompletedProcess:
 
 class Engine:
     def __init__(self, repo: Path, agent: Agent, make_sandbox: Callable[[Task, int], Sandbox],
-                 max_attempts: int = MAX_ATTEMPTS, events: Emitter | None = None):
+                 max_attempts: int = MAX_ATTEMPTS, events: Emitter | None = None, budget: Budget | None = None):
         self.repo = Path(repo)
         self.events = events or Emitter()
+        self.budget = budget                    # the project's spending limit (engine/budget.py); None: no limit
         self.sandbox_retries = SANDBOX_RETRIES
         self.infra_retries = INFRA_RETRIES
         self.sleep = time.sleep
@@ -184,6 +187,8 @@ class Engine:
         disputes, last_fixed = 0, False
         try:
             verdict = task.already_done() if task.already_done is not None else None
+            if verdict == "unconfirmed" and self._out_of_budget(res):
+                return res                            # the reviewer was stopped by the budget, not unconvinced
             if verdict == "unconfirmed":
                 res.status = "failed"
                 res.error = ("QA's tests all pass on the current code, and the reviewer didn't confirm they test the "
@@ -195,12 +200,16 @@ class Engine:
                 return res
             attempts = _Attempts(task.max_attempts or self.max_attempts)
             for n in attempts:
+                if self._out_of_budget(res):          # no new attempt once the project's limit is reached
+                    return res
                 t0 = time.time()
                 with self._open_sandbox(task, n, attempts) as box:
                     for path, body in task.setup_files.items():
                         box.write_file(path, body)
                     emit("task_status", task.id, status="working", attempt=n)
                     rep = self._run_agent(agent, task, box, n, feedback)
+                    if self.budget is not None:
+                        self.budget.add(rep.cost_usd)
                     emit("task_status", task.id, status="checking", attempt=n)
                     ok, reason, changed, out = self.verify(task, box)
                     if not ok and reason == "made no changes" and rep.claim.startswith("error"):
@@ -253,6 +262,13 @@ class Engine:
             res.status, res.error = "error", f"{type(e).__name__}: {e}"
         return res
 
+    def _out_of_budget(self, res: Result) -> bool:
+        """True (and the result marked stopped) when the spending limit keeps this task from going on."""
+        if self.budget is None or self.budget.allows_start():
+            return False
+        res.status, res.error = STOPPED, self.budget.reason()
+        return True
+
     def _holds_on_main(self, task: Task) -> bool:
         """QA said a change already holds (its tests all pass on the current code). Don't take its word for it:
         run the task's own checks, hidden tests included, on a fresh sandbox of main."""
@@ -267,12 +283,15 @@ class Engine:
         """Run the agent, streaming what it is doing as throttled `agent_activity` events when it can report
         progress (the CLI agent can; scripted and test agents don't take the argument). Without this a
         20-minute planner run showed one static line and the user thought it was stuck."""
+        extra = {}
+        if self.budget is not None and _takes(agent.run, "budget_cap"):   # never more than the project has left
+            extra["budget_cap"] = self.budget.remaining
         if not _takes(agent.run, "progress"):
-            return agent.run(task, box, attempt=n, feedback=feedback)
+            return agent.run(task, box, attempt=n, feedback=feedback, **extra)
         activity = _Activity(lambda notes: self.events.emit("agent_activity", task.id, attempt=n,
                                                              note=notes[-1], notes=notes), self.clock)
         try:
-            return agent.run(task, box, attempt=n, feedback=feedback, progress=activity.add)
+            return agent.run(task, box, attempt=n, feedback=feedback, progress=activity.add, **extra)
         finally:
             activity.flush()
 
@@ -333,6 +352,11 @@ class Engine:
         with ThreadPoolExecutor(parallel) as pool:
             running = {}
             while pending or running:
+                if pending and self.budget is not None and not self.budget.allows_start():
+                    for tid, t in pending.items():          # over budget: nothing else starts (running ones finish)
+                        results[tid] = Result(tid, t.title, status=STOPPED, error=self.budget.reason())
+                        self.events.emit("task_status", tid, status=STOPPED, error=results[tid].error)
+                    pending.clear()
                 blocked_any = True
                 while blocked_any:                          # propagate failures down the graph
                     blocked_any = False

@@ -9,6 +9,8 @@ import { currentPlanner, layers } from "@/lib/reduce";
 import type { ChangeState, Plan, TaskState } from "@/lib/types";
 import { Avatar, Mono } from "@/components/ui";
 import { ChangeRequestBox } from "@/components/ChangeRequest";
+import { BudgetLine } from "@/components/Budget";
+import { estimateBuild } from "@/lib/estimate";
 
 export default function PlanPage() {
   const { state, approve, sendBack, project, liveStatus, liveError } = useProject();
@@ -50,6 +52,8 @@ export default function PlanPage() {
   const changeWaiting = waiting && change?.decision === "pending" ? change : null;
   const changePlanning = state.status === "planning" && change?.decision === "planning" ? change : null;
   const parallelNow = layers(plan)[0]?.length ?? 0;
+  // the planner has already run (its cost is in "spent so far"): estimate only what approving starts
+  const estimate = waiting ? estimateBuild(changeWaiting ? changeWaiting.tasks : plan.tasks) : undefined;
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-6 md:px-6 md:py-8">
@@ -127,6 +131,9 @@ export default function PlanPage() {
               </div>
             ) : (
               <div className="flex flex-wrap items-center gap-3">
+                <div className="basis-full">
+                  <BudgetLine estimate={estimate} what={changeWaiting ? `change ${changeWaiting.n}` : "the build"} />
+                </div>
                 <ShieldCheck className="text-you" size={20} strokeWidth={1.6} />
                 <p className="mr-auto text-sm">
                   <span className="font-medium">{changeWaiting ? `Nothing changes until you approve change ${changeWaiting.n}.` : "Nothing is built until you approve."}</span>{" "}
@@ -155,6 +162,16 @@ export default function PlanPage() {
         )}
       </AnimatePresence>
 
+      {state.status === "stopped" && (
+        <section className="mt-8 rounded-2xl border border-you/30 bg-surface p-4" aria-labelledby="budget-stopped-title">
+          <h3 id="budget-stopped-title" className="text-sm font-medium">The team stopped at your spending limit</h3>
+          <p className="mb-2 mt-0.5 text-xs text-muted">
+            Merged work stays. Raise the limit, then use Retry what failed to finish the rest.
+          </p>
+          <BudgetLine />
+        </section>
+      )}
+
       <div className="mt-8">
         <ChangeRequestBox />
       </div>
@@ -165,7 +182,7 @@ export default function PlanPage() {
           className="mt-8 flex items-center gap-2 text-sm text-muted hover:text-ink"
         >
           {state.status === "rejected" ? "Plan sent back. The planner will revise it."
-            : ["done", "failed"].includes(state.status) ? "See the board" : "Approved. Watch the board"}
+            : ["done", "failed", "stopped"].includes(state.status) ? "See the board" : "Approved. Watch the board"}
           <ArrowRight size={14} />
         </button>
       )}

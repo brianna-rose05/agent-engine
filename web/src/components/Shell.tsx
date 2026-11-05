@@ -6,6 +6,7 @@ import { Hash, KanbanSquare, ListChecks, ListTree, Plus, Sparkles } from "lucide
 import { useQuery } from "convex/react";
 import { api, liveEnabled, useOwner } from "@/lib/convex";
 import { money } from "@/lib/reduce";
+import { NotificationBell } from "./Notifications";
 
 type Nav = { href: string; label: string; Icon: typeof Hash; count?: number };
 
@@ -53,12 +54,15 @@ export function Shell({
   return (
     <div className="flex min-h-dvh">
       <aside className="sticky top-0 hidden h-dvh w-60 shrink-0 flex-col gap-6 border-r border-line bg-canvas px-3 py-4 md:flex">
-        <Link href="/" className="flex items-center gap-2 px-2 text-[15px] font-semibold tracking-tight">
-          <span className="grid size-7 place-items-center rounded-lg bg-planner-bg text-planner">
-            <Sparkles size={15} strokeWidth={1.7} />
-          </span>
-          Studio
-        </Link>
+        <div className="flex items-center justify-between">
+          <Link href="/" className="flex items-center gap-2 px-2 text-[15px] font-semibold tracking-tight">
+            <span className="grid size-7 place-items-center rounded-lg bg-planner-bg text-planner">
+              <Sparkles size={15} strokeWidth={1.7} />
+            </span>
+            Studio
+          </Link>
+          {liveEnabled && <NotificationBell />}
+        </div>
 
         <Link
           href="/"
@@ -117,9 +121,12 @@ export function Shell({
             </span>
             Studio
           </Link>
-          <Link href="/p/demo/board" className="text-sm text-muted">
-            Community garden
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link href="/p/demo/board" className="text-sm text-muted">
+              Community garden
+            </Link>
+            {liveEnabled && <NotificationBell align="right" />}
+          </div>
         </div>
         {projectNav && (
           <nav className="flex gap-1 overflow-x-auto border-b border-line bg-canvas px-3 py-2 md:hidden">
@@ -143,7 +150,7 @@ export function Shell({
 const DOT: Record<string, string> = {
   draft: "bg-you",
   done: "bg-dev", building: "bg-qa", planning: "bg-planner", starting: "bg-planner", queued: "bg-faint",
-  awaiting_approval: "bg-you", approved: "bg-qa", failed: "bg-bad", rejected: "bg-faint",
+  awaiting_approval: "bg-you", approved: "bg-qa", failed: "bg-bad", rejected: "bg-faint", stopped: "bg-you",
 };
 
 function LiveProjects({ path }: { path: string }) {

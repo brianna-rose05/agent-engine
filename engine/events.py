@@ -2,7 +2,7 @@
 
 Event kinds and their data:
     task_queued      {title, role, depends_on}
-    task_status      {status}   working | checking | merging | merged | passed | failed | blocked | error
+    task_status      {status}   working | checking | merging | merged | passed | failed | blocked | error | stopped
                                 waiting_for_sandbox {error}: the provider is at capacity; waiting to retry
                                 sandbox_lost {attempt, retry, error}: the sandbox dropped mid-attempt;
                                     the attempt is redone in a fresh one (not one of the agent's tries)
@@ -12,6 +12,8 @@ Event kinds and their data:
     preview_ready    {url}      the finished app on Vercel (worker.py, engine/deploy.py)
     preview_failed   {reason}
     preview_skipped  {reason}   e.g. no VERCEL_TOKEN
+    budget_reached   {spent, budget}   the project's spending limit stopped new work (once per run, engine/budget.py);
+                     tasks that never started end with task_status "stopped", the run with project_finished "stopped"
     agent_activity   {attempt, note, notes}   what a running agent is doing ("Wrote src/x.ts"),
                      at most one every ~10 s per task; note is the latest of notes
 A sink must never break a run: errors inside a sink are swallowed by `emit`.

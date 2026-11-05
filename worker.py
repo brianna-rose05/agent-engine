@@ -18,6 +18,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+from engine.budget import STOPPED, Budget
 from engine.convex_sink import ConvexBackend
 from engine.engine import Engine
 from engine.events import Emitter, JsonlSink
@@ -27,6 +28,7 @@ from run_benchmark import load_env
 
 ROOT = Path(__file__).parent
 APPROVAL_TIMEOUT_S = 60 * 60
+DEFAULT_PROJECT_BUDGET = 5.00          # $ per project when Convex has none (web/convex/budget.ts BUDGET_DEFAULT)
 OWNER = "brianna-rose05"
 # git reads the token from the environment, so it is never written into a URL, a file or a command line
 CREDENTIALS = '!f() { echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f'
@@ -91,10 +93,33 @@ def publish_preview(results, repo: Path, repo_url: str, events, deploy=None, mer
 
 def finished(results) -> str:
     """Done when everything merged, or when the integration merged: then the app works, and any screen whose
-    own feature failed was rebuilt by the integrator (the board still shows that feature as needing you)."""
+    own feature failed was rebuilt by the integrator (the board still shows that feature as needing you).
+    Stopped when the spending limit kept work from starting: raise it and retry what's left."""
     if all(r.status in ("merged", "passed") for r in results):
         return "done"
-    return "done" if any(r.task == "INT" and r.status == "merged" for r in results) else "failed"
+    if any(r.task == "INT" and r.status == "merged" for r in results):
+        return "done"
+    return STOPPED if any(r.status == STOPPED for r in results) else "failed"
+
+
+def project_budget(project: dict, emit) -> Budget:
+    """The project's spending limit, less what earlier runs (the first build, retries, changes) already spent."""
+    limit = float(project.get("budgetUsd") or DEFAULT_PROJECT_BUDGET)
+    return Budget(limit, float(project.get("costUsd") or 0.0), emit)
+
+
+def with_fresh_budget(approve, get_project, budget: Budget):
+    """The owner can change the limit on the approval screen while the worker waits: use the limit as it stands
+    when they decide, not as it was when the run started."""
+    def wrapped(plan: dict) -> tuple[bool, str]:
+        decision = approve(plan)
+        try:
+            limit = float((get_project() or {}).get("budgetUsd") or 0)
+        except Exception:                       # keep the limit we have; the build must not die over this
+            limit = 0
+        budget.set_limit(limit)
+        return decision
+    return wrapped
 
 
 def main():
@@ -143,17 +168,18 @@ def main():
     opts = stack.daytona_options()
     engine = Engine(repo, ClaudeCLIAgent(model=project["model"], budget_usd=a.budget),
                     lambda t, n: DaytonaSandbox(repo_url, t.id, n, github_token=token, run_id=out.name, **opts),
-                    events=events)
+                    events=events, budget=project_budget(project, events.emit))
     referee = ClaudeCLIAgent(model="sonnet", budget_usd=a.budget)       # spec: never graded only by its author
     # wiring every page is one big task: more turns, time and budget (cap $1.00)
     integrator = ClaudeCLIAgent(model=project["model"], max_turns=90, budget_usd=min(1.00, a.budget * 2),
                                 timeout_s=45 * 60)
+    approve = with_fresh_budget(wait_for_decision(backend.project), backend.project, engine.budget)
     status = "failed"
     results = []
     try:
         if change:                              # plan only the change, wait for approval, build it in the same repo
             planned, results = change_project(int(change["n"]), change["text"], project["description"], repo, engine,
-                                              approve=wait_for_decision(backend.project), stack=stack,
+                                              approve=approve, stack=stack,
                                               parallel=stack.parallel, save_tests=out / "hidden_tests",
                                               referee=referee, integrator=integrator)
             status = "failed" if planned is None else "rejected" if len(results) == 1 else finished(results)
@@ -166,7 +192,7 @@ def main():
             status = finished(results)
             return
         plan, results = run_project(project["description"], repo, engine, "python3",
-                                    parallel=stack.parallel, approve=wait_for_decision(backend.project), stack=stack,
+                                    parallel=stack.parallel, approve=approve, stack=stack,
                                     save_tests=out / "hidden_tests", referee=referee, integrator=integrator)
         if plan is None:
             status = "failed"
@@ -175,12 +201,14 @@ def main():
         else:
             status = finished(results)
     finally:
+        if status == "failed" and engine.budget.stopped:   # e.g. the planner itself was stopped by the limit
+            status = STOPPED
         events.emit("project_finished", status=status, repo=repo_url)
         print(f"project {a.project_id}: {status} ({repo_url})")
         # a rejected change merged (and reverted) only its plan: nothing new to deploy
         publish_preview(results if status != "rejected" else [], repo, repo_url, events,
                         merged_before=set(project.get("merged") or []))
-        if status not in ("done", "rejected"):
+        if status not in ("done", "rejected", STOPPED):     # stopped at the limit is the owner's call, not a crash
             sys.exit(1)
 
 

@@ -2,6 +2,8 @@ import { mutationGeneric, queryGeneric } from "convex/server";
 import { ConvexError, v } from "convex/values";
 import { composeSpec } from "./wizard";
 import type { ChangeRequest } from "./changes";
+import { budgetOf } from "./budget";
+import { notifyFor } from "./notifications";
 
 /*
  * What the engine (worker.py in GitHub Actions) calls. Authenticated with ENGINE_SECRET, which both sides
@@ -35,7 +37,8 @@ export const projectForWorker = queryGeneric({
     return { resume: Boolean(p.resume), mode: change ? "change" : p.resume ? "resume" : "build",
              change: latest ? { n: latest.n, text: latest.text } : null,
              repo, merged, plan: p.resume || change ? p.plan ?? null : null, name: p.name,
-             description: composeSpec(p.name, p.description, p.wizard), model: p.model, status: p.status, planNote: p.planNote ?? "" };
+             description: composeSpec(p.name, p.description, p.wizard), model: p.model, status: p.status, planNote: p.planNote ?? "",
+             budgetUsd: budgetOf(p), costUsd: p.costUsd };
   },
 });
 
@@ -61,6 +64,7 @@ export const record = mutationGeneric({
     if (!p) throw new ConvexError("no such project");
     await ctx.db.insert("events", { projectId, kind, taskId, data, ts });
     if (kind === "agent_activity") return; // frequent and informational: never touches the project row
+    await notifyFor(ctx, projectId, p.name, kind, data); // approvals, finished builds, the spending limit, previews
     const patch: Record<string, unknown> = {};
     if (kind === "task_queued" && taskId === "PLAN") patch.status = STATUS_AFTER.task_queued;
     if (kind === "plan_ready") {

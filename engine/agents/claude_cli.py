@@ -24,14 +24,16 @@ class ClaudeCLIAgent:
         self.model, self.max_turns, self.budget_usd, self.timeout_s = model, max_turns, budget_usd, timeout_s
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
 
-    def command(self, task: Task, feedback: str | None) -> str:
+    def command(self, task: Task, feedback: str | None, budget_cap: float | None = None) -> str:
+        # budget_cap: what is left of the project's spending limit (engine/budget.py), when lower than our own cap
+        budget = self.budget_usd if budget_cap is None else max(0.01, min(self.budget_usd, budget_cap))
         args = ["claude", "--bare", "-p", build_prompt(task, feedback),
                 "--output-format", "stream-json", "--verbose",   # stream-json needs --verbose with -p
                 "--tools", TOOLS, "--allowedTools", TOOLS,
                 "--permission-mode", "dontAsk",
                 "--append-system-prompt", system_rules(task),
                 "--max-turns", str(self.max_turns),
-                "--max-budget-usd", f"{self.budget_usd:.2f}",
+                "--max-budget-usd", f"{budget:.2f}",
                 "--model", self.model]
         # Stop the agent inside the sandbox a minute before our exec timeout, so a hung run comes back as a
         # failed attempt (and gets retried) instead of the sandbox connection timing out and killing the task.
@@ -39,7 +41,7 @@ class ClaudeCLIAgent:
         return f"timeout -k 20 {limit} " + " ".join(shlex.quote(a) for a in args)
 
     def run(self, task: Task, box: Sandbox, attempt: int, feedback: str | None,
-            progress: Callable[[list[str]], None] | None = None) -> AgentReport:
+            progress: Callable[[list[str]], None] | None = None, budget_cap: float | None = None) -> AgentReport:
         """`progress(notes)` gets short notes on what the agent is doing ("Wrote src/x.ts") while it runs.
         Only sandboxes that poll a background command (exec_long) can stream; elsewhere it is never called."""
         if not self.api_key:
@@ -48,7 +50,7 @@ class ClaudeCLIAgent:
         extra = {}
         if progress is not None and hasattr(box, "exec_long"):
             extra["on_output"] = stream_notes(progress, getattr(box, "workdir", ""), self.api_key)
-        r = run(self.command(task, feedback), timeout=self.timeout_s,
+        r = run(self.command(task, feedback, budget_cap), timeout=self.timeout_s,
                      # CI=1: test runners like Vitest exit instead of waiting for file changes
                      env={"ANTHROPIC_API_KEY": self.api_key, "CI": "1"}, **extra)
         data = parse_cli_json(r.output)

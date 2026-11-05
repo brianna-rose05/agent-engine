@@ -1,0 +1,127 @@
+import { internalActionGeneric, mutationGeneric, queryGeneric, anyApi } from "convex/server";
+import type { GenericDataModel, GenericMutationCtx } from "convex/server";
+import type { GenericId } from "convex/values";
+import { v } from "convex/values";
+import { checkOwner } from "./owner";
+
+/*
+ * Notifications for the owner: written by engine:record when something needs them or finished (see
+ * notificationFor), shown by the bell in the sidebar (src/components/Notifications.tsx) and, while the tab is
+ * hidden, as browser notifications. Optionally emailed through Resend when RESEND_API_KEY and NOTIFY_EMAIL are
+ * set in Convex; without them, nothing is sent and nothing is logged.
+ */
+
+export type NotificationKind = "needs_approval" | "finished" | "budget_reached" | "preview_ready";
+export type Note = { kind: NotificationKind; title: string; body: string; email: boolean };
+
+const dollars = (x: unknown) => `$${Number(x ?? 0).toFixed(2)}`;
+
+/** The notification an engine event deserves, if any. Pure: Convex record and the tests use the same rules. */
+export function notificationFor(kind: string, data: Record<string, unknown> | null | undefined, project: string): Note | null {
+  const d = data ?? {};
+  switch (kind) {
+    case "plan_ready":
+      return { kind: "needs_approval", title: `${project}: the plan is ready`, email: true,
+               body: "The planner finished. Nothing is built until you approve the plan." };
+    case "change_plan_ready":
+      return { kind: "needs_approval", title: `${project}: change ${d.n ?? ""} is planned`.replace(/ {2,}/g, " "), email: true,
+               body: "Nothing changes until you approve it." };
+    case "project_finished": {
+      const status = String(d.status ?? "");
+      if (status === "done") return { kind: "finished", title: `${project} is built`, email: true,
+                                      body: "Every feature the team could finish is verified and merged." };
+      if (status === "failed") return { kind: "finished", title: `${project} stopped with problems`, email: true,
+                                        body: "Some features didn't pass their checks. You can retry what failed." };
+      if (status === "stopped") return { kind: "finished", title: `${project} stopped at its spending limit`, email: true,
+                                         body: "Raise the limit on the plan page, then retry what's left." };
+      return null; // rejected: the owner just sent it back themselves
+    }
+    case "budget_reached":
+      return { kind: "budget_reached", title: `${project} reached its spending limit`, email: false,
+               body: `${dollars(d.spent)} of ${dollars(d.budget)} spent. Running agents finish; nothing new starts.` };
+    case "preview_ready":
+      return typeof d.url === "string" && d.url.startsWith("https://")
+        ? { kind: "preview_ready", title: `${project}: preview is live`, body: d.url, email: false }
+        : null;
+    default:
+      return null;
+  }
+}
+
+/** Where a notification takes the owner: the plan for approvals (and the limit), the board otherwise. */
+export const notificationPath = (projectId: string, kind: string) =>
+  `/p/${projectId}/${kind === "needs_approval" || kind === "budget_reached" ? "plan" : "board"}`;
+
+/** Whether email is set up (both settings present). Never exposes the key. */
+export const emailEnabled = () => Boolean(process.env.RESEND_API_KEY && process.env.NOTIFY_EMAIL);
+
+/** Called by engine:record for every event (except agent_activity). */
+export async function notifyFor(ctx: GenericMutationCtx<GenericDataModel>, projectId: GenericId<"projects">, projectName: string, kind: string,
+                                data: Record<string, unknown> | null | undefined) {
+  const n = notificationFor(kind, data, projectName);
+  if (!n) return;
+  await ctx.db.insert("notifications", { projectId, kind: n.kind, title: n.title, body: n.body, ts: Date.now(), read: false });
+  if (n.email && emailEnabled()) {
+    await ctx.scheduler.runAfter(0, anyApi.notifications.sendEmail,
+                                 { title: n.title, body: n.body, path: notificationPath(projectId, n.kind) });
+  }
+}
+
+const owner = { key: v.string() };
+
+/** The latest notifications (newest first) and how many are unread. */
+export const recent = queryGeneric({
+  args: { ...owner, limit: v.optional(v.number()) },
+  handler: async (ctx, { key, limit }) => {
+    checkOwner(key);
+    const rows = await ctx.db.query("notifications").withIndex("by_ts").order("desc").take(Math.min(limit ?? 20, 50));
+    const unread = (await ctx.db.query("notifications").withIndex("by_read", (q) => q.eq("read", false)).take(100)).length;
+    return {
+      unread,
+      items: rows.map((n) => ({ id: n._id, projectId: n.projectId, kind: n.kind, title: n.title, body: n.body, ts: n.ts,
+                                read: n.read, href: notificationPath(n.projectId, n.kind) })),
+    };
+  },
+});
+
+export const markRead = mutationGeneric({
+  args: { ...owner, id: v.id("notifications") },
+  handler: async (ctx, { key, id }) => {
+    checkOwner(key);
+    const n = await ctx.db.get(id);
+    if (n && !n.read) await ctx.db.patch(id, { read: true });
+  },
+});
+
+export const markAllRead = mutationGeneric({
+  args: owner,
+  handler: async (ctx, { key }) => {
+    checkOwner(key);
+    const rows = await ctx.db.query("notifications").withIndex("by_read", (q) => q.eq("read", false)).take(200);
+    for (const n of rows) await ctx.db.patch(n._id, { read: true });
+  },
+});
+
+/** The email Resend sends: plain text, with a link to the project when APP_URL is set. */
+export function emailBody(title: string, body: string, path: string, appUrl: string | undefined) {
+  const link = appUrl ? `\n\n${appUrl.replace(/\/$/, "")}${path}` : "";
+  return { subject: title, text: `${body}${link}\n\n(Studio)` };
+}
+
+/** Sends one notification email through Resend's REST API. Skips silently when email isn't set up. */
+export const sendEmail = internalActionGeneric({
+  args: { title: v.string(), body: v.string(), path: v.string() },
+  handler: async (_ctx, { title, body, path }) => {
+    const apiKey = process.env.RESEND_API_KEY;
+    const to = process.env.NOTIFY_EMAIL;
+    if (!apiKey || !to) return;
+    const { subject, text } = emailBody(title, body, path, process.env.APP_URL);
+    const r = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ from: process.env.NOTIFY_FROM ?? "Studio <onboarding@resend.dev>", to: [to], subject, text }),
+    });
+    // the status only: never the request (it carries the key) or the response body
+    if (!r.ok) console.warn(`notification email not sent (HTTP ${r.status})`);
+  },
+});

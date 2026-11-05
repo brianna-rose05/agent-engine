@@ -31,6 +31,9 @@ type Store = {
   canChange: boolean;           // the owner can ask for a change now (docs/change-requests.md)
   changeHistory: ChangeRequest[]; // the change requests asked so far, oldest first
   requestChange: (text: string) => Promise<void>; // throws with a message to show when it can't be sent
+  budgetUsd?: number;           // live: the project's spending limit (convex/budget.ts); the demo has none
+  spentUsd?: number;            // live: what the project row says was spent so far, every run included
+  setBudget?: (usd: number) => Promise<void>; // throws with a message to show when it can't be set
 };
 
 /** A task agent is busy right now (the demo has no project row to ask). */
@@ -118,7 +121,7 @@ function useDemo(): Omit<Store, "project" | "mode"> {
 
 type LiveData = {
   project: Project & { status: string; error: string | null; wizard: Wizard | null; canRetry?: boolean; previewUrl?: string | null;
-                      canChange?: boolean; changes?: ChangeRequest[] };
+                      canChange?: boolean; changes?: ChangeRequest[]; budgetUsd?: number; costUsd?: number };
   events: { kind: EngineEvent["kind"]; task_id: string | null; data: Record<string, unknown>; ts: number }[];
 } | null;
 
@@ -128,6 +131,7 @@ function LiveProvider({ id, children }: { id: string; children: React.ReactNode 
   const data = useQuery(api.projects.get, key ? { key, id } : "skip") as LiveData | undefined;
   const decide = useMutation(api.projects.decide);
   const askChange = useMutation(api.projects.requestChange);
+  const saveBudget = useMutation(api.projects.setBudget);
   const t0 = data?.events[0]?.ts;
   const state = useMemo(() => {
     if (!data) return initialState();
@@ -148,6 +152,16 @@ function LiveProvider({ id, children }: { id: string; children: React.ReactNode 
     previewUrl: data?.project.previewUrl ?? state.preview_url,
     canChange: Boolean(data?.project.canChange),
     changeHistory: data?.project.changes ?? [],
+    budgetUsd: data?.project.budgetUsd,
+    spentUsd: data?.project.costUsd,
+    setBudget: async (usd: number) => {
+      try {
+        await saveBudget({ key: key!, id, budgetUsd: usd });
+      } catch (e) {
+        const d = (e as { data?: unknown })?.data;
+        throw new Error(typeof d === "string" ? d : "Couldn't save the limit. Try again in a moment.");
+      }
+    },
     requestChange: async (text: string) => {
       const checked = checkChangeText(text);
       if (!checked.ok) throw new Error(checked.message);

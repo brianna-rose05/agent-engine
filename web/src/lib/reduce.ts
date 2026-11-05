@@ -10,6 +10,7 @@ export const initialState = (): ProjectState => ({
   preview_url: null,
   changes: [],
   change: null,
+  budget_reached: null,
 });
 
 export const money = (c: number) => (c > 0 && c < 0.01 ? `$${c.toFixed(4)}` : `$${c.toFixed(2)}`);
@@ -52,7 +53,7 @@ function channelFor(role: Role): FeedItem["channel"] {
 export function reduce(s: ProjectState, e: EngineEvent): ProjectState {
   const tasks = { ...s.tasks };
   const feed = [...s.feed];
-  let { status, plan, cost_usd, preview_url } = s;
+  let { status, plan, cost_usd, preview_url, budget_reached } = s;
   let changes = s.changes;
   const task = e.task_id ? tasks[e.task_id] : undefined;
   const say = (item: Omit<FeedItem, "t">) => feed.push({ t: e.t, ...item });
@@ -134,8 +135,12 @@ export function reduce(s: ProjectState, e: EngineEvent): ProjectState {
       break;
     }
     case "attempt_finished": {
-      if (!task) break;
       const a = e.data as unknown as Attempt;
+      if (!task) {
+        // referee and confirmation reviews (T1-review, T1-confirm) are never queued, but they cost money too
+        cost_usd = round(cost_usd + Number(a.cost_usd ?? 0));
+        break;
+      }
       tasks[task.id] = { ...task, attempts: [...task.attempts, a], cost_usd: round(task.cost_usd + a.cost_usd) };
       cost_usd = round(cost_usd + a.cost_usd);
       if (!a.passed) {
@@ -210,9 +215,18 @@ export function reduce(s: ProjectState, e: EngineEvent): ProjectState {
             text: d.approved ? "Approved the plan. Building started." : `Sent the plan back${d.note ? `: ${d.note}` : "."}` });
       break;
     }
+    case "budget_reached": {
+      const d = e.data as { spent?: number; budget?: number };
+      budget_reached = { spent: Number(d.spent ?? cost_usd), budget: Number(d.budget ?? 0) };
+      say({ who: "engine", channel: "build", tone: "warn",
+            text: `Reached the spending limit: ${money(budget_reached.spent)} of ${money(budget_reached.budget)}. ` +
+                  `Agents already at work finish; nothing new starts. Raise the limit on the plan page, then retry what's left.` });
+      break;
+    }
     case "build_resumed": {
       const d = e.data as { merged: string[]; retrying: string[] };
       status = "building";
+      budget_reached = null;
       const kept = d.merged.filter((id) => id !== "PLAN").length;
       say({ who: "engine", channel: "build",
             text: `Retrying ${d.retrying.length} unfinished task${d.retrying.length === 1 ? "" : "s"} in the same repo. ` +
@@ -220,7 +234,7 @@ export function reduce(s: ProjectState, e: EngineEvent): ProjectState {
       break;
     }
     case "project_finished": {
-      const d = e.data as { status: "done" | "failed" | "rejected" };
+      const d = e.data as { status: "done" | "failed" | "rejected" | "stopped" };
       if (d.status === "rejected" && latest?.decision === "rejected") {
         // a sent-back change built nothing: the project is as it was (Convex record does the same)
         status = latest.before;
@@ -230,8 +244,9 @@ export function reduce(s: ProjectState, e: EngineEvent): ProjectState {
       status = d.status as ProjectState["status"];
       const devs = Object.values(tasks).filter((t) => t.role === "dev");
       const ok = devs.filter((t) => t.status === "merged").length;
-      say({ who: "engine", channel: "build", tone: d.status === "done" ? "good" : "bad",
-            text: `${d.status === "done" ? "Finished" : "Stopped"}: ${ok} of ${devs.length} features verified and merged, ${money(cost_usd)} in total.` });
+      say({ who: "engine", channel: "build", tone: d.status === "done" ? "good" : d.status === "stopped" ? "warn" : "bad",
+            text: `${d.status === "done" ? "Finished" : d.status === "stopped" ? "Stopped at the spending limit" : "Stopped"}: ` +
+                  `${ok} of ${devs.length} features verified and merged, ${money(cost_usd)} in total.` });
       break;
     }
     case "preview_ready": {
@@ -255,7 +270,8 @@ export function reduce(s: ProjectState, e: EngineEvent): ProjectState {
       break;
     }
   }
-  return { status, plan, tasks, feed, cost_usd, now: Math.max(s.now, e.t), preview_url, changes, change: changes.at(-1) ?? null };
+  return { status, plan, tasks, feed, cost_usd, now: Math.max(s.now, e.t), preview_url, changes, change: changes.at(-1) ?? null,
+           budget_reached };
 }
 
 /* --------------------------------------------------------------- board columns */
@@ -267,7 +283,7 @@ export const COLUMNS: { id: Column; label: string; hint: string }[] = [
   { id: "building", label: "Building", hint: "Dev agent at work" },
   { id: "checking", label: "Checking", hint: "Engine runs the hidden tests" },
   { id: "done", label: "Done", hint: "Verified and merged" },
-  { id: "attention", label: "Needs you", hint: "Failed, blocked or errored" },
+  { id: "attention", label: "Needs you", hint: "Failed, blocked, errored or stopped at the limit" },
 ];
 
 export type Feature = {
@@ -285,7 +301,7 @@ export type Feature = {
   tries: number;
 };
 
-const BAD = new Set(["failed", "blocked", "error", "merge_conflict"]);
+const BAD = new Set(["failed", "blocked", "error", "merge_conflict", "stopped"]);
 
 /** One card per planned feature, combining its QA task and its dev task, then the cards of approved changes
  *  (C1T1, C1T2, ...), then the integration card. */
