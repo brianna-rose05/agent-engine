@@ -22,7 +22,8 @@ export type EngineEvent = {
     | "checkpoint_created" | "rollback_started" | "rollback_done" | "rollback_failed" // docs/checkpoints.md
     | "template_updated"
     | "quick_started"
-    | "quick_blocked";
+    | "quick_blocked"
+    | "ship_started" | "ship_check" | "ship_live" | "ship_failed"; // ship to production (convex/ship.ts, lib/ship.ts)
   task_id: string | null;
   data: Record<string, unknown>;
 };
@@ -88,6 +89,7 @@ export type ProjectStatus =
   | "awaiting_approval"
   | "rejected"
   | "building"
+  | "shipping" // a ship to production (or a production rollback) is running; back to done after
   | "done"
   | "failed"
   | "stopped"; // the spending limit stopped the build (engine/budget.py): raise it and retry what's left
@@ -115,6 +117,31 @@ export type ProjectState = {
   budget_reached: { spent: number; budget: number } | null; // the latest run hit its spending limit
   history?: HistoryState;      // checkpoints and rollbacks (lib/history.ts); absent until the first one
   quicks: QuickState[];        // quick changes, oldest first
+  ship?: ShipState;            // ship to production (lib/ship.ts); absent until the first ship
+};
+
+export type ShipCheckState = { name: string; label: string; status: "pending" | "running" | "passed" | "failed"; detail?: string };
+
+/** One ship run: a new version (checks, tag, deploy) or a production rollback to `version`. */
+export type ShipRun = {
+  version: number | null;      // the rollback's target; for a new ship, its number once live
+  rollback: boolean;
+  state: "checking" | "deploying" | "live" | "failed";
+  checks: ShipCheckState[];    // the ones that have reported, in the order they ran
+  reason?: string;             // why it failed, in plain English
+  failed_check?: string;       // the check that failed, if one did
+  before: ProjectStatus;       // status before it started, restored when its run finishes
+  t: number;
+  finished: boolean;           // its run's project_finished arrived
+};
+
+/** A shipped version: the `v<n>` tag, deployed to production at `url`. */
+export type VersionState = { n: number; tag: string; sha: string; url: string; t: number };
+
+export type ShipState = {
+  run: ShipRun | null;                                       // the running or last ship
+  versions: VersionState[];                                  // oldest first
+  production: { url: string; version: number; t: number } | null; // what production runs now
 };
 
 /** A save point (checkpoint_created): a `checkpoint-<n>` tag on main in the project's repo. */

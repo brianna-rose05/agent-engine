@@ -1,4 +1,5 @@
 import { withHistory } from "./history";
+import { withShip } from "./ship";
 import type { Attempt, ChangeState, ChangeTask, EngineEvent, FeedItem, Plan, PlanTask, ProjectState, QuickState, Role, TaskState } from "./types";
 
 export const initialState = (): ProjectState => ({
@@ -60,7 +61,8 @@ function channelFor(role: Role): FeedItem["channel"] {
 
 /** Apply one engine event. Pure: the same events always give the same screen. */
 export function reduce(s: ProjectState, e: EngineEvent): ProjectState {
-  return withHistory(s, e, reduceEvent);   // checkpoints and rollbacks wrap the rest (lib/history.ts)
+  // checkpoints and rollbacks wrap the rest (lib/history.ts), then shipping to production (lib/ship.ts)
+  return withHistory(s, e, (s2, e2) => withShip(s2, e2, reduceEvent));
 }
 
 function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
