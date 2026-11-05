@@ -137,6 +137,7 @@ class NextSupabaseStack(PythonStack):
     template = TEMPLATES / "next-supabase"
     reserved |= {"src/lib/pglite.ts", "src/lib/runtime.ts", "src/lib/auth.ts", "src/lib/session.ts", "src/lib/migrate.ts",
                  "src/lib/owner.ts", "src/lib/studio-bridge.tsx"}
+    reserved |= {"scripts/screenshots.mjs"}       # the designer's screenshots (docs/designer.md)
 
     # ---------------------------------------------------------------- integration
     integration = True

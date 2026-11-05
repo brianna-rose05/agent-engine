@@ -70,8 +70,19 @@ project owner approves it, you review its contracts. The owner decides the archi
 - Do not commit, push, or create branches. The engine handles git.
 - End your final message with exactly one line: DONE, or BLOCKED: <short reason> if you cannot finish."""
 
+DESIGNER_RULES = """You are the designer on a software team of AI agents. A web app's pages passed every automated check.
+Before they merge, you look at screenshots of every page at desktop and phone width; you do not write code.
+- Open every screenshot the task lists with the Read tool, and read the brief: what each page is for, and the look.
+- The only file you write is the verdict file the task names. Nothing else you change is kept.
+- Ask for changes only for clear visual defects the task lists: overflowing or cut-off content, horizontal scroll on
+  the phone, overlapping elements, unreadable contrast, missing styling, a broken or empty layout, text that
+  contradicts the page's purpose. Never for taste: colours, fonts, spacing or wording that work. When unsure, approve.
+- Each comment names the page and width, the problem, and the fix: "<page> (<width>): ...".
+- Do not commit, push, or create branches. The engine handles git.
+- End your final message with exactly one line: DONE, or BLOCKED: <short reason> if you cannot finish."""
+
 RULES = {"dev": DEV_RULES, "planner": PLANNER_RULES, "qa": QA_RULES, "tech_lead": TECH_LEAD_RULES,
-         "reviewer": REVIEWER_RULES, "architect": ARCHITECT_RULES}
+         "reviewer": REVIEWER_RULES, "architect": ARCHITECT_RULES, "designer": DESIGNER_RULES}
 
 
 def build_prompt(task: Task, feedback: str | None) -> str:

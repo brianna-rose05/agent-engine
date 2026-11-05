@@ -24,6 +24,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Callable
 
+from engine.designer import design_brief, make_designer
 from engine.engine import Engine, GraphError, Result, SetupError, check_graph, failure_excerpt, git
 from engine.gitlock import repo_lock
 from engine.interfaces import Sandbox, Task
@@ -873,7 +874,7 @@ behavior that stays."""
 
 
 def integration_task(plan: dict, description: str, stack: PythonStack, agent=None, change: dict | None = None,
-                     deferred=()) -> Task:
+                     deferred=(), designer=None, budget=None) -> Task:
     """The last task: pages, sign-in and server actions that connect every merged feature. It needs every
     server module, but only waits for UI components: if one never passed its tests, the integrator builds that
     screen itself inside src/app/, still checked by the build and page checks. Regression (Pawfect builds 6-7):
@@ -881,7 +882,9 @@ def integration_task(plan: dict, description: str, stack: PythonStack, agent=Non
     With a `change`, it runs again after the change's tasks (and waits only for those): the pages are updated
     for the change, and its check runs the whole test suite, so a change that broke earlier work fails here.
     `deferred`: features saved for later (docs/pm.md). They aren't built, so it neither waits for them nor
-    imports their modules; its spec names them."""
+    imports their modules; its spec names them.
+    `designer`: after its check passes, a designer (a different model) looks at screenshots of every page before it
+    merges (docs/designer.md); `budget` is the engine's, to cap the designer's run. Only the integrator has one."""
     current = apply_change(plan, change) if change else plan
     saved = set(deferred or ())
     pages = [r for r in current.get("pages", []) if isinstance(r, str)] or ["/"]
@@ -896,10 +899,21 @@ def integration_task(plan: dict, description: str, stack: PythonStack, agent=Non
         touched = ", ".join(t["module"] for t in change["tasks"])
         spec = CHANGE_INTEGRATION_NOTE.format(request=change.get("request", ""), summary=change.get("summary", ""),
                                               touched=touched) + "\n\n" + spec
+    if designer is not None:
+        spec += DESIGN_NOTE
     return Task("INT", "Integrate: pages, sign-in and data" if not change else "Integrate the change: pages and data",
                 spec, list(stack.integration_scope), "", role="dev", agent=agent,
                 depends_on=[t["id"] for t in waits_on if t["id"] not in ui], waits_for=ui,
-                check=integration_check(stack, pages, bridge=True))
+                check=integration_check(stack, pages, bridge=True),
+                review_design=make_designer(designer, design_brief(description), pages, "INT", budget)
+                if designer is not None else None)
+
+
+DESIGN_NOTE = """
+
+After the check passes, a designer looks at screenshots of every page a signed-out visitor can open, at desktop
+(1280x800) and phone (390x844) width, before your work merges. Make every page fit a 390 px wide phone screen without
+sideways scrolling, and style every page with the look in the brief."""
 
 
 # -------------------------------------------------------------------- run
@@ -914,14 +928,15 @@ def run_project(description: str, repo: Path, engine: Engine, python: str = "pyt
                 parallel: int = 4, approve: Approver = auto_approve,
                 stack: PythonStack | None = None, save_tests: Path | None = None,
                 referee=None, integrator=None, tech_lead=None, stronger_dev=None,
-                deferred=(), reviewer=None, architect=None) -> tuple[dict | None, list[Result]]:
+                deferred=(), reviewer=None, architect=None, designer=None) -> tuple[dict | None, list[Result]]:
     """Plan, then pause for approval, then QA + build. `approve(plan)` returns (approved, note); in the
     app it waits for the user's click, offline it approves automatically. `referee` is the agent that settles
     test disputes; a different model from QA's, so work is never graded only by the model that wrote it.
     `reviewer` code reviews each feature's passing attempt before it merges (docs/reviewer.md).
     `deferred`: task ids the owner saved for later (docs/pm.md), or a function of the plan that returns them,
     called after approval (the owner picks them on the approval screen). They are not built.
-    `architect` reviews the plan's contracts before it merges and before approval (docs/architect.md)."""
+    `architect` reviews the plan's contracts before it merges and before approval (docs/architect.md).
+    `designer` looks at screenshots of every page before the integration merges (docs/designer.md)."""
     emit = engine.events.emit
     stack = stack or default_stack(python)
     planner = planning_task(description, stack)
@@ -942,7 +957,8 @@ def run_project(description: str, repo: Path, engine: Engine, python: str = "pyt
     tasks = tasks_from_plan(without(plan, saved), stack, engine=engine, referee=referee, tech_lead=tech_lead,
                             stronger_dev=stronger_dev, reviewer=reviewer)
     if stack.integration:
-        tasks.append(integration_task(plan, description, stack, agent=integrator, deferred=saved))
+        tasks.append(integration_task(plan, description, stack, agent=integrator, deferred=saved, designer=designer,
+                                      budget=engine.budget))
     return plan, [plan_result, *build(tasks, engine, parallel, save_tests)]
 
 
@@ -969,7 +985,7 @@ def build(tasks: list[Task], engine: Engine, parallel: int, save_tests: Path | N
 def resume_tasks(plan: dict, description: str, stack: PythonStack, merged: set[str], engine: Engine | None = None,
                  referee=None, integrator=None, change: dict | None = None, tech_lead=None, stronger_dev=None,
                  answers: dict[str, str] | None = None, questions: dict[str, str] | None = None,
-                 deferred=(), retro: str = "", reviewer=None) -> list[Task]:
+                 deferred=(), retro: str = "", reviewer=None, designer=None) -> list[Task]:
     """The tasks still to do after a stopped build: every feature (its QA and dev task) and the integration
     that hadn't merged. Merged work stays as it is in the repo; nothing depends on it any more.
     `change` is the latest approved change (changes/{n}.json on main): its tasks that didn't merge are redone as
@@ -988,7 +1004,8 @@ def resume_tasks(plan: dict, description: str, stack: PythonStack, merged: set[s
                                    stronger_dev=stronger_dev, retro=retro, reviewer=reviewer)
     feature = lambda tid: tid.removesuffix("-qa")                      # noqa: E731
     if stack.integration:
-        integ = integration_task(plan, description, stack, agent=integrator, change=change, deferred=saved)
+        integ = integration_task(plan, description, stack, agent=integrator, change=change, deferred=saved,
+                                 designer=designer, budget=engine.budget if engine else None)
         devs = [t.id for t in tasks if not t.id.endswith("-qa")]
         modules = {t.id: t.can_edit[0] for t in tasks}
         integ.depends_on = [d for d in devs if not stack.is_ui_module(modules[d])]
@@ -1024,16 +1041,16 @@ def latest_change(repo: Path) -> dict | None:
 def resume_project(plan: dict, description: str, repo: Path, engine: Engine, merged: set[str],
                    stack: PythonStack | None = None, parallel: int = 4, save_tests: Path | None = None,
                    referee=None, integrator=None, tech_lead=None, stronger_dev=None,
-                   answers: dict[str, str] | None = None, deferred=(), reviewer=None) -> list[Result]:
+                   answers: dict[str, str] | None = None, deferred=(), reviewer=None, designer=None) -> list[Result]:
     """Retry only what didn't finish, in the same repo, without planning or approval again. `answers` are the
     owner's answers to the tech lead's questions, by task id (docs/tech-lead.md). `deferred`: features still saved
     for later (docs/pm.md), skipped again; the tech lead reads the end of docs/retro.md. `reviewer`: the code
-    reviewer (docs/reviewer.md)."""
+    reviewer (docs/reviewer.md); `designer`: the integration's designer (docs/designer.md)."""
     stack = stack or default_stack()
     saved = [i for i in saved_ids(plan, deferred) if i not in merged]
     todo = resume_tasks(plan, description, stack, merged, engine=engine, referee=referee, integrator=integrator,
                         change=latest_change(repo), tech_lead=tech_lead, stronger_dev=stronger_dev, answers=answers,
-                        deferred=saved, retro=read_retro(repo), reviewer=reviewer)
+                        deferred=saved, retro=read_retro(repo), reviewer=reviewer, designer=designer)
     engine.events.emit("build_resumed", merged=sorted(merged),
                        retrying=sorted({t.id.removesuffix("-qa") for t in todo}))
     emit_deferred(engine, plan, saved)
@@ -1359,13 +1376,15 @@ def undo_merge(engine: Engine, task_id: str) -> bool:
 def change_project(n: int, request: str, description: str, repo: Path, engine: Engine,
                    approve: Approver = auto_approve, stack: PythonStack | None = None, parallel: int = 4,
                    save_tests: Path | None = None, referee=None, integrator=None, tech_lead=None,
-                   stronger_dev=None, deferred=(), reviewer=None, architect=None) -> tuple[dict | None, list[Result]]:
+                   stronger_dev=None, deferred=(), reviewer=None, architect=None,
+                   designer=None) -> tuple[dict | None, list[Result]]:
     """Plan change n, pause for approval, record it in plan.json, then QA + build it in the same repo (and
     integrate again for web apps). Returns (change, results): change is None if planning failed; results is just
     the planner's if the change was rejected (its merge is reverted then). The planner and the tech lead read the
     end of docs/retro.md; `deferred` features (still saved for later, docs/pm.md) are named to the integrator.
     `reviewer`: the code reviewer of each change task's passing attempt (docs/reviewer.md). `architect` reviews the
-    change plan's contracts and every export it removes before approval (docs/architect.md)."""
+    change plan's contracts and every export it removes before approval (docs/architect.md).
+    `designer` looks at screenshots of every page before the integration merges (docs/designer.md)."""
     emit = engine.events.emit
     stack = stack or default_stack()
     repo = Path(repo)
@@ -1397,5 +1416,6 @@ def change_project(n: int, request: str, description: str, repo: Path, engine: E
         changed = {t["module"] for t in change["tasks"]}            # a change to a saved feature's module builds it
         saved = [i for i in saved_ids(plan, deferred)
                  if not any(t["id"] == i and t["module"] in changed for t in plan["tasks"])]
-        tasks.append(integration_task(plan, description, stack, agent=integrator, change=change, deferred=saved))
+        tasks.append(integration_task(plan, description, stack, agent=integrator, change=change, deferred=saved,
+                                      designer=designer, budget=engine.budget))
     return change, [plan_result, *build(tasks, engine, parallel, save_tests)]

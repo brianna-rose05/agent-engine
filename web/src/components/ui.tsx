@@ -1,7 +1,7 @@
-import { Bot, ClipboardCheck, ClipboardList, Code2, Cog, Compass, DraftingCompass, ScanEye, Sparkles, User } from "lucide-react";
+import { Bot, ClipboardCheck, ClipboardList, Code2, Cog, Compass, DraftingCompass, Palette, ScanEye, Sparkles, User } from "lucide-react";
 import type { Role } from "@/lib/types";
 
-export type Who = Role | "engine" | "you" | "tech lead" | "PM" | "reviewer" | "architect";
+export type Who = Role | "engine" | "you" | "tech lead" | "PM" | "reviewer" | "architect" | "designer";
 
 export const WHO: Record<Who, { label: string; bg: string; fg: string; Icon: typeof Bot }> = {
   planner: { label: "Planner", bg: "bg-planner-bg", fg: "text-planner", Icon: Sparkles },
@@ -11,6 +11,7 @@ export const WHO: Record<Who, { label: string; bg: string; fg: string; Icon: typ
   PM: { label: "PM", bg: "bg-pm-bg", fg: "text-pm", Icon: ClipboardList },
   reviewer: { label: "Reviewer", bg: "bg-review-bg", fg: "text-review", Icon: ScanEye },
   architect: { label: "Architect", bg: "bg-arch-bg", fg: "text-arch", Icon: DraftingCompass },
+  designer: { label: "Designer", bg: "bg-design-bg", fg: "text-design", Icon: Palette },
   engine: { label: "Engine", bg: "bg-engine-bg", fg: "text-engine", Icon: Cog },
   you: { label: "You", bg: "bg-you-bg", fg: "text-you", Icon: User },
 };
@@ -71,6 +72,7 @@ const TASK_PILL: Record<string, [string, string]> = {
   reviewing: ["Tech lead reviewing", "bg-lead-bg text-lead"],
   reviewing_code: ["In code review", "bg-review-bg text-review"],
   architect_reviewing: ["Architect reviewing", "bg-arch-bg text-arch"],
+  design_review: ["Designer reviewing", "bg-design-bg text-design"],
   merging: ["Merging", "bg-check-bg text-check"],
   merged: ["Merged", "bg-dev-bg text-dev"],
   passed: ["Tests accepted", "bg-qa-bg text-qa"],

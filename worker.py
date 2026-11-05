@@ -205,6 +205,14 @@ def architect_agent(budget_usd: float):
     return ClaudeCLIAgent(model="sonnet", budget_usd=budget_usd)
 
 
+def designer_agent(budget_usd: float):
+    """The designer (docs/designer.md): Sonnet, a different model from a Haiku dev, and it can read images. It looks at
+    screenshots of every page before the integration merges; on a Sonnet project it is still a separate run that never
+    saw the integrator's session. A few dozen screenshots at most: fewer turns than a dev."""
+    from engine.agents.claude_cli import ClaudeCLIAgent
+    return ClaudeCLIAgent(model="sonnet", max_turns=40, budget_usd=budget_usd, timeout_s=20 * 60)
+
+
 def owner_answers(project: dict) -> dict[str, str]:
     """The owner's answers to the tech lead's questions on the project row (`answers: {taskId: text}`), as plain
     text of at most 2000 characters each; anything else on the row is ignored."""
@@ -398,6 +406,8 @@ def main():
     reviewer = reviewer_agent(a.budget)
     # The architect reviews the plan's contracts before the owner is asked to approve it (docs/architect.md).
     architect = architect_agent(a.budget)
+    # The designer looks at screenshots of every page before the integration merges (docs/designer.md).
+    designer = designer_agent(a.budget)
     approve = with_fresh_budget(wait_for_decision(backend.project), backend.project, engine.budget)
     status = "failed"
     results = []
@@ -418,7 +428,7 @@ def main():
                                               parallel=stack.parallel, save_tests=out / "hidden_tests",
                                               referee=referee, integrator=integrator,
                                               tech_lead=tech_lead, stronger_dev=stronger_dev, deferred=deferred,
-                                              reviewer=reviewer, architect=architect)
+                                              reviewer=reviewer, architect=architect, designer=designer)
             status = "failed" if planned is None else "rejected" if len(results) == 1 else finished(results, deferred)
             return
         if resume:
@@ -427,7 +437,8 @@ def main():
                                      stack=stack, parallel=stack.parallel, save_tests=out / "hidden_tests",
                                      referee=referee, integrator=integrator,
                                      tech_lead=tech_lead, stronger_dev=stronger_dev,
-                                     answers=owner_answers(project), deferred=deferred, reviewer=reviewer)
+                                     answers=owner_answers(project), deferred=deferred, reviewer=reviewer,
+                                     designer=designer)
             status = finished(results, deferred)
             return
         deferred = []                           # filled after approval, when the owner has chosen
@@ -436,7 +447,7 @@ def main():
                                     save_tests=out / "hidden_tests", referee=referee, integrator=integrator,
                                     tech_lead=tech_lead, stronger_dev=stronger_dev,
                                     deferred=fresh_deferred(backend.project, deferred), reviewer=reviewer,
-                                    architect=architect)
+                                    architect=architect, designer=designer)
         if plan is None:
             status = "failed"
         elif len(results) == 1:

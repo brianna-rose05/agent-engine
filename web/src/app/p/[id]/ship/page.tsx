@@ -11,6 +11,8 @@ import { anyRunning, useProject } from "@/lib/project-store";
 import { shipChecks, shipRunning, versionNotes } from "@/lib/ship";
 import { savedForLater } from "@/lib/pm";
 import { OwnerSetup } from "@/components/OwnerSetup";
+import { DesignWarnings } from "@/components/Designer";
+import { designWarnings } from "@/lib/designer";
 import { shortSha } from "@/lib/history";
 import type { ShipCheckState, ShipRun, VersionState } from "@/lib/types";
 import { commitUrl } from "../../../../../convex/checkpoints";
@@ -336,6 +338,7 @@ function WhatsIn() {
           {changes.length > 0 && <Notes title="Changes" items={changes} />}
         </div>
       )}
+      <DesignWarnings warnings={designWarnings(state)} />
     </section>
   );
 }

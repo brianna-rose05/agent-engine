@@ -11,6 +11,8 @@ Event kinds and their data:
                                     merges (docs/reviewer.md); its attempt_finished follows the verdict
                                 architect_reviewing {attempt}: the architect is reviewing a plan (PLAN, C{n}PLAN) that
                                     passed its checks, before it merges (docs/architect.md)
+                                design_review {attempt}: the designer is looking at screenshots of every page of the
+                                    integrator's passing attempt (INT), before it merges (docs/designer.md)
     attempt_finished {n, passed, claim, reason, cost_usd, seconds, turns, files_changed}
     code_review      {verdict, comments, attempt, note?, review_error?, skipped?}   (docs/reviewer.md)
                      verdict changes: that attempt failed ("the reviewer requested changes") and the dev tries again;
@@ -23,6 +25,12 @@ Event kinds and their data:
                      changes") and the planner tries once more with the comments. Round 2 changes carries warnings: the
                      plan merges and goes to the owner with the comments. Approve: it merges (also when the review
                      broke, architect_error, or the limit kept it from running, skipped)
+    design_review    {verdict, comments, attempt, warnings?, designer_error?, skipped?, reason?}   (docs/designer.md)
+                     task id: INT. Changes (first review): that attempt failed ("the designer requested changes") and
+                     the integrator gets one more try with the comments. Changes with warnings (the second review, or
+                     the fix try didn't get through and the reviewed attempt merges after all): it merges, and the
+                     comments are design warnings. Approve: it merges (also designer_error, or skipped with a reason:
+                     no screenshots, the spending limit). The designer's cost: attempt_finished on task "INT-design"
     escalated        {question}   the task ends failed after a review; its error is "Needs you: <question>"
     plan_ready       {plan}
     plan_decision    {approved, note}
