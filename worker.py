@@ -3,7 +3,8 @@
 Reads the project from Convex, creates its own private GitHub repo, plans it, waits for the owner to
 approve the plan in the app, then builds it in Daytona sandboxes, streaming every step back to Convex.
 Started by the `Worker` workflow, which the app triggers when a project is created, retried
-(`resume`) or changed (`mode: "change"`, docs/change-requests.md)."""
+(`resume`), changed (`mode: "change"`, docs/change-requests.md) or rolled back (`mode: "rollback"`,
+docs/checkpoints.md)."""
 from __future__ import annotations
 
 import argparse
@@ -18,8 +19,9 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+from engine.checkpoints import run_rollback, save_checkpoint
 from engine.convex_sink import ConvexBackend
-from engine.engine import Engine
+from engine.engine import Engine, Result
 from engine.events import Emitter, JsonlSink
 from engine.project import change_project, resume_project, run_project
 from engine.stacks import NextSupabaseStack
@@ -97,6 +99,13 @@ def finished(results) -> str:
     return "done" if any(r.task == "INT" and r.status == "merged" for r in results) else "failed"
 
 
+def checkpoint_label(change: dict | None, resume: bool) -> str:
+    if change:
+        text = " ".join(str(change.get("text", "")).split())
+        return f"Change {change['n']}: {text[:60]}{'…' if len(text) > 60 else ''}"
+    return "Retry finished" if resume else "Build finished"
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--project-id", required=True)
@@ -121,9 +130,10 @@ def main():
     stack = NextSupabaseStack(link_node_modules=False)
     change = project.get("change") if project.get("mode") == "change" else None
     resume = bool(project.get("resume")) and not change
+    rollback_to = project.get("rollback") if project.get("mode") == "rollback" else None
     if change and not change.get("text"):
         raise SystemExit("change run without a change request")
-    if resume or change:                        # retry what failed, or change it: continue in the project's own repo
+    if resume or change or rollback_to:         # retry what failed, or change it: continue in the project's own repo
         if not project.get("repo"):
             raise SystemExit("nothing to retry or change: this project has no repo yet")
         repo_url, repo = project["repo"], out / "repo"
@@ -140,6 +150,15 @@ def main():
     from engine.agents.claude_cli import ClaudeCLIAgent
     from engine.sandboxes.daytona_sandbox import DaytonaSandbox
     events = Emitter(backend, JsonlSink(out / "events.jsonl"))
+    if rollback_to:                             # no agents: one commit on main, a new checkpoint, a redeploy
+        status = run_rollback(repo, int(rollback_to["n"]), events, merged=project.get("merged") or [])
+        events.emit("project_finished", status=status, repo=repo_url)
+        print(f"project {a.project_id}: rollback {status} ({repo_url})")
+        if status != "done":
+            sys.exit(1)
+        # the restored tree is a finished app (checkpoints are only made when a run is done): redeploy it
+        publish_preview([Result("INT", "rollback", "merged")], repo, repo_url, events)
+        return
     opts = stack.daytona_options()
     engine = Engine(repo, ClaudeCLIAgent(model=project["model"], budget_usd=a.budget),
                     lambda t, n: DaytonaSandbox(repo_url, t.id, n, github_token=token, run_id=out.name, **opts),
@@ -175,6 +194,9 @@ def main():
         else:
             status = finished(results)
     finally:
+        if status == "done":                    # a save point the owner can roll back to (docs/checkpoints.md)
+            merged = {*(project.get("merged") or []), *(r.task for r in results if r.status == "merged")}
+            save_checkpoint(repo, checkpoint_label(change, resume), events, merged)
         events.emit("project_finished", status=status, repo=repo_url)
         print(f"project {a.project_id}: {status} ({repo_url})")
         # a rejected change merged (and reverted) only its plan: nothing new to deploy

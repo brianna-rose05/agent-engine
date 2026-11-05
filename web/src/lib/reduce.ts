@@ -1,3 +1,4 @@
+import { withHistory } from "./history";
 import type { Attempt, ChangeState, ChangeTask, EngineEvent, FeedItem, Plan, PlanTask, ProjectState, Role, TaskState } from "./types";
 
 export const initialState = (): ProjectState => ({
@@ -36,7 +37,7 @@ export function currentPlanner(s: ProjectState): TaskState | undefined {
 /** Change tasks that belong on the board: those of approved changes, or any the engine has queued. */
 export function boardChangeTasks(s: ProjectState): ChangeTask[] {
   return s.changes.flatMap((c) =>
-    c.decision === "approved" || c.tasks.some((t) => s.tasks[t.id] || s.tasks[`${t.id}-qa`]) ? c.tasks : []);
+    c.rolled_back ? [] : c.decision === "approved" || c.tasks.some((t) => s.tasks[t.id] || s.tasks[`${t.id}-qa`]) ? c.tasks : []);
 }
 
 /** Activity notes kept per task: the planning screen shows this many, a board card the latest. */
@@ -50,6 +51,10 @@ function channelFor(role: Role): FeedItem["channel"] {
 
 /** Apply one engine event. Pure: the same events always give the same screen. */
 export function reduce(s: ProjectState, e: EngineEvent): ProjectState {
+  return withHistory(s, e, reduceEvent);   // checkpoints and rollbacks wrap the rest (lib/history.ts)
+}
+
+function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
   const tasks = { ...s.tasks };
   const feed = [...s.feed];
   let { status, plan, cost_usd, preview_url } = s;

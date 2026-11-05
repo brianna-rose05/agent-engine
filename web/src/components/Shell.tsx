@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Hash, KanbanSquare, ListChecks, ListTree, Plus, Sparkles } from "lucide-react";
+import { Hash, History, KanbanSquare, ListChecks, ListTree, Plus, Sparkles } from "lucide-react";
 import { useQuery } from "convex/react";
 import { api, liveEnabled, useOwner } from "@/lib/convex";
 import { money } from "@/lib/reduce";
@@ -25,6 +25,7 @@ export function Shell({
         ...(projectNav.id !== "demo" ? [{ href: `${base}/setup`, label: "Setup", Icon: ListChecks }] : []),
         { href: `${base}/plan`, label: "Plan", Icon: ListTree },
         { href: `${base}/board`, label: "Board", Icon: KanbanSquare },
+        ...(projectNav.id !== "demo" ? [{ href: `${base}/history`, label: "History", Icon: History }] : []), // docs/checkpoints.md
       ]
     : [];
   const channels: Nav[] = projectNav
