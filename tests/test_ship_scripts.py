@@ -62,20 +62,27 @@ def test_audit_blocks_on_new_high_advisories_and_lists_the_templates_known_ones(
         return {"name": name, "severity": severity,
                 "via": [{"name": name, "severity": severity, "title": title, "url": f"https://github.com/advisories/{ghsa}"}]}
     report = {"vulnerabilities": {
-        "zod": vuln("zod", "high", "GHSA-mrhx-c7xc-m3w5"),                 # the template's own: listed, not counted
+        "zod": vuln("zod", "high", "GHSA-mrhx-c7xc-m3w5", "memory"),       # accepted below: listed, not counted
         "evil": vuln("evil", "critical", "GHSA-xxxx-1111-aaaa", "RCE"),
         "meh": vuln("meh", "moderate", "GHSA-yyyy-2222-bbbb"),
         "tiny": vuln("tiny", "low", "GHSA-zzzz-3333-cccc"),
         "wrapper": {"name": "wrapper", "severity": "critical", "via": ["evil"]},   # transitive: counted once
     }, "metadata": {}}
-    script = (f'import {{ readAudit }} from "{mod("check-security.mjs")}";'
-              "const r = (s) => console.log(JSON.stringify(readAudit(s)));"
-              f"r({json.dumps(json.dumps(report))}); r(''); r(JSON.stringify({{error: {{code: 'ENOTFOUND', summary: 'request to registry failed'}}}}));")
-    full, empty, offline = [json.loads(x) for x in node(script, tmp_path).splitlines()]
+    accepted = {"GHSA-mrhx-c7xc-m3w5": "zod 3: fixed only in zod 4"}
+    script = (f'import {{ ACCEPTED, readAudit }} from "{mod("check-security.mjs")}";'
+              "const r = (s, a) => console.log(JSON.stringify(readAudit(s, a)));"
+              f"r({json.dumps(json.dumps(report))}, {json.dumps(accepted)}); r({json.dumps(json.dumps(report))});"
+              "r(''); r(JSON.stringify({error: {code: 'ENOTFOUND', summary: 'request to registry failed'}}));"
+              "console.log(JSON.stringify(ACCEPTED));")
+    full, unaccepted, empty, offline, shipped = [json.loads(x) for x in node(script, tmp_path).splitlines()]
     assert full["blocking"] == ["critical evil: RCE (GHSA-xxxx-1111-aaaa)"]
     assert full["warnings"] == ["moderate meh: t (GHSA-yyyy-2222-bbbb)"] and full["lows"] == 1
     assert len(full["known"]) == 1 and "zod" in full["known"][0]
     assert "unreachable" in empty and offline == {"unreachable": "request to registry failed"}
+    # The template ships with no accepted advisories (Next 16 / zod 4, docs/template-upgrades.md): the mechanism stays,
+    # and an advisory nobody accepted blocks like any other.
+    assert shipped == {}
+    assert "high zod: memory (GHSA-mrhx-c7xc-m3w5)" in unaccepted["blocking"] and unaccepted["known"] == []
 
 
 @needs_node
