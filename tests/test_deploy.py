@@ -14,8 +14,10 @@ TOKEN = "tok_secret_123"
 class FakeVercel:
     """Records every request; answers like the Vercel API. `states` are the readyStates the polls return."""
 
-    def __init__(self, states=("BUILDING", "READY"), project_exists=False, error_message="Command failed: next build"):
+    def __init__(self, states=("BUILDING", "READY"), project_exists=False, error_message="Command failed: next build",
+                 teams=None):
         self.calls = []
+        self.teams = teams
         self.states = list(states)
         self.project_exists = project_exists
         self.error_message = error_message
@@ -24,6 +26,8 @@ class FakeVercel:
     def __call__(self, method, url, headers, body):
         self.calls.append((method, url, headers, body))
         path = url.split("https://api.vercel.com", 1)[1].split("?")[0]
+        if method == "GET" and path == "/v2/teams" and self.teams is not None:
+            return 200, json.dumps({"teams": self.teams}).encode()
         if method == "GET" and path.startswith("/v9/projects/"):
             return (200, b'{"id":"prj_1"}') if self.project_exists else (404, b'{"error":{"code":"not_found"}}')
         if method == "POST" and path == "/v11/projects":
@@ -190,3 +194,20 @@ def test_worker_redeploys_a_retry_when_integration_merged_earlier():
     assert calls and evs[0][0] == "preview_ready"
     calls, _ = run_worker_preview([Result("T2", "b", "failed")], ("ready", "u", ""), merged_before={"INT"})
     assert calls == []
+
+
+def test_a_token_scoped_to_one_team_deploys_into_that_team(tmp_path):
+    """Regression (first live preview): "You don't have permission to create the project" (403) because the
+    token belongs to a team and requests went to the personal scope. The team is found from the token."""
+    http = FakeVercel(teams=[{"id": "team_abc", "slug": "briannas-projects"}])
+    r = deploy(make_repo(tmp_path), http)
+    assert r.status == "ready"
+    after = [c[1] for c in http.calls if "/v2/teams" not in c[1]]
+    assert after and all("teamId=team_abc" in u for u in after)
+
+
+def test_several_teams_or_none_leave_the_scope_alone(tmp_path):
+    for teams in ([], [{"id": "a"}, {"id": "b"}]):
+        http = FakeVercel(teams=teams)
+        assert deploy(make_repo(tmp_path / str(len(teams))), http).status == "ready"
+        assert not [c for c in http.calls if "teamId=" in c[1]]

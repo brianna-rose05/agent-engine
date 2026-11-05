@@ -117,6 +117,17 @@ class Vercel:
             raise DeployError(self.scrub(f"Vercel {method} {path.split('?')[0]} failed ({status}): {msg}")[:300])
         return status, parsed
 
+    def find_team(self) -> str | None:
+        """The token's team when it belongs to exactly one. Regression (first live preview): Vercel puts Hobby
+        accounts under a team and a token scoped to it can't create projects outside it ("You don't have
+        permission to create the project"), so without a team id every deploy failed."""
+        try:
+            _, d = self.call("GET", "/v2/teams", limit="20")
+        except DeployError:
+            return None
+        teams = [t for t in d.get("teams") or [] if isinstance(t, dict) and t.get("id")]
+        return teams[0]["id"] if len(teams) == 1 else None
+
     def scrub(self, text: str) -> str:
         return text.replace(self.token, "***") if self.token else text
 
@@ -168,6 +179,8 @@ def deploy_preview(repo: Path, project_name: str, token: str | None = None, team
     if not token:
         return DeployResult("skipped", reason="no VERCEL_TOKEN")
     v = Vercel(token, team_id, http)
+    if not team_id:
+        v.team_id = v.find_team()
     name = project_slug(project_name)
     try:
         files = [(p, d) for p, d in (files if files is not None else repo_files(Path(repo))) if not excluded(p)]
