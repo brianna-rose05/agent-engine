@@ -10,7 +10,7 @@ export default defineSchema({
     name: v.string(),
     description: v.string(),
     model: v.union(v.literal("haiku"), v.literal("sonnet")),
-    status: v.string(), // draft (setup wizard) | queued | starting | planning | awaiting_approval | approved | rejected | building | done | failed | stopped (spending limit)
+    status: v.string(), // draft (setup wizard) | queued | starting | planning | awaiting_approval | approved | rejected | building | shipping | done | failed | stopped (spending limit)
     plan: v.optional(v.any()),
     planNote: v.optional(v.string()),
     costUsd: v.number(),
@@ -28,6 +28,10 @@ export default defineSchema({
     checkpoints: v.optional(v.array(v.any())), // save points, oldest first: {n, tag, sha, label, at, merged} (convex/checkpoints.ts)
     rollback: v.optional(v.any()), // the running/last rollback: {n, from} (from = status before it, restored if it fails)
     quicks: v.optional(v.array(v.any())), // quick changes, oldest first: {n, text, at, result?, reason?} (convex/quick.ts)
+    // Ship to production (convex/ship.ts). status is "shipping" while a ship runs, then back to ship.from.
+    ship: v.optional(v.any()), // the running/last ship: {from, rollbackTo: n|null, state?, checks?: [{name, label, status, detail?}], reason?}
+    versions: v.optional(v.array(v.any())), // shipped versions, oldest first: {n, tag, sha, url, at, label?}
+    production: v.optional(v.any()), // what production runs now: {url, version, at}
   }),
   events: defineTable({
     projectId: v.id("projects"),

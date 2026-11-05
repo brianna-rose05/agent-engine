@@ -6,6 +6,7 @@ import { budgetOf } from "./budget";
 import { notifyFor } from "./notifications";
 import { checkpointPatch, mergedTasks } from "./checkpoints";
 import { quickForWorker, quickPatch } from "./quick";
+import { shipForWorker, shipPatch } from "./ship";
 
 /*
  * What the engine (worker.py in GitHub Actions) calls. Authenticated with ENGINE_SECRET, which both sides
@@ -38,8 +39,9 @@ export const projectForWorker = queryGeneric({
       if (rollingBack) merged = (p.checkpoints ?? []).find((c: { n: number }) => c.n === p.rollback?.n)?.merged ?? merged;
     }
     const latest = change ? ((p.changes ?? []) as ChangeRequest[]).at(-1) : undefined;
-    return { resume: Boolean(p.resume),
-             mode: change ? "change" : rollingBack ? "rollback" : quick ? "quick" : p.resume ? "resume" : "build",
+    const shipping = shipForWorker(p); // mode "ship": {ship: {from, rollbackTo}, versions, production} (convex/ship.ts)
+    return { resume: Boolean(p.resume), ...shipping,
+             mode: change ? "change" : rollingBack ? "rollback" : quick ? "quick" : shipping.ship ? "ship" : p.resume ? "resume" : "build",
              rollback: rollingBack ? { n: p.rollback?.n } : null,
              change: latest ? { n: latest.n, text: latest.text } : null, quick,
              repo, merged, plan: p.resume || change ? p.plan ?? null : null, name: p.name,
@@ -70,7 +72,8 @@ export const record = mutationGeneric({
     if (!p) throw new ConvexError("no such project");
     await ctx.db.insert("events", { projectId, kind, taskId, data, ts });
     if (kind === "agent_activity") return; // frequent and informational: never touches the project row
-    await notifyFor(ctx, projectId, p.name, kind, data); // approvals, finished builds, the spending limit, previews
+    // approvals, finished builds, the spending limit, previews (a ship's run end isn't a finished build)
+    if (!(kind === "project_finished" && p.mode === "ship")) await notifyFor(ctx, projectId, p.name, kind, data);
     const patch: Record<string, unknown> = {};
     if (kind === "task_queued" && taskId === "PLAN") patch.status = STATUS_AFTER.task_queued;
     if (kind === "plan_ready") {
@@ -98,6 +101,7 @@ export const record = mutationGeneric({
     }
     Object.assign(patch, checkpointPatch(p, kind, data, ts)); // checkpoints and rollback (docs/checkpoints.md)
     Object.assign(patch, quickPatch(p, kind, data)); // quick changes: status and the entry's result (convex/quick.ts)
+    Object.assign(patch, shipPatch(p, kind, data, ts)); // ship to production: checks, versions, production (convex/ship.ts)
     if (Object.keys(patch).length) await ctx.db.patch(projectId, patch);
   },
 });

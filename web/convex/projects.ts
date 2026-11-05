@@ -5,6 +5,7 @@ import { anyApi } from "convex/server";
 import { checkOwner } from "./owner";
 import { canRequestChange, checkChangeText, nextChangeNumber, type ChangeRequest } from "./changes";
 import { budgetOf, canSpendMore, checkBudget } from "./budget";
+import { canShip } from "./ship";
 
 const owner = { key: v.string() };
 
@@ -48,7 +49,10 @@ export const get = queryGeneric({
                  canChange: Boolean(p.repo) && canRequestChange(p.status, Boolean(p.plan), false),
                  changes: ((p.changes ?? []) as ChangeRequest[]).map((c) => ({ n: c.n, text: c.text, at: c.at })),
                  createdAt: p._creationTime, error: p.error ?? null, wizard: p.wizard ?? null, previewUrl: p.previewUrl ?? null,
-                 durableDb: Boolean(p.durableDb) },
+                 durableDb: Boolean(p.durableDb),
+                 // ship to production (convex/ship.ts): the screen reduces the events, the row says what's queued
+                 canShip: canShip(p.status, false, Boolean(p.repo)), shipping: p.mode === "ship" && ["queued", "starting", "shipping"].includes(p.status),
+                 production: p.production ?? null },
       events: events.map((e) => ({ kind: e.kind, task_id: e.taskId, data: e.data, ts: e.ts })),
     };
   },

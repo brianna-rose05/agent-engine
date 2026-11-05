@@ -29,6 +29,9 @@ type Store = {
   canRetry?: boolean;           // a stopped build that can retry only what failed
   previewUrl?: string | null;   // live preview of the finished app (Vercel), once deployed
   durableDb?: boolean;          // the preview has its own database, so its data is kept (docs/databases.md)
+  canShip?: boolean;            // live: the project row allows shipping to production now (convex/ship.ts)
+  shipQueued?: boolean;         // live: a ship or production rollback was asked for and its run hasn't ended
+  production?: { url: string; version: number; at: number } | null; // live: what production runs now (project row)
   canChange: boolean;           // the owner can ask for a change now (docs/change-requests.md)
   changeHistory: ChangeRequest[]; // the change requests asked so far, oldest first
   requestChange: (text: string) => Promise<void>; // throws with a message to show when it can't be sent
@@ -122,6 +125,7 @@ function useDemo(): Omit<Store, "project" | "mode"> {
 
 type LiveData = {
   project: Project & { status: string; error: string | null; wizard: Wizard | null; canRetry?: boolean; previewUrl?: string | null; durableDb?: boolean;
+                      canShip?: boolean; shipping?: boolean; production?: { url: string; version: number; at: number } | null;
                       canChange?: boolean; changes?: ChangeRequest[]; budgetUsd?: number; costUsd?: number };
   events: { kind: EngineEvent["kind"]; task_id: string | null; data: Record<string, unknown>; ts: number }[];
 } | null;
@@ -152,6 +156,9 @@ function LiveProvider({ id, children }: { id: string; children: React.ReactNode 
     liveStatus: data?.project.status, liveError: data?.project.error ?? null, wizard: data?.project.wizard ?? null, canRetry: Boolean(data?.project.canRetry),
     previewUrl: data?.project.previewUrl ?? state.preview_url,
     durableDb: Boolean(data?.project.durableDb) || Boolean(state.durable_db),
+    canShip: Boolean(data?.project.canShip),
+    shipQueued: Boolean(data?.project.shipping),
+    production: data?.project.production ?? null,
     canChange: Boolean(data?.project.canChange),
     changeHistory: data?.project.changes ?? [],
     budgetUsd: data?.project.budgetUsd,
