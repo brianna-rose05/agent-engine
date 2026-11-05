@@ -12,6 +12,8 @@ Event kinds and their data:
     preview_ready    {url}      the finished app on Vercel (worker.py, engine/deploy.py)
     preview_failed   {reason}
     preview_skipped  {reason}   e.g. no VERCEL_TOKEN
+    database_ready   {name}     the preview's own Postgres exists (worker.py, engine/databases.py); never a URL
+    database_failed  {reason}   (scrubbed) the preview deploys in local mode instead (docs/databases.md)
     budget_reached   {spent, budget}   the project's spending limit stopped new work (once per run, engine/budget.py);
                      tasks that never started end with task_status "stopped", the run with project_finished "stopped"
     agent_activity   {attempt, note, notes}   what a running agent is doing ("Wrote src/x.ts"),

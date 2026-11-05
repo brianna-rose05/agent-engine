@@ -157,6 +157,8 @@ Administration, Contents and Workflows read/write; the worker creates and pushes
 Convex dashboard (production > Settings > Environment Variables): `OWNER_PASSPHRASE` (the app asks for it
 until sign-in exists) and `GITHUB_DISPATCH_TOKEN` (fine-grained, agent-engine only, Actions read/write;
 lets the app start the Worker). Vercel: project `studio`, root `web`, env `NEXT_PUBLIC_CONVEX_URL`.
+Optional repo secret `POSTGRES_ADMIN_URL` (a Neon connection string): every preview gets its own durable Postgres
+instead of in-memory data that resets (docs/databases.md).
 
 ## Next (milestone 4, remaining)
 

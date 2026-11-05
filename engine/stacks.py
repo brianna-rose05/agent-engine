@@ -134,7 +134,7 @@ class NextSupabaseStack(PythonStack):
     reserved = {"supabase/migrations/0000_base.sql", "src/lib/db.ts", "src/lib/errors.ts", "src/lib/db-postgres.ts",
                 "src/test/db.ts", "src/app/layout.tsx"}
     template = TEMPLATES / "next-supabase"
-    reserved |= {"src/lib/pglite.ts", "src/lib/runtime.ts", "src/lib/auth.ts", "src/lib/session.ts"}
+    reserved |= {"src/lib/pglite.ts", "src/lib/runtime.ts", "src/lib/auth.ts", "src/lib/session.ts", "src/lib/migrate.ts"}
 
     # ---------------------------------------------------------------- integration
     integration = True
@@ -298,6 +298,9 @@ AGENTS_MD = """# Team rules (Next.js + Supabase)
 - The app runs without any accounts in local mode (no DATABASE_URL): an in-process Postgres with the
   migrations applied, and local logins. `node scripts/check-app.mjs /route ...` (after `npx next build`)
   starts it and checks every page answers without a server error.
+- Previews run on a real, durable Postgres: the app applies new migrations on its first request there. So
+  migrations are plain Postgres that also runs on PGlite, and once merged they are never edited: change the
+  schema with a new, higher-numbered migration.
 """
 
 STACKS = {"python": PythonStack, "next-supabase": NextSupabaseStack}
