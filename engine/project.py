@@ -364,6 +364,11 @@ End of the last attempt's test output:
 The last attempt's changes (git diff):
 {diff}
 {retro}
+The dev may edit only {module} and its own tests: the engine rejects an attempt that edits any other file, so
+guidance that asks it to edit another file can't work. If the fix seems to need another file (for example a page still imports a name the change
+removed), find a fix inside {module} that keeps the other files working, such as keeping the old export as a thin
+wrapper over the new code; the integrator updates the other files after the features merge.
+
 Write {verdict} with exactly this JSON and nothing else:
 {{"decision": "retry" or "escalate",
   "note": "<for the dev, in plain English: what went wrong and exactly what to do instead>",
@@ -878,6 +883,11 @@ Write changes/{n}.json, exactly this shape:
      change: they are the spec QA tests against. Never stub out, delete or replace the existing code, and never
      add a `{stub_marker}` body to it. If the change adds a function to an existing module, describe its exact
      signature and behavior in the task spec and in a comment in the module; the dev writes it.
+   - Never remove or rename an exported function, type or constant that other modules or pages use: say in the
+     spec that the old name stays, working, as a thin wrapper over the new code. Each dev agent may edit only
+     its own module, so a removed name breaks the type check of files nobody in the change can edit. The
+     integrator moves the callers to the new code afterwards. (Regression: Tool library change 1 removed
+     requireAdmin, two pages still imported it, and the feature failed all five tries.)
    - kind "new": a module that doesn't exist yet, written as a stub exactly like the original plan's stubs.
    - depends_on lists ids of tasks in this change only (earlier work is already merged); no cycles.
    - "contracts": every contract file this change adds or edits ({contract_rule}). Contract edits must be

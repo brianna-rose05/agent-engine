@@ -1234,3 +1234,15 @@ def test_worker_builds_a_sonnet_reviewer():
     from worker import reviewer_agent
     rev = reviewer_agent(0.5)
     assert rev.model == "sonnet" and rev.budget_usd == 0.5 and rev is not reviewer_agent(0.5)
+
+
+def test_change_and_tech_lead_rules_keep_removed_names_working():
+    """Regression (Tool library change 1): the change removed requireAdmin from profiles.ts while two pages still
+    imported it. The dev could edit only profiles.ts, so every try failed the type check, and the tech lead told it
+    to edit the pages, which the engine rejects. Both prompts now say: keep the old name as a thin wrapper."""
+    from engine.project import CHANGE_GUIDE, TECH_LEAD_SPEC
+    assert "Never remove or rename an exported function" in CHANGE_GUIDE and "thin wrapper" in CHANGE_GUIDE
+    spec = TECH_LEAD_SPEC.format(tid="C1T1", title="t", n=3, module="src/server/profiles.ts", spec="s",
+                                 contracts="none", test_path="tests/qa/x.test.ts", verdict="review/x.json",
+                                 attempts="-", base="b", output="-", diff="-", retro="")
+    assert "The dev may edit only src/server/profiles.ts and its own tests" in spec and "thin" in spec
