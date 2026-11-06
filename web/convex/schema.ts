@@ -39,6 +39,10 @@ export default defineSchema({
     // one-time codes the app's owner enters on <app>/owner-setup to claim the admin role (convex/setup.ts). Set as
     // APP_SETUP_CODE on each deploy by the worker; shown only to the owner through projects.get, never in events.
     setupCodes: v.optional(v.object({ preview: v.optional(v.string()), production: v.optional(v.string()) })),
+    // the project's own Anthropic API key (docs/settings.md, convex/projectKeys.ts): AES-GCM ciphertext under
+    // STUDIO_KEY_SECRET, decrypted only for the worker (projectForWorker); the screen gets the last 4 characters only
+    anthropicKeyEnc: v.optional(v.string()),
+    anthropicKeyLast4: v.optional(v.string()),
   }),
   events: defineTable({
     projectId: v.id("projects"),
@@ -55,5 +59,13 @@ export default defineSchema({
     body: v.string(),
     ts: v.number(),
     read: v.boolean(),
+    // the Slack post for this notification (convex/slack.ts): {status: sending | sent | failed | skipped, at, error?}.
+    // Set once, before posting, so a notification is posted at most once.
+    slack: v.optional(v.any()),
   }).index("by_ts", ["ts"]).index("by_read", ["read"]),
+  // Studio-wide settings, one row (convex/settings.ts): the Slack Incoming Webhook URL, never sent back to the app
+  settings: defineTable({
+    slackWebhookUrl: v.optional(v.string()),
+    updatedAt: v.number(),
+  }),
 });

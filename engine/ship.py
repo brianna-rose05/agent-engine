@@ -29,6 +29,7 @@ from engine.databases import scrub as scrub_urls
 from engine.deploy import deploy_production, production_name
 from engine.engine import git
 from engine.gitlock import repo_lock
+from engine.redact import registered as registered_secrets
 
 TAG_PREFIX = "v"
 DETAIL_CHARS = 1500                 # the end of a check's output, shown in the app
@@ -70,7 +71,8 @@ class ShipError(RuntimeError):
 def scrub(text: str, *secrets: str) -> str:
     """Removes connection strings, their passwords, the known settings' values and token-shaped strings."""
     text = scrub_urls(str(text), *[s for s in secrets if s and "://" in s])
-    for value in [*secrets, *(os.environ.get(k, "") for k in SECRET_ENV)]:
+    # plus values registered at run time, like a project's own Anthropic API key (engine/redact.py)
+    for value in [*secrets, *(os.environ.get(k, "") for k in SECRET_ENV), *registered_secrets()]:
         if value and len(value) >= 6:
             text = text.replace(value, "***")
     return TOKEN_RE.sub("***", scrub_urls(text, os.environ.get("POSTGRES_ADMIN_URL", "")))

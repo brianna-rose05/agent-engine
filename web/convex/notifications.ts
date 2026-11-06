@@ -8,7 +8,8 @@ import { checkOwner } from "./owner";
  * Notifications for the owner: written by engine:record when something needs them or finished (see
  * notificationFor), shown by the bell in the sidebar (src/components/Notifications.tsx) and, while the tab is
  * hidden, as browser notifications. Optionally emailed through Resend when RESEND_API_KEY and NOTIFY_EMAIL are
- * set in Convex; without them, nothing is sent and nothing is logged.
+ * set in Convex; without them, nothing is sent and nothing is logged. Also posted to Slack when the owner saved a
+ * webhook on /settings (convex/slack.ts).
  */
 
 export type NotificationKind = "needs_approval" | "needs_you" | "finished" | "budget_reached" | "preview_ready" | "ready_to_ship";
@@ -30,6 +31,10 @@ export function notificationFor(kind: string, data: Record<string, unknown> | nu
       const status = String(d.status ?? "");
       if (status === "done") return { kind: "finished", title: `${project} is built`, email: true,
                                       body: "Every feature the team could finish is verified and merged." };
+      // a run the worker refused to start says why (`reason`, e.g. the project's own API key can't be used)
+      if (status === "failed" && typeof d.reason === "string" && d.reason) {
+        return { kind: "finished", title: `${project} couldn't start`, email: true, body: d.reason.slice(0, 300) };
+      }
       if (status === "failed") return { kind: "finished", title: `${project} stopped with problems`, email: true,
                                         body: "Some features didn't pass their checks. You can retry what failed." };
       if (status === "stopped") return { kind: "finished", title: `${project} stopped at its spending limit`, email: true,
@@ -86,7 +91,10 @@ export async function notifyFor(ctx: GenericMutationCtx<GenericDataModel>, proje
     const unread = await ctx.db.query("notifications").withIndex("by_read", (q) => q.eq("read", false)).take(200);
     if (isDuplicate(unread as unknown as StoredNote[], String(projectId), n)) return;
   }
-  await ctx.db.insert("notifications", { projectId, kind: n.kind, title: n.title, body: n.body, ts: Date.now(), read: false });
+  const id = await ctx.db.insert("notifications", { projectId, kind: n.kind, title: n.title, body: n.body, ts: Date.now(), read: false });
+  // Slack (convex/slack.ts, docs/settings.md): every notification, once, when a webhook is saved on /settings
+  const settings = (await ctx.db.query("settings").first()) as { slackWebhookUrl?: string } | null;
+  if (settings?.slackWebhookUrl) await ctx.scheduler.runAfter(0, anyApi.slack.post, { id });
   if (n.email && emailEnabled()) {
     await ctx.scheduler.runAfter(0, anyApi.notifications.sendEmail,
                                  { title: n.title, body: n.body, path: notificationPath(projectId, n.kind) });

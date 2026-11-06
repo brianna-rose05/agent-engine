@@ -121,3 +121,11 @@ describe("browser alerts", () => {
     expect(timeAgo(0, 2 * 86_400_000)).toBe("2 d ago");
   });
 });
+
+describe("a run the worker refused to start", () => {
+  it("notifies with the reason", () => {
+    expect(notificationFor("project_finished", { status: "failed", reason: "the key can't be used" }, "Pawfect"))
+      .toMatchObject({ kind: "finished", title: "Pawfect couldn't start", body: "the key can't be used" });
+    expect(notificationFor("project_finished", { status: "failed" }, "Pawfect")!.title).toBe("Pawfect stopped with problems");
+  });
+});

@@ -40,6 +40,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol
 
+from engine.redact import registered as registered_secrets
+
 API = "https://api.vercel.com"
 TIMEOUT_S = 10 * 60
 POLL_S = 5.0
@@ -148,7 +150,7 @@ class Vercel:
         return teams[0]["id"] if len(teams) == 1 else None
 
     def scrub(self, text: str) -> str:
-        for secret in [self.token, *self.secrets]:
+        for secret in [self.token, *self.secrets, *registered_secrets()]:   # + e.g. a project's own API key
             if secret:
                 text = text.replace(secret, "***")
         return text

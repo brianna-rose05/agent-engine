@@ -159,3 +159,12 @@ describe("durable preview database (docs/databases.md)", () => {
     expect(s.feed.at(-1)!.text).toContain("keeps using");
   });
 });
+
+describe("a run the worker refused to start", () => {
+  it("is failed, and the feed says why", () => {
+    const s = reduce(initialState(), ev(0, "project_finished", null,
+      { status: "failed", reason: "this project's own Anthropic API key can't be used: STUDIO_KEY_SECRET changed" }));
+    expect(s.status).toBe("failed");
+    expect(s.feed.at(-1)!.text).toBe("The run couldn't start: this project's own Anthropic API key can't be used: STUDIO_KEY_SECRET changed");
+  });
+});

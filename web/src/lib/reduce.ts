@@ -435,7 +435,7 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
       break;
     }
     case "project_finished": {
-      const d = e.data as { status: "done" | "failed" | "rejected" | "stopped" | "blocked" };
+      const d = e.data as { status: "done" | "failed" | "rejected" | "stopped" | "blocked"; reason?: unknown };
       if (runningQuick || (quicks.at(-1)?.result === "blocked" && d.status === "blocked")) {
         // a quick change's run: one that didn't merge left the app as it was (Convex record does the same)
         const q = (runningQuick ?? quicks.at(-1))!;
@@ -455,6 +455,12 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
         // a sent-back change built nothing: the project is as it was (Convex record does the same)
         status = latest.before;
         say({ who: "engine", channel: "build", text: `Change ${latest.n} was sent back, so nothing was built. The app is as it was.` });
+        break;
+      }
+      if (typeof d.reason === "string" && d.reason) {
+        // the worker refused to start the run (e.g. the project's own API key can't be used): nothing was built
+        status = d.status as ProjectState["status"];
+        say({ who: "engine", channel: "build", tone: "bad", text: `The run couldn't start: ${d.reason}` });
         break;
       }
       status = d.status as ProjectState["status"];
