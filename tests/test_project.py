@@ -1361,3 +1361,14 @@ def test_change_and_tech_lead_rules_keep_removed_names_working():
                                  contracts="none", test_path="tests/qa/x.test.ts", verdict="review/x.json",
                                  attempts="-", base="b", output="-", diff="-", retro="")
     assert "The dev may edit only src/server/profiles.ts and its own tests" in spec and "thin" in spec
+
+
+def test_template_next_config_type_checks_on_older_next_majors():
+    """Regression (Tool library's first ship, Nov 5): next.config.ts is copied into projects held on Next 15
+    (docs/template-upgrades.md), and its typed `experimental.turbopackAdditionalRoots` (Next 16 only) failed their
+    type check. Next-16-only options are added untyped, after the NextConfig literal."""
+    from pathlib import Path
+    text = (Path(__file__).parent.parent / "templates/next-supabase/next.config.ts").read_text()
+    typed = text.split("const nextConfig: NextConfig = {", 1)[1].split("\n};", 1)[0]
+    assert "experimental" not in typed and "turbopack" not in typed
+    assert "Object.assign(nextConfig" in text

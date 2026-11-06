@@ -23,7 +23,10 @@ const nextConfig: NextConfig = {
   outputFileTracingIncludes: {
     "/**": ["./supabase/migrations/**/*", "./node_modules/@electric-sql/pglite/dist/**/*"],
   },
-  ...(linked ? { experimental: { turbopackAdditionalRoots: { sharedNodeModules: { path: linked } } } } : {}),
 };
+// Added untyped so this file also type-checks on Next 15, which has no such option: projects held on their own
+// major (docs/template-upgrades.md) still get this file. Regression (Tool library's first ship, Nov 5): the Next 16
+// version of this file failed the type check of a project still on Next 15.
+if (linked) Object.assign(nextConfig, { experimental: { turbopackAdditionalRoots: { sharedNodeModules: { path: linked } } } });
 
 export default nextConfig;
