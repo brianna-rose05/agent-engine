@@ -112,6 +112,8 @@ function useDemo(): Omit<Store, "project" | "mode" | "canEdit" | "isOwner"> {
     return s;
   }, [clock, decision]);
 
+  // The demo is a recording: a change request is kept on this page only, no team picks it up.
+  const [history, setHistory] = useState<ChangeRequest[]>([]);
   const approve = useCallback(async () => {
     setDecision({ approved: true, note: "" });
     setClock(DECISION_T);
@@ -122,8 +124,6 @@ function useDemo(): Omit<Store, "project" | "mode" | "canEdit" | "isOwner"> {
     setClock(0);
     setHistory([]);
   }, []);
-  // The demo is a recording: a change request is kept on this page only, no team picks it up.
-  const [history, setHistory] = useState<ChangeRequest[]>([]);
   const requestChange = useCallback(async (text: string, upgradeTemplate = false) => {
     const checked = checkChangeText(text);
     if (!checked.ok) throw new Error(checked.message);

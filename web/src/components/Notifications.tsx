@@ -27,6 +27,8 @@ export function NotificationBell({ align = "left" }: { align?: "left" | "right" 
   const loaded = useRef(false);
   const box = useRef<HTMLDivElement>(null);
 
+  // The browser's permission exists only after hydration: read once on mount (React's documented exception).
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => setPermission(permissionNow()), []);
 
   // browser alerts for notifications that arrive while the tab is hidden
@@ -47,7 +49,6 @@ export function NotificationBell({ align = "left" }: { align?: "left" | "right" 
 
   useEffect(() => {
     if (!open) return;
-    setNow(Date.now());
     const close = (e: MouseEvent) => { if (!box.current?.contains(e.target as Node)) setOpen(false); };
     const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
     document.addEventListener("mousedown", close);
@@ -73,7 +74,7 @@ export function NotificationBell({ align = "left" }: { align?: "left" | "right" 
   return (
     <div ref={box} className="relative">
       <button
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => { setNow(Date.now()); setOpen((o) => !o); }}
         aria-label={unread ? `Notifications, ${unread} unread` : "Notifications"}
         aria-expanded={open}
         className="relative grid size-8 place-items-center rounded-lg text-muted transition-colors duration-150 hover:bg-surface hover:text-ink"

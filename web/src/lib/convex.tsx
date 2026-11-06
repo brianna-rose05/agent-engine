@@ -33,6 +33,8 @@ function OwnerProvider({ children }: { children: React.ReactNode }) {
   const [key, setKeyState] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [restored, setRestored] = useState<string | null>(null);
+  // Browser storage exists only after hydration: restore once on mount (React's documented exception).
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     try {
       const k = localStorage.getItem(STORAGE_KEY);
@@ -43,6 +45,7 @@ function OwnerProvider({ children }: { children: React.ReactNode }) {
     }
     setReady(true);
   }, []);
+  /* eslint-enable react-hooks/set-state-in-effect */
   const setKey = useCallback((k: string | null) => {
     setKeyState(k);
     try {
