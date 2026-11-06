@@ -29,7 +29,9 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The Next.js pipeline tests build whole apps (about a minute each). At 15 the suite was cut off on every push
+    # from Nov 5 on; --durations shows which tests take the time.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -41,7 +43,7 @@ jobs:
           node-version: "22"
       - name: Install the web template (so the Next.js pipeline tests run)
         run: npm ci --prefix templates/next-supabase --no-audit --no-fund
-      - run: python -m pytest -q
+      - run: python -m pytest -q --durations=15
 
   web:
     if: github.event_name == 'push'
