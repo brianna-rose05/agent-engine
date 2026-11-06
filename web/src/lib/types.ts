@@ -179,6 +179,7 @@ export type ProjectState = {
   history?: HistoryState;      // checkpoints and rollbacks (lib/history.ts); absent until the first one
   quicks: QuickState[];        // quick changes, oldest first
   ship?: ShipState;            // ship to production (lib/ship.ts); absent until the first ship
+  template_updates?: { t: number; files: string[] }[]; // template_updated events: what the next version also holds
   deferred?: string[];         // plan task ids the PM saved for the next version (pm_deferred), until they're built
   ready_to_ship?: { saved: string[]; musts: number; t: number } | null; // the latest run's ship gate (ready_to_ship)
   retros?: { summary: string; t: number }[]; // retro notes after each run (retro_written), oldest first

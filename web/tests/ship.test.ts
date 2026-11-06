@@ -327,6 +327,15 @@ describe("shipping in the app", () => {
     expect(versionNotes(s)).toEqual({ since: 1, features: ["Reviews"], changes: ["Change 1: Add reviews"] });
   });
 
+  it("counts template updates since the last version (regression: a move to Next 16 showed 'Nothing new', Nov 6)", () => {
+    let s = shipped(built(), 1, 10);
+    s = reduce(s, ev(40, "template_updated", { files: ["AGENTS.md", "next.config.ts"] }));
+    expect(versionNotes(s).changes).toEqual(["Updated 2 template files to the current version"]);
+    s = reduce(s, ev(41, "template_updated", { files: ["package.json", "package-lock.json"] }));
+    expect(versionNotes(s).changes).toEqual(["Moved to the template's current versions of its libraries (Next.js, zod and others)"]);
+    expect(versionNotes(shipped(s, 2, 50)).changes).toEqual([]);
+  });
+
   it("other events still reduce as before with no ship state", () => {
     const s = built();
     expect(s.ship).toBeUndefined();

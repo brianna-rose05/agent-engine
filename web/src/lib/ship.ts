@@ -125,5 +125,9 @@ export function versionNotes(s: ProjectState): { since: number | null; features:
   const after = (t: number) => !last || t > last.t;
   const features = (s.plan?.tasks ?? []).filter((p) => s.tasks[p.id]?.status === "merged" && after(s.tasks[p.id].since)).map((p) => p.title);
   const changes = (s.history?.checkpoints ?? []).filter((c) => after(c.t) && c.label && !BUILD_LABEL.test(c.label)).map((c) => c.label);
+  // Template updates count too. Regression (Tool library, Nov 6): a move to Next 16 showed "Nothing new since version 1".
+  const files = new Set((s.template_updates ?? []).filter((u) => last && after(u.t)).flatMap((u) => u.files));
+  if (files.has("package.json")) changes.push("Moved to the template's current versions of its libraries (Next.js, zod and others)");
+  else if (files.size) changes.push(`Updated ${files.size} template file${files.size === 1 ? "" : "s"} to the current version`);
   return { since: last?.n ?? null, features, changes };
 }

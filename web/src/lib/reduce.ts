@@ -94,6 +94,7 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
   let deferred = s.deferred ?? [];
   let ready_to_ship = s.ready_to_ship ?? null;
   let retros = s.retros ?? [];
+  let template_updates = s.template_updates ?? [];
   const setQuick = (n: number, next: Partial<QuickState>) => {
     quicks = quicks.map((q) => (q.n === n ? { ...q, ...next } : q));
   };
@@ -400,6 +401,7 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
     }
     case "template_updated": {
       const files = (e.data as { files?: string[] }).files ?? [];
+      template_updates = [...template_updates, { t: e.t, files }];
       say({ who: "engine", channel: "build",
             text: `Updated ${files.length} template file${files.length === 1 ? "" : "s"} to the current version (the app's own pages and code are unchanged).` });
       break;
@@ -545,7 +547,7 @@ function reduceEvent(s: ProjectState, e: EngineEvent): ProjectState {
     }
   }
   return { status, plan, architect, tasks, feed, cost_usd, now: Math.max(s.now, e.t), preview_url, durable_db, changes, change: changes.at(-1) ?? null,
-           budget_reached, quicks, deferred, ready_to_ship, retros };
+           budget_reached, quicks, deferred, ready_to_ship, retros, template_updates };
 }
 
 /* --------------------------------------------------------------- board columns */
