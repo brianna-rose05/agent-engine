@@ -27,11 +27,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The unit tests run as two parallel jobs with complementary -k filters, so every test runs exactly once:
+  # "app-builds" holds the Next.js pipeline tests, which build whole apps (about a minute each, ~10 minutes in all);
+  # "test" holds the rest. Regression (Nov 5-6): in one 15-minute job the suite was cut off on every push.
   test:
     runs-on: ubuntu-latest
-    # The Next.js pipeline tests build whole apps (about a minute each). At 15 the suite was cut off on every push
-    # from Nov 5 on; --durations shows which tests take the time.
-    timeout-minutes: 30
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q claude-agent-sdk daytona pytest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install the web template (template and ship-script tests use it)
+        run: npm ci --prefix templates/next-supabase --no-audit --no-fund
+      - run: python -m pytest -q --durations=10 -k "not test_web_ and not test_quick_ui_edit"
+
+  app-builds:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -43,7 +61,7 @@ jobs:
           node-version: "22"
       - name: Install the web template (so the Next.js pipeline tests run)
         run: npm ci --prefix templates/next-supabase --no-audit --no-fund
-      - run: python -m pytest -q --durations=15
+      - run: python -m pytest -q --durations=10 -k "test_web_ or test_quick_ui_edit"
 
   web:
     if: github.event_name == 'push'
