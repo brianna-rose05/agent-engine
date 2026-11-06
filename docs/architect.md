@@ -57,12 +57,22 @@ It writes `review/<PLAN or C{n}PLAN>-architect.json`:
   its next try still carries the comments.
 - **changes again (second review)**: the plan merges anyway and goes to the owner, with the comments attached as
   warnings (`warnings: true`). The owner decides: human decides architecture.
+- **the replan never gets through (fallback)**: the plan the architect sent back passed every mechanical check, and
+  its branch is kept. If no replan passes the mechanical checks on any try left, or the spending limit stops the
+  replan before it starts, or the replan hits an error, that first plan merges and goes to the owner with the
+  architect's first-round comments as warnings, exactly like "changes again": one more `architect_review` with
+  `warnings: true, fallback: true` and a short `reason` ("The planner's revised plan (try 4) didn't pass the plan
+  checks, so its first plan (try 1) comes to you as it was, ..."). Falling back runs no agent and costs nothing, so the
+  spending limit never blocks it; nothing new starts over the limit. Regression: a replan that failed its checks used
+  to fail planning entirely, though the first plan was fine.
 - **A broken review never blocks planning.** If the architect crashes, writes no file, or writes one that isn't valid,
   the plan goes on with `architect_error: true`.
 
 ## Events (task-scoped, task id = the planner's: PLAN or C{n}PLAN)
 - `task_status {status: "architect_reviewing", attempt}` while it reviews
 - `architect_review {verdict, comments, round: 1 | 2, warnings?: true, architect_error?: true, skipped?: true}`
+- on a fallback, a second `architect_review {verdict: "changes", comments (the first round's), round: 1,
+  warnings: true, fallback: true, reason}` after the replan's failed tries; the app shows it as warnings
 - then the plan attempt's `attempt_finished` (passed, or failed with "the architect requested changes"), and either
   the next planner try or `merging`/`merged`, then `plan_ready` / `change_plan_ready` as before
 
@@ -76,7 +86,7 @@ It writes `review/<PLAN or C{n}PLAN>-architect.json`:
 
 ## Where it lives
 - engine/engine.py: the review step in the attempt loop (`_architect`, `_plan_files`, `normalize_architect_review`,
-  `ARCHITECT_CHANGES`).
+  `ARCHITECT_CHANGES`), and the fallback (`architect_fallback`, `_merge_architect_fallback`).
 - engine/interfaces.py: `Task.review_plan`.
 - engine/project.py: `ARCHITECT_SPEC`, `make_architect`, `removed_exports`, `exported_names`; the `architect` argument of
   `run_project` and `change_project`.
