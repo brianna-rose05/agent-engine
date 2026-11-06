@@ -30,8 +30,8 @@ class Architect:
     """Writes the verdict file for each review: `verdicts` is a list, one per review (the last one repeats)."""
     model = "sonnet"
 
-    def __init__(self, *verdicts: str, crash: bool = False):
-        self.verdicts, self.crash, self.seen = list(verdicts) or [APPROVE], crash, []
+    def __init__(self, *verdicts: str, crash: bool = False, cost: float = 0.0):
+        self.verdicts, self.crash, self.seen, self.cost = list(verdicts) or [APPROVE], crash, [], cost
 
     def run(self, task, box, attempt, feedback):
         plan_id = task.id.split("-architect")[0]
@@ -41,7 +41,7 @@ class Architect:
             raise RuntimeError("the architect's CLI died")
         said = self.verdicts.pop(0) if len(self.verdicts) > 1 else self.verdicts[0]
         box.write_file(f"review/{plan_id}-architect.json", said)
-        return AgentReport("done")
+        return AgentReport("done", cost_usd=self.cost)
 
 
 class Records(ScriptedTeam):
@@ -120,6 +120,72 @@ def test_changes_twice_goes_to_the_owner_with_warnings(tmp_path):
     kinds = [e.kind for e in events]
     assert kinds.index("architect_review", kinds.index("architect_review") + 1) < kinds.index("plan_ready")
     assert all(r.status in ("merged", "passed") for r in res.values())     # the owner approved: it builds
+
+
+class BreaksTheReplan(Records):
+    """Plans well the first time; tries in `broken` (default: every later one) write a plan.json that fails the
+    mechanical plan checks."""
+    def __init__(self, fixture, cost: float = 0.0, broken=None):
+        super().__init__(fixture, cost)
+        self.broken = broken
+
+    def run(self, task, box, attempt, feedback):
+        rep = super().run(task, box, attempt, feedback)
+        if task.id == "PLAN" and attempt > 1 and (self.broken is None or attempt in self.broken):
+            box.write_file("plan.json", "{ not a plan")
+        return rep
+
+
+def test_a_replan_that_never_passes_its_checks_falls_back_to_the_first_plan_with_warnings(tmp_path):
+    comment = "Security: loans.member_id has no ownership check in the contract."
+    arch = Architect(json.dumps({"verdict": "changes", "comments": [comment]}))
+    repo, plan, res, events, approved = go(tmp_path, BreaksTheReplan(FIXTURE), arch)
+    assert res["PLAN"].status == "merged" and res["PLAN"].error == "" and approved == [plan]
+    tries = res["PLAN"].attempts
+    assert tries[0].reason == ARCHITECT_CHANGES and len(tries) > 2 and not any(a.passed for a in tries)
+    assert len(arch.seen) == 1                                   # no replan got far enough for a second review
+    first, last = reviews(events)
+    assert first == {"verdict": "changes", "comments": [comment], "round": 1}
+    assert last["verdict"] == "changes" and last["comments"] == [comment] and last["warnings"] is True
+    assert last["fallback"] is True and last["round"] == 1
+    assert "didn't pass the plan checks" in last["reason"] and "try 1" in last["reason"]
+    kinds = [(e.kind, e.data.get("fallback")) for e in events]
+    assert kinds.index(("architect_review", True)) < kinds.index(("plan_ready", None))
+    assert plan["project"] == "Neighborhood tool library"       # the first plan, as it passed its checks
+    assert json.loads(git(repo, "show", "main:plan.json")) == plan
+    assert all(r.status in ("merged", "passed") for r in res.values())     # the owner approved: it builds
+
+
+def test_a_replan_stopped_by_the_budget_falls_back_to_the_first_plan(tmp_path):
+    comment = "0002_x.sql drops the members table."
+    arch = Architect(json.dumps({"verdict": "changes", "comments": [comment]}), cost=0.3)
+    team = Records(FIXTURE, cost=0.3)          # plan 0.3 + review 0.3 reaches the 0.5 limit: no replan starts
+    sink = ListSink()
+    repo = build_project_repo(tmp_path / "r")
+    eng = Engine(repo, team, lambda t, n: LocalWorktreeSandbox(repo, t.id, n), events=Emitter(sink),
+                 budget=Budget(0.5))
+    approved = []
+    run_project(DESCRIPTION, repo, eng, python=sys.executable, architect=arch,
+                approve=lambda p: (approved.append(p), (False, "not now"))[1])
+    assert [n for tid, n, _ in team.seen if tid == "PLAN"] == [1]  # nothing new started over the limit
+    assert len(approved) == 1 and approved[0]["project"] == "Neighborhood tool library"
+    last = reviews(sink.events)[-1]
+    assert last["fallback"] is True and last["warnings"] is True and last["comments"] == [comment]
+    assert "spending limit" in last["reason"]
+    assert json.loads(git(repo, "show", "main:plan.json")) == approved[0]
+
+
+def test_a_replan_that_passes_its_checks_later_gets_its_second_review_not_the_fallback(tmp_path):
+    comment = "Security: loans.member_id has no ownership check in the contract."
+    arch = Architect(json.dumps({"verdict": "changes", "comments": [comment]}), APPROVE)
+    team = BreaksTheReplan(FIXTURE, broken={2})
+    _, plan, res, events, approved = go(tmp_path, team, arch)
+    assert res["PLAN"].status == "merged" and approved == [plan]
+    assert [a.passed for a in res["PLAN"].attempts] == [False, False, True]
+    fb = next(f for tid, n, f in team.seen if tid == "PLAN" and n == 3)
+    assert comment in fb                                         # the comments still travel with the next try
+    assert reviews(events) == [{"verdict": "changes", "comments": [comment], "round": 1},
+                               {"verdict": "approve", "comments": [], "round": 2}]
 
 
 @pytest.mark.parametrize("arch", [Architect(crash=True), Architect(""), Architect("not json"),
