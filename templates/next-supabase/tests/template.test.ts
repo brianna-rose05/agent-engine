@@ -71,17 +71,21 @@ describe("template sign-in (local mode)", () => {
   });
 
   it("re-opening a saved database applies only new migrations", async () => {
-    const { mkdtempSync } = await import("node:fs");
+    const { mkdtempSync, rmSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const { openPglite } = await import("@/lib/pglite");
     const dir = mkdtempSync(join(tmpdir(), "pglite-"));
-    const a = await openPglite(dir);
-    await createUser(a.db, "keep@example.com");
-    await a.pg.close();
-    const b = await openPglite(dir);                                      // would fail if migrations ran twice
-    expect((await b.db.query("select * from auth.users")).rows).toHaveLength(1);
-    await b.pg.close();
+    try {
+      const a = await openPglite(dir);
+      await createUser(a.db, "keep@example.com");
+      await a.pg.close();
+      const b = await openPglite(dir);                                    // would fail if migrations ran twice
+      expect((await b.db.query("select * from auth.users")).rows).toHaveLength(1);
+      await b.pg.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });   // ~28 MB each: left behind, a thousand runs filled a disk (Nov 6)
+    }
   }, 90_000);   // opens a database on disk twice; regression (first ship of Pawfect): over 20s in a busy sandbox
 });
 
@@ -280,20 +284,24 @@ describe("template owner setup (src/lib/owner.ts)", () => {
   });
 
   it("the owner survives re-opening a saved database (the table is created once, on first use)", async () => {
-    const { mkdtempSync } = await import("node:fs");
+    const { mkdtempSync, rmSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const { openPglite } = await import("@/lib/pglite");
     const { claimOwner, getOwnerId } = await import("@/lib/owner");
     await withEnv(local, async () => {
       const dir = mkdtempSync(join(tmpdir(), "pglite-owner-"));
-      const a = await openPglite(dir);
-      const userId = await createUser(a.db, "keep@example.com");
-      await claimOwner(a.db, { userId }, "x");
-      await a.pg.close();
-      const b = await openPglite(dir);
-      expect(await getOwnerId(b.db)).toBe(userId);
-      await b.pg.close();
+      try {
+        const a = await openPglite(dir);
+        const userId = await createUser(a.db, "keep@example.com");
+        await claimOwner(a.db, { userId }, "x");
+        await a.pg.close();
+        const b = await openPglite(dir);
+        expect(await getOwnerId(b.db)).toBe(userId);
+        await b.pg.close();
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     });
   }, 90_000);   // a database on disk, opened twice: over 20s in a busy sandbox
 });
