@@ -79,6 +79,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci
       - run: npm test
+      - run: npx eslint .     # Next 16's build no longer lints
       - run: npm run build
 
   benchmark:
