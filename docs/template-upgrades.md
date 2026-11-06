@@ -32,8 +32,12 @@ What changed in the template itself:
   sandboxes install a real `node_modules` and are unaffected. `serverExternalPackages` and
   `outputFileTracingIncludes` work unchanged under Turbopack (verified: the migrations and PGlite's `dist` are in
   every route's `.nft.json`).
-- `src/lib`, `vitest.config.ts`, `tests/template.test.ts` and the other scripts needed no changes: the template
-  only uses `cookies()` (already awaited), `redirect`, `usePathname`, and no zod.
+- `src/lib/migrate.ts`: its `readdirSync(dir)` / `readFileSync(join(dir, f))` on a runtime directory made Turbopack
+  warn "Dynamic filesystem access causes tracing of the whole project" (and trace every file into each server
+  bundle) on any app whose pages use the database. Those calls carry `/*turbopackIgnore: true*/`; the migrations
+  still ship through `outputFileTracingIncludes`.
+- The rest of `src/lib`, `vitest.config.ts`, `tests/template.test.ts` and the other scripts needed no changes: the
+  template only uses `cookies()` (already awaited), `redirect`, `usePathname`, and no zod.
 - `AGENTS.md` (engine/stacks.py `VERSION_RULES`): what dev agents must now write: awaited `params`,
   `searchParams`, `cookies()` and `headers()`; `src/proxy.ts` instead of `src/middleware.ts`; `revalidateTag(tag,
   "max")`; the new hook lint rules; zod 4's top-level formats, `{ error }` messages, `.issues`,
