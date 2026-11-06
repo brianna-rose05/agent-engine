@@ -7,7 +7,13 @@ export const CHANGE_TEXT_MIN = 10;
 export const CHANGE_TEXT_MAX = 4000;
 
 /** One request in the project's history, as stored on the project row. `at` is milliseconds since epoch. */
-export type ChangeRequest = { n: number; text: string; at: number };
+export type ChangeRequest = { n: number; text: string; at: number; upgradeTemplate?: boolean };
+
+/** The change as the worker reads it (projectForWorker). `upgradeTemplate`: the owner asked this change to also move
+ *  an older app to the template's newer major versions (docs/template-upgrades.md); otherwise they're held back. */
+export function changeForWorker(c: ChangeRequest | undefined): { n: number; text: string; upgradeTemplate?: true } | null {
+  return c ? { n: c.n, text: c.text, ...(c.upgradeTemplate ? { upgradeTemplate: true as const } : {}) } : null;
+}
 
 /**
  * Whether the owner can ask for a change now: the project was built (done) or stopped after planning

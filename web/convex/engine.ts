@@ -1,7 +1,7 @@
 import { mutationGeneric, queryGeneric } from "convex/server";
 import { ConvexError, v } from "convex/values";
 import { composeSpec } from "./wizard";
-import type { ChangeRequest } from "./changes";
+import { changeForWorker, type ChangeRequest } from "./changes";
 import { budgetOf } from "./budget";
 import { notifyFor } from "./notifications";
 import { checkpointPatch, mergedTasks } from "./checkpoints";
@@ -44,7 +44,7 @@ export const projectForWorker = queryGeneric({
     return { resume: Boolean(p.resume), ...shipping,
              mode: change ? "change" : rollingBack ? "rollback" : quick ? "quick" : shipping.ship ? "ship" : p.resume ? "resume" : "build",
              rollback: rollingBack ? { n: p.rollback?.n } : null,
-             change: latest ? { n: latest.n, text: latest.text } : null, quick,
+             change: changeForWorker(latest), quick,
              repo, merged, plan: p.resume || change ? p.plan ?? null : null, name: p.name,
              description: composeSpec(p.name, p.description, p.wizard), model: p.model, status: p.status, planNote: p.planNote ?? "",
              budgetUsd: budgetOf(p), costUsd: p.costUsd,

@@ -36,7 +36,8 @@ type Store = {
   production?: { url: string; version: number; at: number } | null; // live: what production runs now (project row)
   canChange: boolean;           // the owner can ask for a change now (docs/change-requests.md)
   changeHistory: ChangeRequest[]; // the change requests asked so far, oldest first
-  requestChange: (text: string) => Promise<void>; // throws with a message to show when it can't be sent
+  // upgradeTemplate: also move an older app to the template's newer major versions (docs/template-upgrades.md)
+  requestChange: (text: string, upgradeTemplate?: boolean) => Promise<void>; // throws with a message to show when it can't be sent
   budgetUsd?: number;           // live: the project's spending limit (convex/budget.ts); the demo has none
   spentUsd?: number;            // live: what the project row says was spent so far, every run included
   setBudget?: (usd: number) => Promise<void>; // throws with a message to show when it can't be set
@@ -121,10 +122,11 @@ function useDemo(): Omit<Store, "project" | "mode"> {
   }, []);
   // The demo is a recording: a change request is kept on this page only, no team picks it up.
   const [history, setHistory] = useState<ChangeRequest[]>([]);
-  const requestChange = useCallback(async (text: string) => {
+  const requestChange = useCallback(async (text: string, upgradeTemplate = false) => {
     const checked = checkChangeText(text);
     if (!checked.ok) throw new Error(checked.message);
-    setHistory((h) => [...h, { n: nextChangeNumber(h), text: checked.text, at: Date.now() }]);
+    setHistory((h) => [...h, { n: nextChangeNumber(h), text: checked.text, at: Date.now(),
+                               ...(upgradeTemplate ? { upgradeTemplate: true } : {}) }]);
   }, []);
   const canChange = canRequestChange(state.status, Boolean(state.plan), anyRunning(state));
   const answerAndRetry = useCallback(async (_taskId: string, text: string) => {
@@ -204,11 +206,11 @@ function LiveProvider({ id, children }: { id: string; children: React.ReactNode 
         throw new Error(typeof d === "string" ? d : "Couldn't save the limit. Try again in a moment.");
       }
     },
-    requestChange: async (text: string) => {
+    requestChange: async (text: string, upgradeTemplate = false) => {
       const checked = checkChangeText(text);
       if (!checked.ok) throw new Error(checked.message);
       try {
-        await askChange({ key: key!, id, text: checked.text });
+        await askChange({ key: key!, id, text: checked.text, ...(upgradeTemplate ? { upgradeTemplate: true } : {}) });
       } catch (e) {
         throw new Error(errorText(e));
       }

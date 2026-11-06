@@ -149,7 +149,8 @@ export const answerAndRetry = mutationGeneric({
  * text, the spending limit), then the row patch and the worker. Shared by requestChange and comment pins sent as a
  * change request (convex/comments.ts), so both follow exactly the same rules. Returns the change's number.
  */
-export async function startChangeRequest(ctx: GenericMutationCtx<AnyDataModel>, id: GenericId<"projects">, text: string): Promise<number> {
+export async function startChangeRequest(ctx: GenericMutationCtx<AnyDataModel>, id: GenericId<"projects">, text: string,
+                                         upgradeTemplate = false): Promise<number> {
   const p = await ctx.db.get(id);
   if (!p) throw new ConvexError("This project doesn't exist any more.");
   if (!canRequestChange(p.status, Boolean(p.plan), false)) {
@@ -164,7 +165,8 @@ export async function startChangeRequest(ctx: GenericMutationCtx<AnyDataModel>, 
     throw new ConvexError("This project has spent its limit. Raise the spending limit on the plan page first.");
   }
   const changes = (p.changes ?? []) as ChangeRequest[];
-  const entry: ChangeRequest = { n: nextChangeNumber(changes), text: checked.text, at: Date.now() };
+  const entry: ChangeRequest = { n: nextChangeNumber(changes), text: checked.text, at: Date.now(),
+                               ...(upgradeTemplate ? { upgradeTemplate: true } : {}) };
   await ctx.db.patch(id, { status: "queued", mode: "change", resume: false, error: undefined, changeFrom: p.status,
                            pendingChange: undefined, planNote: undefined, changes: [...changes, entry] });
   await ctx.scheduler.runAfter(0, anyApi.projects.startWorker, { projectId: id });
@@ -173,10 +175,10 @@ export async function startChangeRequest(ctx: GenericMutationCtx<AnyDataModel>, 
 
 /** Ask the team for a change to a built project, in the same repo (docs/change-requests.md). */
 export const requestChange = mutationGeneric({
-  args: { ...owner, id: v.id("projects"), text: v.string() },
-  handler: async (ctx, { key, id, text }) => {
+  args: { ...owner, id: v.id("projects"), text: v.string(), upgradeTemplate: v.optional(v.boolean()) },
+  handler: async (ctx, { key, id, text, upgradeTemplate }) => {
     checkOwner(key);
-    return startChangeRequest(ctx, id, text);
+    return startChangeRequest(ctx, id, text, Boolean(upgradeTemplate));
   },
 });
 

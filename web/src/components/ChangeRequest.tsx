@@ -19,6 +19,7 @@ export function ChangeRequestBox({ compact = false }: { compact?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
+  const [upgrade, setUpgrade] = useState(false);
   if (!canChange) return null;
   const length = text.trim().length;
 
@@ -26,8 +27,9 @@ export function ChangeRequestBox({ compact = false }: { compact?: boolean }) {
     setBusy(true);
     setError(null);
     try {
-      await requestChange(text);
+      await requestChange(text, upgrade);
       setText("");
+      setUpgrade(false);
       setSent(true);
       if (compact) setOpen(false);
     } catch (e) {
@@ -68,6 +70,13 @@ export function ChangeRequestBox({ compact = false }: { compact?: boolean }) {
             placeholder="e.g. Keep the groomer when the date changes, store times in the salon's time zone, and show the My bookings heading once."
             className="min-h-24 w-full resize-y rounded-xl border border-line bg-canvas p-3 text-sm outline-none focus:ring-2 focus:ring-planner/30"
           />
+          <label className="flex items-start gap-2 text-xs text-muted">
+            <input type="checkbox" checked={upgrade} onChange={(e) => setUpgrade(e.target.checked)} className="mt-0.5" />
+            <span>
+              Also move this app to the latest template versions. Apps built on older versions keep them until you
+              ask; the team then updates the app&apos;s code to match.
+            </span>
+          </label>
           <div className="flex flex-wrap items-center gap-2">
             <p className={`mr-auto text-xs ${error ? "text-bad" : "text-faint"}`} role={error ? "alert" : undefined}>
               {error ?? (sent
@@ -96,7 +105,10 @@ export function ChangeRequestBox({ compact = false }: { compact?: boolean }) {
           {[...changeHistory].reverse().map((c) => (
             <li key={c.n} className="flex gap-3 text-[13px]">
               <span className="shrink-0 text-[11px] font-medium text-faint tabular-nums">Change {c.n}</span>
-              <span className="min-w-0 flex-1 text-ink/85">{c.text}</span>
+              <span className="min-w-0 flex-1 text-ink/85">
+                {c.text}
+                {c.upgradeTemplate && <span className="ml-1.5 text-xs text-faint">(and template update)</span>}
+              </span>
               <span className="shrink-0 text-xs text-faint tabular-nums">{when(c.at)}</span>
             </li>
           ))}

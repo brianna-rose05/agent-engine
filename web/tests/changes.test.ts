@@ -179,3 +179,13 @@ describe("a change that already holds", () => {
     expect(s.feed.at(-1)!.tone).toBe("good");
   });
 });
+
+describe("changeForWorker", () => {
+  it("passes the template upgrade opt-in to the worker only when the owner asked for it", async () => {
+    const { changeForWorker } = await import("../convex/changes");
+    expect(changeForWorker(undefined)).toBeNull();
+    expect(changeForWorker({ n: 2, text: "Add a waitlist", at: 1 })).toEqual({ n: 2, text: "Add a waitlist" });
+    expect(changeForWorker({ n: 3, text: "x".repeat(20), at: 1, upgradeTemplate: true }))
+      .toEqual({ n: 3, text: "x".repeat(20), upgradeTemplate: true });
+  });
+});
