@@ -31,6 +31,10 @@ export function notificationFor(kind: string, data: Record<string, unknown> | nu
       const status = String(d.status ?? "");
       if (status === "done") return { kind: "finished", title: `${project} is built`, email: true,
                                       body: "Every feature the team could finish is verified and merged." };
+      // a run the worker refused to start says why (`reason`, e.g. the project's own API key can't be used)
+      if (status === "failed" && typeof d.reason === "string" && d.reason) {
+        return { kind: "finished", title: `${project} couldn't start`, email: true, body: d.reason.slice(0, 300) };
+      }
       if (status === "failed") return { kind: "finished", title: `${project} stopped with problems`, email: true,
                                         body: "Some features didn't pass their checks. You can retry what failed." };
       if (status === "stopped") return { kind: "finished", title: `${project} stopped at its spending limit`, email: true,

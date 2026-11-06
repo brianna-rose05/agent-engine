@@ -118,21 +118,25 @@ def project_anthropic_key(project: dict | None) -> str | None:
     return key if key.startswith(ANTHROPIC_KEY_PREFIX) and len(key) >= 40 else None
 
 
-def use_anthropic_key(project: dict | None, environ=os.environ) -> str:
+def use_anthropic_key(project: dict | None, environ=os.environ, agents: bool = True) -> str:
     """Picks the Anthropic key for every agent of this run: the project's own key when it has one, else Studio's
     ANTHROPIC_API_KEY. The chosen key goes in ANTHROPIC_API_KEY, which every ClaudeCLIAgent reads and passes to its
     sandbox command's environment (engine/agents/claude_cli.py), so no agent can end up on the other key. Both keys
     are registered with engine/redact.py, so neither reaches an event, a scrubbed error or stdout/stderr.
-    Returns "project" or "studio"; raises SystemExit (without the key) when no key is usable."""
+    Returns "project", "studio" or (only when `agents` is False: a ship or a rollback runs no agent) "none";
+    raises SystemExit (without the key) when a run with agents has no usable key."""
     redact.register(environ.get("ANTHROPIC_API_KEY"))
-    problem = (project or {}).get("anthropicKeyProblem")
-    if isinstance(problem, str) and problem:
-        raise SystemExit(f"this project's own Anthropic API key can't be used: {problem[:300]}")
     own = project_anthropic_key(project)
     if own:
         redact.register(own)
         environ["ANTHROPIC_API_KEY"] = own
         return "project"
+    if not agents:
+        return "studio" if environ.get("ANTHROPIC_API_KEY") else "none"
+    problem = (project or {}).get("anthropicKeyProblem")
+    if isinstance(problem, str) and problem:
+        # never fall back to Studio's key quietly: the owner chose to pay for this project themselves
+        raise SystemExit(f"this project's own Anthropic API key can't be used: {problem[:300]}")
     if not environ.get("ANTHROPIC_API_KEY"):
         raise SystemExit("missing settings: ANTHROPIC_API_KEY (or give the project its own key in Studio)")
     return "studio"
@@ -375,8 +379,13 @@ def main():
     if project["status"] not in ("queued", "starting"):
         raise SystemExit(f"project is {project['status']}, not waiting to start")
     # every agent of this run uses the project's own key when it has one (docs/settings.md); never printed
-    source = use_anthropic_key(project)
-    print("anthropic key: " + ("the project's own key" if source == "project" else "Studio's key"))
+    try:
+        source = use_anthropic_key(project, agents=project.get("mode") not in ("ship", "rollback"))
+    except SystemExit as e:
+        # the run can't start: say why on the project (it would otherwise wait in "starting" for good)
+        Emitter(backend).emit("project_finished", status="failed", reason=str(e)[:300], repo=project.get("repo"))
+        raise
+    print("anthropic key: " + {"project": "the project's own key", "studio": "Studio's key"}.get(source, "none (no agents)"))
 
     out = ROOT / "results" / f"{datetime.now():%Y%m%d-%H%M%S}-worker-{a.project_id[-8:]}"
     stack = NextSupabaseStack(link_node_modules=False)

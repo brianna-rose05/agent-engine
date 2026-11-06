@@ -58,8 +58,9 @@ npx convex env set STUDIO_KEY_SECRET "$(openssl rand -base64 32)"
 (Add `--prod` to set it on the production deployment.) Don't print it or write it down anywhere else: Convex keeps it.
 
 - **Changing or deleting `STUDIO_KEY_SECRET` makes every stored key unreadable.** A project with a stored key then
-  refuses to start (the worker stops with "this project's own Anthropic API key can't be used") rather than quietly
-  running on Studio's key. Paste the key again on the project's page to fix it.
+  refuses to start rather than quietly running on Studio's key: the run ends "failed" with the reason ("this project's
+  own Anthropic API key can't be used: …") in the project's feed and in a notification. Paste the key again on the
+  project's page, then retry. Shipping and rolling back run no agents, so they don't need a key and go ahead.
 - A key is checked when you paste it: it must start with `sk-ant-` and be a plausible length. Whether Anthropic
   accepts it shows on the first run (an agent's error on the board).
 - "Build again" makes a new project, which starts on Studio's key: paste the key there too.

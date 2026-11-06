@@ -46,6 +46,44 @@ def test_no_usable_key_stops_the_run_without_printing_one():
     assert "STUDIO_KEY_SECRET" in str(e.value) and STUDIO not in str(e.value)
 
 
+def test_a_ship_or_rollback_runs_no_agent_so_needs_no_key():
+    assert worker.use_anthropic_key({"anthropicKeyProblem": "STUDIO_KEY_SECRET changed"}, {}, agents=False) == "none"
+    env = {"ANTHROPIC_API_KEY": STUDIO}
+    assert worker.use_anthropic_key({}, env, agents=False) == "studio"
+    assert worker.use_anthropic_key({"anthropicKey": OWN}, env, agents=False) == "project" and env["ANTHROPIC_API_KEY"] == OWN
+
+
+def test_a_run_refused_for_its_key_ends_failed_with_the_reason(monkeypatch, tmp_path):
+    """Without it the project would wait in "starting" for good."""
+    sent = []
+
+    class FakeBackend:
+        def __init__(self, project_id):
+            pass
+
+        def project(self):
+            return {"status": "starting", "mode": None, "name": "x", "model": "haiku",
+                    "anthropicKeyProblem": "the stored key can't be decrypted"}
+
+        def write(self, e):
+            sent.append((e.kind, e.data))
+
+    monkeypatch.setattr(sys, "stdout", sys.stdout)
+    monkeypatch.setattr(sys, "stderr", sys.stderr)
+    monkeypatch.setattr(worker, "ConvexBackend", FakeBackend)
+    monkeypatch.setattr(worker, "ROOT", tmp_path / "worker")
+    for k in ("DAYTONA_API_KEY", "PROJECTS_GITHUB_TOKEN", "CONVEX_DEPLOY_KEY", "GITHUB_TOKEN"):
+        monkeypatch.setenv(k, "test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", STUDIO)
+    monkeypatch.setattr(sys, "argv", ["worker.py", "--project-id", "p1"])
+    with pytest.raises(SystemExit, match="can't be decrypted"):
+        worker.main()
+    assert sent == [("project_finished", {"status": "failed", "repo": None,
+                                          "reason": "this project's own Anthropic API key can't be used: "
+                                                    "the stored key can't be decrypted"})]
+    assert STUDIO not in json.dumps(sent)
+
+
 class Box:
     """Records the environment each command gets, like a sandbox would receive it."""
     workdir = "/repo"
