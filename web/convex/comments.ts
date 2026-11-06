@@ -1,7 +1,7 @@
 import { mutationGeneric, queryGeneric, type AnyDataModel, type GenericMutationCtx } from "convex/server";
 import { ConvexError, v, type GenericId } from "convex/values";
 
-import { checkOwner } from "./owner";
+import { actorOf, requireRole } from "./owner";
 import { QUICK_TEXT_MAX, canRequestQuickChange, startQuickChange } from "./quick";
 import { canRequestChange } from "./changes";
 import { startChangeRequest } from "./projects";
@@ -35,6 +35,7 @@ export type Comment = {
   at: number;                // milliseconds since epoch
   status: "open" | "sent" | "resolved";
   sentAs?: { kind: SendAs; n: number }; // quick change n / change request n
+  by?: { id: string; name: string }; // the account that dropped it (docs/accounts.md); absent for the owner passphrase
 };
 
 export type NewPin = { path: string; pathKnown: boolean; x: number; y: number; viewport: string; text: string };
@@ -145,7 +146,7 @@ function find(comments: Comment[], n: number): Comment {
 export const forProject = queryGeneric({
   args: { ...owner, id: v.string() },
   handler: async (ctx, { key, id }) => {
-    checkOwner(key);
+    await requireRole(ctx, key, "viewer");
     const pid = ctx.db.normalizeId("projects", id);
     const p = pid && (await ctx.db.get(pid));
     if (!p) return null;
@@ -163,7 +164,7 @@ export const add = mutationGeneric({
   args: { ...owner, id: v.id("projects"), path: v.string(), pathKnown: v.boolean(), x: v.number(), y: v.number(),
           viewport: v.string(), text: v.string() },
   handler: async (ctx, { key, id, ...pin }) => {
-    checkOwner(key);
+    const by = actorOf(await requireRole(ctx, key, "editor"));
     const p = await ownRow(ctx, id);
     const checked = checkPin(pin);
     if (!checked.ok) throw new ConvexError(checked.message);
@@ -171,7 +172,8 @@ export const add = mutationGeneric({
     if (comments.length >= COMMENTS_MAX) {
       throw new ConvexError(`A project keeps up to ${COMMENTS_MAX} pins. Delete some resolved ones first.`);
     }
-    const entry: Comment = { ...checked.pin, n: nextCommentNumber(comments, Number(p.commentSeq ?? 0)), at: Date.now(), status: "open" };
+    const entry: Comment = { ...checked.pin, n: nextCommentNumber(comments, Number(p.commentSeq ?? 0)), at: Date.now(), status: "open",
+                             ...(by ? { by } : {}) };
     await ctx.db.patch(id, { comments: [...comments, entry], commentSeq: entry.n });
     return entry.n;
   },
@@ -181,7 +183,7 @@ export const add = mutationGeneric({
 export const update = mutationGeneric({
   args: { ...owner, id: v.id("projects"), n: v.number(), text: v.string() },
   handler: async (ctx, { key, id, n, text }) => {
-    checkOwner(key);
+    await requireRole(ctx, key, "editor");
     const comments = commentsOf(await ownRow(ctx, id));
     if (find(comments, n).status !== "open") throw new ConvexError(`Pin ${n} was already sent, so its note stays as it was.`);
     const checked = checkCommentText(text);
@@ -194,7 +196,7 @@ export const update = mutationGeneric({
 export const resolve = mutationGeneric({
   args: { ...owner, id: v.id("projects"), n: v.number(), resolved: v.boolean() },
   handler: async (ctx, { key, id, n, resolved }) => {
-    checkOwner(key);
+    await requireRole(ctx, key, "editor");
     const comments = commentsOf(await ownRow(ctx, id));
     const c = find(comments, n);
     if (c.status === "sent" && !resolved) throw new ConvexError(`Pin ${n} was sent, so it can't be reopened. Drop a new pin.`);
@@ -207,7 +209,7 @@ export const resolve = mutationGeneric({
 export const remove = mutationGeneric({
   args: { ...owner, id: v.id("projects"), n: v.number() },
   handler: async (ctx, { key, id, n }) => {
-    checkOwner(key);
+    await requireRole(ctx, key, "editor");
     const comments = commentsOf(await ownRow(ctx, id));
     if (find(comments, n).status === "sent") throw new ConvexError(`Pin ${n} was sent, so it stays with its request. Resolve it instead.`);
     await ctx.db.patch(id, { comments: comments.filter((c) => c.n !== n) });
@@ -222,11 +224,11 @@ export const remove = mutationGeneric({
 export const sendComments = mutationGeneric({
   args: { ...owner, id: v.id("projects"), commentIds: v.array(v.number()), as: v.union(v.literal("quick"), v.literal("change")) },
   handler: async (ctx, { key, id, commentIds, as }) => {
-    checkOwner(key);
+    const by = actorOf(await requireRole(ctx, key, "editor"));
     const picked = pinsToSend(commentsOf(await ownRow(ctx, id)), commentIds);
     if (!picked.ok) throw new ConvexError(picked.message);
     const text = requestText(picked.pins);
-    const n = as === "quick" ? await startQuickChange(ctx, id, text) : await startChangeRequest(ctx, id, text);
+    const n = as === "quick" ? await startQuickChange(ctx, id, text, by) : await startChangeRequest(ctx, id, text, false, by);
     const comments = commentsOf(await ownRow(ctx, id)); // the row as the request left it
     await ctx.db.patch(id, { comments: markSent(comments, picked.pins.map((p) => p.n), as, n) });
     return { kind: as, n };

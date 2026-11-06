@@ -15,7 +15,7 @@ import { StatusPill } from "./ui";
 const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
 export function TopBar() {
-  const { project, state, mode, speed, setSpeed, restart, clock: t, duration, liveStatus, canRetry, previewUrl, durableDb, production, setupCodes } = useProject();
+  const { project, state, mode, speed, setSpeed, restart, clock: t, duration, liveStatus, canRetry, previewUrl, durableDb, production, setupCodes, canEdit } = useProject();
   const path = usePathname();
   const preview = previewUrl ?? state.preview_url;
   const live = state.ship?.production ?? production ?? null; // production (convex/ship.ts), once a version is live
@@ -69,8 +69,8 @@ export function TopBar() {
               <Rocket size={12} /> Ship
             </Link>
           )}
-          {mode === "live" && canRetry && <RetryFailed id={project.id} />}
-          {mode === "live" && ["failed", "done", "rejected", "stopped"].includes(liveStatus ?? "") && <Rebuild id={project.id} quiet={canRetry || Boolean(preview)} />}
+          {mode === "live" && canEdit && canRetry && <RetryFailed id={project.id} />}
+          {mode === "live" && canEdit && ["failed", "done", "rejected", "stopped"].includes(liveStatus ?? "") && <Rebuild id={project.id} quiet={canRetry || Boolean(preview)} />}
 
           {mode === "demo" && (
             <div className="flex items-center gap-1 rounded-lg bg-surface p-0.5 ring-1 ring-line" title="Replay speed">

@@ -2,7 +2,7 @@ import { mutationGeneric, queryGeneric, type AnyDataModel, type GenericMutationC
 import { anyApi } from "convex/server";
 import { ConvexError, v, type GenericId } from "convex/values";
 
-import { checkOwner } from "./owner";
+import { actorOf, requireRole, type Actor } from "./owner";
 
 /*
  * Quick changes (engine/quick.py): small edits to what people see in a built app (wording, colors, spacing, labels,
@@ -18,6 +18,7 @@ export const QUICK_TEXT_MAX = 1000;
 
 /** One quick change on the project row. `at` is milliseconds since epoch; `result` is set when its run ends. */
 export type QuickChange = {
+  by?: { id: string; name: string }; // the account that asked (docs/accounts.md); absent for the owner passphrase
   n: number;
   text: string;
   at: number;
@@ -79,7 +80,7 @@ const owner = { key: v.string() };
 export const forProject = queryGeneric({
   args: { ...owner, id: v.string() },
   handler: async (ctx, { key, id }) => {
-    checkOwner(key);
+    await requireRole(ctx, key, "viewer");
     const pid = ctx.db.normalizeId("projects", id);
     const p = pid && (await ctx.db.get(pid));
     if (!p) return null;
@@ -92,7 +93,8 @@ export const forProject = queryGeneric({
  * row patch and the worker. Shared by requestQuickChange and comment pins sent as a quick change (convex/comments.ts),
  * so both follow exactly the same rules. Returns the quick change's number.
  */
-export async function startQuickChange(ctx: GenericMutationCtx<AnyDataModel>, id: GenericId<"projects">, text: string): Promise<number> {
+export async function startQuickChange(ctx: GenericMutationCtx<AnyDataModel>, id: GenericId<"projects">, text: string,
+                                       by?: Actor): Promise<number> {
   const p = await ctx.db.get(id);
   if (!p) throw new ConvexError("This project doesn't exist any more.");
   if (!p.repo) throw new ConvexError("This project has no repo yet, so there's nothing to change.");
@@ -104,7 +106,7 @@ export async function startQuickChange(ctx: GenericMutationCtx<AnyDataModel>, id
   const checked = checkQuickText(text);
   if (!checked.ok) throw new ConvexError(checked.message);
   const quicks = (p.quicks ?? []) as QuickChange[];
-  const entry: QuickChange = { n: nextQuickNumber(quicks), text: checked.text, at: Date.now() };
+  const entry: QuickChange = { n: nextQuickNumber(quicks), text: checked.text, at: Date.now(), ...(by ? { by } : {}) };
   await ctx.db.patch(id, { status: "queued", mode: "quick", resume: false, error: undefined, quicks: [...quicks, entry] });
   await ctx.scheduler.runAfter(0, anyApi.projects.startWorker, { projectId: id });
   return entry.n;
@@ -114,7 +116,7 @@ export async function startQuickChange(ctx: GenericMutationCtx<AnyDataModel>, id
 export const requestQuickChange = mutationGeneric({
   args: { ...owner, id: v.id("projects"), text: v.string() },
   handler: async (ctx, { key, id, text }) => {
-    checkOwner(key);
-    return startQuickChange(ctx, id, text);
+    const a = await requireRole(ctx, key, "editor");
+    return startQuickChange(ctx, id, text, actorOf(a));
   },
 });

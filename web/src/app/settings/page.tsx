@@ -6,7 +6,8 @@ import { Bell, KeyRound, Mail, Settings } from "lucide-react";
 import { Shell } from "@/components/Shell";
 import { OwnerGate } from "@/components/OwnerGate";
 import { Mono } from "@/components/ui";
-import { api, liveEnabled, useOwner } from "@/lib/convex";
+import { api, liveEnabled, useAccess, useOwner } from "@/lib/convex";
+import { People } from "@/components/People";
 import { SLACK_PREFIX, checkSlackWebhook } from "../../../convex/slack";
 
 type SettingsData = { slack: { masked: string } | null; email: boolean; keySecretProblem: string | null } | undefined;
@@ -26,7 +27,7 @@ export default function SettingsPage() {
             <Settings size={18} strokeWidth={1.7} className="text-faint" />
             Settings
           </h2>
-          <p className="text-sm text-muted">Where Studio tells you when a project needs you or finishes.</p>
+          <p className="text-sm text-muted">Who can use Studio, and where it tells you when a project needs you or finishes.</p>
         </div>
         {liveEnabled ? (
           <OwnerGate><LiveSettings /></OwnerGate>
@@ -41,11 +42,24 @@ export default function SettingsPage() {
 }
 
 function LiveSettings() {
+  const { isOwner } = useAccess();
+  if (!isOwner) {
+    return (
+      <p className="rounded-2xl border border-line bg-surface p-4 text-sm text-muted">
+        Settings and people are managed by the owner. Ask them if something here needs to change.
+      </p>
+    );
+  }
+  return <OwnerSettings />;
+}
+
+function OwnerSettings() {
   const { key } = useOwner();
   const data = useQuery(api.settings.get, key ? { key } : "skip") as SettingsData;
   if (!data) return null;
   return (
     <div className="flex flex-col gap-4">
+      <People />
       <SlackCard masked={data.slack?.masked ?? null} />
       <section className="flex gap-3 rounded-2xl border border-line bg-surface p-4" aria-labelledby="email-title">
         <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-canvas text-muted"><Mail size={15} strokeWidth={1.6} /></span>

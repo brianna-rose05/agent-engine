@@ -1,6 +1,6 @@
 import { anyApi, mutationGeneric } from "convex/server";
 import { ConvexError, v } from "convex/values";
-import { checkOwner } from "./owner";
+import { requireRole } from "./owner";
 
 /*
  * Ship to production. "Ship now" runs the checks (SHIP_CHECKS) on main in one sandbox, tags the version (`v<n>`), and deploys
@@ -160,7 +160,7 @@ export function shipForWorker(p: Row): { ship: { from: string; rollbackTo: numbe
 export const shipNow = mutationGeneric({
   args: { key: v.string(), id: v.id("projects") },
   handler: async (ctx, { key, id }) => {
-    checkOwner(key);
+    await requireRole(ctx, key, "editor");
     const p = await ctx.db.get(id);
     if (!p) throw new ConvexError("This project doesn't exist any more.");
     const blocked = shipBlockedReason(p.status, false, Boolean(p.repo));
@@ -175,7 +175,7 @@ export const shipNow = mutationGeneric({
 export const rollbackProduction = mutationGeneric({
   args: { key: v.string(), id: v.id("projects"), n: v.number() },
   handler: async (ctx, { key, id, n }) => {
-    checkOwner(key);
+    await requireRole(ctx, key, "editor");
     const p = await ctx.db.get(id);
     if (!p) throw new ConvexError("This project doesn't exist any more.");
     const blocked = shipBlockedReason(p.status, false, Boolean(p.repo), "rollback");

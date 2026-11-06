@@ -7,7 +7,8 @@ export const CHANGE_TEXT_MIN = 10;
 export const CHANGE_TEXT_MAX = 4000;
 
 /** One request in the project's history, as stored on the project row. `at` is milliseconds since epoch. */
-export type ChangeRequest = { n: number; text: string; at: number; upgradeTemplate?: boolean };
+/** `by`: the account that asked (docs/accounts.md), absent when the owner passphrase did. */
+export type ChangeRequest = { n: number; text: string; at: number; upgradeTemplate?: boolean; by?: { id: string; name: string } };
 
 /** The change as the worker reads it (projectForWorker). `upgradeTemplate`: the owner asked this change to also move
  *  an older app to the template's newer major versions (docs/template-upgrades.md); otherwise they're held back. */

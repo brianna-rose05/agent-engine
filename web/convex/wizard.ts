@@ -1,7 +1,7 @@
 import { type GenericActionCtx, actionGeneric, anyApi, internalMutationGeneric, internalQueryGeneric, mutationGeneric } from "convex/server";
 import { ConvexError, v } from "convex/values";
 import { callChecked, type JsonSchema } from "./ai";
-import { checkOwner } from "./owner";
+import { requireRole, requireRoleInAction } from "./owner";
 
 /*
  * The setup wizard (spec: Describe -> Questions -> Requirements -> Stack -> Design -> Team plan).
@@ -116,7 +116,7 @@ export function checkQuestions(r: QuestionResult): string[] {
 export const generateQuestions = actionGeneric({
   args: { key: v.string(), id: v.id("projects") },
   handler: async (ctx, { key, id }) => {
-    checkOwner(key);
+    await requireRoleInAction(ctx as never, key, "editor");
     await ctx.runMutation(anyApi.wizard.patch, { id, patch: { busy: "questions", error: null } });
     try {
       const p = await getProject(ctx, id);
@@ -193,7 +193,7 @@ maps to at least one story. Ids: features F1.., stories S1..`;
 export const generateRequirements = actionGeneric({
   args: { key: v.string(), id: v.id("projects"), comment: v.optional(v.string()) },
   handler: async (ctx, { key, id, comment }) => {
-    checkOwner(key);
+    await requireRoleInAction(ctx as never, key, "editor");
     await ctx.runMutation(anyApi.wizard.patch, { id, patch: { busy: "requirements", error: null } });
     try {
       const p = await getProject(ctx, id);
@@ -219,7 +219,7 @@ export const generateRequirements = actionGeneric({
 export const addStory = actionGeneric({
   args: { key: v.string(), id: v.id("projects"), featureId: v.string(), line: v.string() },
   handler: async (ctx, { key, id, featureId, line }) => {
-    checkOwner(key);
+    await requireRoleInAction(ctx as never, key, "editor");
     await ctx.runMutation(anyApi.wizard.patch, { id, patch: { busy: "requirements", error: null } });
     try {
       const p = await getProject(ctx, id);
@@ -266,7 +266,7 @@ export const CATALOG: { layer: string; verified: string; others: { name: string;
 export const recommendStack = actionGeneric({
   args: { key: v.string(), id: v.id("projects") },
   handler: async (ctx, { key, id }) => {
-    checkOwner(key);
+    await requireRoleInAction(ctx as never, key, "editor");
     await ctx.runMutation(anyApi.wizard.patch, { id, patch: { busy: "stack", error: null } });
     try {
       const p = await getProject(ctx, id);
@@ -387,7 +387,7 @@ ${OWNER_RULE}`;
 export const generateDesign = actionGeneric({
   args: { key: v.string(), id: v.id("projects"), comment: v.optional(v.string()) },
   handler: async (ctx, { key, id, comment }) => {
-    checkOwner(key);
+    await requireRoleInAction(ctx as never, key, "editor");
     await ctx.runMutation(anyApi.wizard.patch, { id, patch: { busy: "design", error: null } });
     try {
       const p = await getProject(ctx, id);
@@ -411,10 +411,10 @@ export const generateDesign = actionGeneric({
 
 // ------------------------------------------------------- user edits and gates
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Ctx = { db: { get: (id: unknown) => Promise<any>; patch: (id: unknown, v: unknown) => Promise<void> } };
+type Ctx = { db: { get: (id: any) => Promise<any>; patch: (id: unknown, v: unknown) => Promise<void>; query: (t: any) => any } };
 
 async function edit(ctx: Ctx, key: string, id: unknown, fn: (w: Wizard) => Wizard | string) {
-  checkOwner(key);
+  await requireRole(ctx, key, "editor");
   const p = await ctx.db.get(id);
   if (!p) throw new ConvexError("No such project.");
   if (p.status !== "draft") throw new ConvexError("This project has already started building.");

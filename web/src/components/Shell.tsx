@@ -2,9 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Hash, History, KanbanSquare, ListChecks, ListTree, MessageSquarePlus, Plus, Rocket, Settings, Sparkles } from "lucide-react";
-import { useQuery } from "convex/react";
-import { api, liveEnabled, useOwner } from "@/lib/convex";
+import { Hash, History, KanbanSquare, ListChecks, ListTree, LogOut, MessageSquarePlus, Plus, Rocket, Settings, Sparkles } from "lucide-react";
+import { useMutation, useQuery } from "convex/react";
+import { api, liveEnabled, useAccess, useOwner } from "@/lib/convex";
 import { money } from "@/lib/reduce";
 import { NotificationBell } from "./Notifications";
 
@@ -103,6 +103,7 @@ export function Shell({
 
         <div className="mt-auto flex flex-col gap-2">
           {liveEnabled && item({ href: "/settings", label: "Settings", Icon: Settings })}
+          {liveEnabled && <Account />}
           <div className="rounded-xl border border-line bg-surface p-3 text-xs leading-relaxed text-muted">
             {liveEnabled ? (
               <>
@@ -167,7 +168,7 @@ const DOT: Record<string, string> = {
 function LiveProjects({ path }: { path: string }) {
   const { key } = useOwner();
   const rows = useQuery(api.projects.list, key ? { key } : "skip") as
-    { id: string; name: string; status: string; costUsd: number }[] | undefined;
+    { id: string; name: string; status: string; costUsd: number; by?: string | null }[] | undefined;
   if (!rows?.length) return null;
   return (
     <>
@@ -178,12 +179,52 @@ function LiveProjects({ path }: { path: string }) {
           className={`flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm ${
             path.startsWith(`/p/${p.id}`) ? "text-ink" : "text-muted hover:text-ink"
           }`}
-          title={`${p.status.replace("_", " ")} · ${money(p.costUsd)}`}
+          title={`${p.status.replace("_", " ")} · ${money(p.costUsd)}${p.by ? ` · by ${p.by}` : ""}`}
         >
           <span className={`size-2 shrink-0 rounded-full ${DOT[p.status] ?? "bg-faint"} ${p.status === "awaiting_approval" ? "breathe text-you" : ""}`} />
           <span className="truncate">{p.name}</span>
         </Link>
       ))}
     </>
+  );
+}
+
+const ROLE_LABEL = { owner: "Owner", editor: "Editor", viewer: "Viewer" } as const;
+
+/** Who is signed in, and Sign out (docs/accounts.md). Signing out deletes the session; the passphrase is just forgotten. */
+function Account() {
+  const { key, setKey } = useOwner();
+  const me = useAccess();
+  const signOut = useMutation(api.accounts.signOut);
+  if (!key) return null;
+  const name = me.via === "passphrase" ? "Owner" : me.name;
+  if (!name) return null;
+  return (
+    <div className="flex items-center gap-2 rounded-xl px-2.5 py-1.5 text-sm">
+      <span className="grid size-7 shrink-0 place-items-center rounded-full bg-surface text-xs font-medium text-ink ring-1 ring-line">
+        {name.slice(0, 1).toUpperCase()}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate font-medium text-ink">{name}</span>
+        <span className="block truncate text-[11px] text-faint">
+          {me.via === "passphrase" ? "Owner passphrase" : ROLE_LABEL[me.role]}
+        </span>
+      </span>
+      <button
+        type="button"
+        title="Sign out"
+        aria-label="Sign out"
+        onClick={async () => {
+          try {
+            await signOut({ key });
+          } finally {
+            setKey(null);
+          }
+        }}
+        className="grid size-7 place-items-center rounded-lg text-muted hover:bg-surface hover:text-ink"
+      >
+        <LogOut size={15} strokeWidth={1.6} />
+      </button>
+    </div>
   );
 }

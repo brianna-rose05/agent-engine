@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { ArrowRight, Loader2, Zap } from "lucide-react";
+import { EditGate, ViewOnlyNote } from "./Access";
 import { anyRunning, useProject } from "@/lib/project-store";
 import { api, useOwner } from "@/lib/convex";
 import type { QuickState } from "@/lib/types";
@@ -111,6 +112,7 @@ function QuickView({ compact, canQuick, history, send, replay = false }: {
   };
 
   return (
+    <EditGate>
     <section className="rounded-2xl border border-line bg-surface p-4" aria-labelledby="quick-change-title">
       <div className="flex flex-wrap items-center gap-3">
         <span className="grid size-7 place-items-center rounded-lg bg-dev-bg text-dev">
@@ -122,6 +124,7 @@ function QuickView({ compact, canQuick, history, send, replay = false }: {
             For wording, colors, spacing and links. One agent edits the pages, the whole app is checked, and it merges
             in minutes. No plan or approval.
           </p>
+          <ViewOnlyNote className="mt-1" />
         </div>
         {canQuick && !open && (
           <button onClick={() => setOpen(true)} className="rounded-lg bg-ink px-3 py-1.5 text-sm font-medium text-white">
@@ -177,6 +180,7 @@ function QuickView({ compact, canQuick, history, send, replay = false }: {
                   <span className="shrink-0 text-[11px] font-medium text-faint tabular-nums">Quick {q.n}</span>
                   <span className="min-w-0 flex-1 text-ink/85">{q.text}</span>
                   <span className={`shrink-0 text-xs ${RESULT[result].tone}`}>{RESULT[result].label}</span>
+                  {q.by && <span className="shrink-0 text-xs text-faint">by {q.by.name}</span>}
                   <span className="shrink-0 text-xs text-faint tabular-nums">{when(q.at)}</span>
                 </div>
                 {result === "blocked" && (
@@ -206,5 +210,6 @@ function QuickView({ compact, canQuick, history, send, replay = false }: {
         </ol>
       )}
     </section>
+    </EditGate>
   );
 }
