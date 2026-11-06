@@ -11,6 +11,7 @@ import { useAction, useMutation } from "convex/react";
 import { api, useOwner } from "@/lib/convex";
 import { useProject } from "@/lib/project-store";
 import { Avatar } from "@/components/ui";
+import { ApiKeyCard } from "@/components/ApiKeyCard";
 import type { Design, Feature, Priority, Question, Wizard } from "../../../../../convex/wizard";
 
 type StepId = "describe" | "questions" | "requirements" | "stack" | "design" | "team";
@@ -108,6 +109,11 @@ export default function SetupPage() {
           {shown === "design" && <DesignStep w={wizard!} readOnly={current !== "design"} />}
           {shown === "team" && <TeamStep />}
       </motion.div>
+
+      {/* which Anthropic key the team will run on; set it before the build starts (docs/settings.md) */}
+      <div className="mt-10 empty:hidden">
+        <ApiKeyCard />
+      </div>
     </div>
   );
 }

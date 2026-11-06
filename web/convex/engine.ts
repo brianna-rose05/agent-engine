@@ -8,6 +8,7 @@ import { checkpointPatch, mergedTasks } from "./checkpoints";
 import { quickForWorker, quickPatch } from "./quick";
 import { shipForWorker, shipPatch } from "./ship";
 import { setupCodesForWorker } from "./setup";
+import { keyForWorker } from "./apiKey";
 
 /*
  * What the engine (worker.py in GitHub Actions) calls. Authenticated with ENGINE_SECRET, which both sides
@@ -51,7 +52,10 @@ export const projectForWorker = queryGeneric({
              answers: p.answers ?? {}, // owner answers to the tech lead, {taskId: text} (convex/answers.ts)
              deferred: p.deferred ?? [], // plan task ids saved for the next version (convex/pm.ts): not built
              // owner setup codes, {preview?, production?}: each deploy sets its one as APP_SETUP_CODE (convex/setup.ts)
-             setupCodes: setupCodesForWorker(p.setupCodes) };
+             setupCodes: setupCodesForWorker(p.setupCodes),
+             // the project's own Anthropic API key, decrypted (`anthropicKey`), or why it can't be used
+             // (`anthropicKeyProblem`); nothing when it runs on Studio's key. Only here: docs/settings.md
+             ...(await keyForWorker(p, String(projectId))) };
   },
 });
 

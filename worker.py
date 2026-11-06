@@ -20,6 +20,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+from engine import redact
 from engine.budget import STOPPED, Budget
 from engine.checkpoints import run_rollback, save_checkpoint
 from engine.convex_sink import ConvexBackend
@@ -106,7 +107,39 @@ def project_setup_code(project: dict | None, environment: str) -> str | None:
     return code.strip() if isinstance(code, str) and code.strip() else None
 
 
+ANTHROPIC_KEY_PREFIX = "sk-ant-"        # web/convex/apiKey.ts checkAnthropicKey
+
+
+def project_anthropic_key(project: dict | None) -> str | None:
+    """The project's own Anthropic API key (`anthropicKey`, decrypted by projectForWorker; docs/settings.md), or
+    None when the row has none or something that isn't a key."""
+    key = (project or {}).get("anthropicKey")
+    key = key.strip() if isinstance(key, str) else ""
+    return key if key.startswith(ANTHROPIC_KEY_PREFIX) and len(key) >= 40 else None
+
+
+def use_anthropic_key(project: dict | None, environ=os.environ) -> str:
+    """Picks the Anthropic key for every agent of this run: the project's own key when it has one, else Studio's
+    ANTHROPIC_API_KEY. The chosen key goes in ANTHROPIC_API_KEY, which every ClaudeCLIAgent reads and passes to its
+    sandbox command's environment (engine/agents/claude_cli.py), so no agent can end up on the other key. Both keys
+    are registered with engine/redact.py, so neither reaches an event, a scrubbed error or stdout/stderr.
+    Returns "project" or "studio"; raises SystemExit (without the key) when no key is usable."""
+    redact.register(environ.get("ANTHROPIC_API_KEY"))
+    problem = (project or {}).get("anthropicKeyProblem")
+    if isinstance(problem, str) and problem:
+        raise SystemExit(f"this project's own Anthropic API key can't be used: {problem[:300]}")
+    own = project_anthropic_key(project)
+    if own:
+        redact.register(own)
+        environ["ANTHROPIC_API_KEY"] = own
+        return "project"
+    if not environ.get("ANTHROPIC_API_KEY"):
+        raise SystemExit("missing settings: ANTHROPIC_API_KEY (or give the project its own key in Studio)")
+    return "studio"
+
+
 def hide(text: str, *secrets: str | None) -> str:
+    text = redact.redact(text)
     for s in secrets:
         if s:
             text = text.replace(s, "***")
@@ -327,8 +360,9 @@ def main():
     p.add_argument("--budget", type=float, default=0.50)
     a = p.parse_args()
     load_env(ROOT / ".env")
-    missing = [v for v in ("ANTHROPIC_API_KEY", "DAYTONA_API_KEY", "PROJECTS_GITHUB_TOKEN", "CONVEX_DEPLOY_KEY")
-               if not os.environ.get(v)]
+    redact.redact_output()                             # secrets registered below never reach the log
+    # ANTHROPIC_API_KEY is checked once the project is read: a project with its own key doesn't need Studio's
+    missing = [v for v in ("DAYTONA_API_KEY", "PROJECTS_GITHUB_TOKEN", "CONVEX_DEPLOY_KEY") if not os.environ.get(v)]
     if missing:
         raise SystemExit(f"missing settings: {', '.join(missing)}")
     token = os.environ["PROJECTS_GITHUB_TOKEN"]
@@ -340,6 +374,9 @@ def main():
         raise SystemExit("project not found")
     if project["status"] not in ("queued", "starting"):
         raise SystemExit(f"project is {project['status']}, not waiting to start")
+    # every agent of this run uses the project's own key when it has one (docs/settings.md); never printed
+    source = use_anthropic_key(project)
+    print("anthropic key: " + ("the project's own key" if source == "project" else "Studio's key"))
 
     out = ROOT / "results" / f"{datetime.now():%Y%m%d-%H%M%S}-worker-{a.project_id[-8:]}"
     stack = NextSupabaseStack(link_node_modules=False)

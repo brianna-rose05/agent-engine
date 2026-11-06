@@ -8,7 +8,8 @@ import { checkOwner } from "./owner";
  * Notifications for the owner: written by engine:record when something needs them or finished (see
  * notificationFor), shown by the bell in the sidebar (src/components/Notifications.tsx) and, while the tab is
  * hidden, as browser notifications. Optionally emailed through Resend when RESEND_API_KEY and NOTIFY_EMAIL are
- * set in Convex; without them, nothing is sent and nothing is logged.
+ * set in Convex; without them, nothing is sent and nothing is logged. Also posted to Slack when the owner saved a
+ * webhook on /settings (convex/slack.ts).
  */
 
 export type NotificationKind = "needs_approval" | "needs_you" | "finished" | "budget_reached" | "preview_ready" | "ready_to_ship";
@@ -86,7 +87,10 @@ export async function notifyFor(ctx: GenericMutationCtx<GenericDataModel>, proje
     const unread = await ctx.db.query("notifications").withIndex("by_read", (q) => q.eq("read", false)).take(200);
     if (isDuplicate(unread as unknown as StoredNote[], String(projectId), n)) return;
   }
-  await ctx.db.insert("notifications", { projectId, kind: n.kind, title: n.title, body: n.body, ts: Date.now(), read: false });
+  const id = await ctx.db.insert("notifications", { projectId, kind: n.kind, title: n.title, body: n.body, ts: Date.now(), read: false });
+  // Slack (convex/slack.ts, docs/settings.md): every notification, once, when a webhook is saved on /settings
+  const settings = (await ctx.db.query("settings").first()) as { slackWebhookUrl?: string } | null;
+  if (settings?.slackWebhookUrl) await ctx.scheduler.runAfter(0, anyApi.slack.post, { id });
   if (n.email && emailEnabled()) {
     await ctx.scheduler.runAfter(0, anyApi.notifications.sendEmail,
                                  { title: n.title, body: n.body, path: notificationPath(projectId, n.kind) });

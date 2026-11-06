@@ -10,6 +10,7 @@ import type { ChangeState, Plan, TaskState } from "@/lib/types";
 import { Avatar, Mono } from "@/components/ui";
 import { ChangeRequestBox } from "@/components/ChangeRequest";
 import { BudgetLine } from "@/components/Budget";
+import { ApiKeyCard } from "@/components/ApiKeyCard";
 import { estimateBuild } from "@/lib/estimate";
 import { QuickChangeBox } from "@/components/QuickChange";
 import { PmCard } from "@/components/PM";
@@ -219,6 +220,10 @@ export default function PlanPage() {
           <BudgetLine />
         </section>
       )}
+
+      <div className="mt-8 empty:hidden">
+        <ApiKeyCard />
+      </div>
 
       <div className="mt-8 flex flex-col gap-3 empty:hidden">
         <QuickChangeBox />

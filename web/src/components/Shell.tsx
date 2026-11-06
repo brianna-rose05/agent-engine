@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Hash, History, KanbanSquare, ListChecks, ListTree, MessageSquarePlus, Plus, Rocket, Sparkles } from "lucide-react";
+import { Hash, History, KanbanSquare, ListChecks, ListTree, MessageSquarePlus, Plus, Rocket, Settings, Sparkles } from "lucide-react";
 import { useQuery } from "convex/react";
 import { api, liveEnabled, useOwner } from "@/lib/convex";
 import { money } from "@/lib/reduce";
@@ -101,18 +101,21 @@ export function Shell({
           </>
         )}
 
-        <div className="mt-auto rounded-xl border border-line bg-surface p-3 text-xs leading-relaxed text-muted">
-          {liveEnabled ? (
-            <>
-              <span className="font-medium text-ink">Live.</span> New projects run real agents in the cloud. The
-              community garden is a replay.
-            </>
-          ) : (
-            <>
-              <span className="font-medium text-ink">Demo mode.</span> Replaying a real Haiku build. Connect Convex to run
-              your own.
-            </>
-          )}
+        <div className="mt-auto flex flex-col gap-2">
+          {liveEnabled && item({ href: "/settings", label: "Settings", Icon: Settings })}
+          <div className="rounded-xl border border-line bg-surface p-3 text-xs leading-relaxed text-muted">
+            {liveEnabled ? (
+              <>
+                <span className="font-medium text-ink">Live.</span> New projects run real agents in the cloud. The
+                community garden is a replay.
+              </>
+            ) : (
+              <>
+                <span className="font-medium text-ink">Demo mode.</span> Replaying a real Haiku build. Connect Convex to run
+                your own.
+              </>
+            )}
+          </div>
         </div>
       </aside>
 
@@ -128,6 +131,11 @@ export function Shell({
             <Link href="/p/demo/board" className="text-sm text-muted">
               Community garden
             </Link>
+            {liveEnabled && (
+              <Link href="/settings" aria-label="Settings" className="grid size-8 place-items-center rounded-lg text-muted hover:text-ink">
+                <Settings size={16} strokeWidth={1.6} />
+              </Link>
+            )}
             {liveEnabled && <NotificationBell align="right" />}
           </div>
         </div>

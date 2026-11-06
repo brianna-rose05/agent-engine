@@ -65,6 +65,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from engine.redact import redact_data
+
 
 @dataclass
 class Event:
@@ -109,7 +111,8 @@ class Emitter:
         self.sinks = [s for s in sinks if s is not None]
 
     def emit(self, kind: str, task_id: str | None = None, **data) -> None:
-        ev = Event(kind, task_id, data)
+        # secrets registered at run time (a project's own API key, engine/redact.py) never reach any sink
+        ev = Event(kind, task_id, redact_data(data))
         for s in self.sinks:
             try:
                 s.write(ev)
