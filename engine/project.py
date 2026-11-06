@@ -831,7 +831,10 @@ How to wire it (read AGENTS.md first):
   - "claimed": "This app already has an owner." (and a link home);
   - "not_configured": "Owner setup isn't configured for this app."
   Link it from the sign-in page's footer as "Owner setup". It must load without a session.
-- A simple header with links to the main pages in src/app/layout.tsx, styled with the look in the brief.
+- A simple header with links to the main pages in src/app/layout.tsx, styled with the look in the brief. Use
+  landmarks: the header in <header> (its links in <nav>), and each page's content in exactly one <main> (put
+  <main> in the layout around {{children}}, or in each page, never both). Ship's accessibility check flags any
+  content outside them.
 - The root layout src/app/layout.tsx MUST render the template's Studio bridge inside <body>:
   `import {{ StudioBridge }} from "@/lib/studio-bridge";` and `<StudioBridge />`. It tells Studio's preview which
   page is open (nothing else) so the owner's comment pins land on the right page. Keep it if you rewrite the layout.
