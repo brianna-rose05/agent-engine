@@ -207,6 +207,8 @@ class Engine:
         code_changes = 0                             # the code reviewer's "changes" verdicts so far (docs/reviewer.md)
         architect_rounds = 0                         # the architect's reviews of this plan so far (docs/architect.md)
         architect_said = ""                          # its comments when it sent the plan back
+        architect_fallback = None                    # (branch, attempt, comments) of that plan: it goes to the owner
+                                                     # if the replan never gets through its checks
         design_rounds = 0                            # the designer's reviews of this task so far (docs/designer.md)
         design_said: list[str] = []                  # its comments when it sent the first passing attempt back
         design_fallback = None                       # (branch, attempt) of that attempt: it merges if the fix fails
@@ -229,6 +231,9 @@ class Engine:
                     if design_fallback is not None:   # the app the designer sent back still works: merge it
                         return self._merge_design_fallback(res, task, design_fallback, design_said,
                                                            "was stopped by the spending limit")
+                    if architect_fallback is not None:  # the plan the architect sent back passed its checks
+                        return self._merge_architect_fallback(res, task, architect_fallback,
+                                                              "was stopped by the spending limit")
                     return res
                 t0 = time.time()
                 to_review = None                      # a passing attempt, published, waiting for its code review
@@ -323,6 +328,8 @@ class Engine:
                         res.status = self.merge(branch, task.id)
                         return res
                     ok, reason = False, ARCHITECT_CHANGES
+                    if architect_fallback is None:    # the first plan the architect sent back: kept, published
+                        architect_fallback = (branch, n, list(v["comments"]))
                     listed = architect_said = "\n".join(f"- {c}" for c in v["comments"])
                     self._attempt(res, task, n, rep, False, reason, changed, listed, seconds)
                     feedback = ("Your plan passed the automated checks, but the architect (a different model) reviewed "
@@ -374,7 +381,7 @@ class Engine:
                     else:
                         feedback += "\nA reviewer checked these tests against the spec and confirmed they are right."
                 if (n == attempts.limit and task.review_failure is not None and review is None
-                        and design_fallback is None):          # a reviewed, working attempt merges instead
+                        and design_fallback is None and architect_fallback is None):   # a passing one merges instead
                     # Every try failed. Before giving up, the tech lead (a stronger model than a Haiku dev) reviews
                     # the attempts once: up to two more tries with its guidance, or one question for the owner.
                     # Regression: Pawfect build 7 ended 24/25 with a failed feature and no explanation.
@@ -389,6 +396,8 @@ class Engine:
             if design_fallback is not None:              # the designer's fix try failed its checks
                 return self._merge_design_fallback(res, task, design_fallback, design_said,
                                                    "didn't pass the whole-app check")
+            if architect_fallback is not None:           # no replan passed the plan checks
+                return self._merge_architect_fallback(res, task, architect_fallback, "didn't pass the plan checks")
             if review is not None:                       # the tech lead's extra tries failed too: no second review
                 return self._escalate(res, review.get("question") or RETRY_FAILED_QUESTION)
             res.status = "failed"
@@ -397,6 +406,11 @@ class Engine:
             if design_fallback is not None:              # the passing attempt the designer sent back still merges
                 try:
                     return self._merge_design_fallback(res, task, design_fallback, design_said, "hit an error")
+                except Exception:
+                    pass
+            if architect_fallback is not None:           # the plan the architect sent back passed its checks
+                try:
+                    return self._merge_architect_fallback(res, task, architect_fallback, "hit an error")
                 except Exception:
                     pass
         return res
@@ -443,6 +457,23 @@ class Engine:
                   "it was, with the designer's comments as design warnings.")
         self.events.emit("design_review", task.id, verdict="changes", comments=list(comments), attempt=n,
                          warnings=True, reason=reason)
+        self.events.emit("task_status", task.id, status="merging", attempt=n)
+        res.error = ""
+        res.status = self.merge(branch, task.id)
+        return res
+
+    def _merge_architect_fallback(self, res: Result, task: Task, fallback: tuple[str, int, list[str]],
+                                  why: str) -> Result:
+        """The architect sent a plan back, and the replan didn't get through (`why`: the plan checks on every try left,
+        the spending limit, an error). That first plan passed every mechanical check and its branch is still there:
+        it merges and goes to the owner with the architect's first comments as warnings, like "changes" twice
+        (docs/architect.md). No agent runs, so it costs nothing."""
+        branch, n, comments = fallback
+        tried = res.attempts[-1].n if res.attempts and res.attempts[-1].n != n else None
+        reason = (f"The planner's revised plan ({f'try {tried}' if tried else 'the next try'}) {why}, so its first "
+                  f"plan (try {n}) comes to you as it was, with the architect's comments as warnings.")
+        self.events.emit("architect_review", task.id, verdict="changes", comments=list(comments), round=1,
+                         warnings=True, fallback=True, reason=reason)
         self.events.emit("task_status", task.id, status="merging", attempt=n)
         res.error = ""
         res.status = self.merge(branch, task.id)
