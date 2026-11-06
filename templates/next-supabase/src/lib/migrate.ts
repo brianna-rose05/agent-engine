@@ -67,10 +67,12 @@ export async function migrate(run: SqlRunner, opts: { dir?: string; lock?: Migra
   await run.exec(AUTH_SHIM);
   const done = new Set((await run.query<{ name: string }>("select name from app_meta.migrations")).rows.map((r) => r.name));
   const applied: string[] = [];
-  for (const f of readdirSync(dir).filter((x) => x.endsWith(".sql")).sort()) {
+  // turbopackIgnore: `dir` is only known at runtime, so Turbopack would trace the whole project into every server
+  // bundle. next.config.ts ships supabase/migrations explicitly (outputFileTracingIncludes) instead.
+  for (const f of readdirSync(/*turbopackIgnore: true*/ dir).filter((x) => x.endsWith(".sql")).sort()) {
     if (done.has(f)) continue;
     try {
-      await run.exec(readFileSync(join(dir, f), "utf8"));
+      await run.exec(readFileSync(/*turbopackIgnore: true*/ join(/*turbopackIgnore: true*/ dir, f), "utf8"));
       await run.query("insert into app_meta.migrations (name) values ($1)", [f]);
     } catch (e) {
       throw new Error(`migration ${f} failed: ${(e as Error).message}`);

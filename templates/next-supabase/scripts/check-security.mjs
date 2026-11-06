@@ -16,14 +16,12 @@ import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { WARN_EXIT } from "./app-server.mjs";
 
-/** Advisories the template's own pinned dependencies carry, fixed only by a major upgrade: listed, not counted. */
-export const ACCEPTED = {
-  "GHSA-mrhx-c7xc-m3w5": "zod 3: fixed only in zod 4 (a major upgrade of the template)",
-  "GHSA-qx2v-qp2m-jg93": "postcss inside next 15: fixed only in next 16",
-  "GHSA-6g55-p6wh-862q": "postcss inside next 15: fixed only in next 16",
-  "GHSA-fxqj-rqcc-2cmp": "postcss inside next 15: fixed only in next 16",
-  "GHSA-r28c-9q8g-f849": "postcss inside next 15: fixed only in next 16",
-};
+/**
+ * Advisories the template's own pinned dependencies carry, fixed only by a major upgrade: listed, not counted.
+ * Empty since the Next 16 / zod 4 upgrade (docs/template-upgrades.md). Keep the mechanism: when a new advisory
+ * can only be fixed by a major upgrade of the template, add it here as { "GHSA-...": "why it is accepted" }.
+ */
+export const ACCEPTED = {};
 
 // Built from pieces so this file doesn't match itself.
 const BEGIN = "-----" + "BEGIN";
@@ -94,7 +92,7 @@ export function scanSecrets(files = trackedFiles()) {
 }
 
 /** npm audit's JSON -> {blocking, warnings, known, lows} (advisory lines; known: the template's own), or {unreachable}. */
-export function readAudit(stdout) {
+export function readAudit(stdout, accepted = ACCEPTED) {
   let report;
   try {
     report = JSON.parse(stdout);
@@ -119,7 +117,7 @@ export function readAudit(stdout) {
   let lows = 0;
   for (const a of [...advisories.values()].sort((x, y) => x.name.localeCompare(y.name))) {
     const line = `${a.severity} ${a.name}: ${a.title} (${a.id})`;
-    if (ACCEPTED[a.id]) known.push(`${a.severity} ${a.name} (${a.id}): ${ACCEPTED[a.id]}`);
+    if (Object.hasOwn(accepted, a.id)) known.push(`${a.severity} ${a.name} (${a.id}): ${accepted[a.id]}`);
     else if (a.severity === "high" || a.severity === "critical") blocking.push(line);
     else if (a.severity === "moderate") warnings.push(line);
     else lows += 1;

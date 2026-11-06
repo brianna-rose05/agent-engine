@@ -305,7 +305,7 @@ def test_integration_task_only_for_web_and_scoped_to_pages():
     plan = json.loads((WEB / "plan" / "plan.json").read_text())
     t = integration_task(plan, "A booking site", NextSupabaseStack(link_node_modules=False))
     assert t.depends_on == ["T1", "T2"] and t.waits_for == ["T3"] and t.check and not t.hidden_tests
-    assert t.can_edit == ["src/app/*", "src/middleware.ts", "tests/unit/*"]
+    assert t.can_edit == ["src/app/*", "src/proxy.ts", "src/middleware.ts", "tests/unit/*"]
     assert "/sign-up" in t.spec and "src/server/bookings.ts" in t.spec and "next build" in t.spec
     assert not default_stack().integration
     bad = dict(plan, pages=["/p/[id]"])
@@ -1017,6 +1017,64 @@ def test_old_web_projects_get_current_template_files_but_keep_their_pages(tmp_pa
     assert git(repo, "rev-parse", "HEAD~1").strip() == before                  # exactly one new commit
     assert upgrade_template(repo, stack) == []                                 # nothing to do the second time
     assert default_stack().template_files() == {}
+
+
+def _as_next15_project(repo: Path) -> None:
+    """Turns a freshly built project back into one built on the Next 15 / zod 3 template (Pawfect, Tool library)."""
+    pkg = json.loads((repo / "package.json").read_text())
+    pkg["dependencies"].update(next="15.5.28", zod="3.24.1")
+    pkg["devDependencies"].update({"eslint-config-next": "15.5.28", "@eslint/eslintrc": "^3"})
+    (repo / "package.json").write_text(json.dumps(pkg, indent=2) + "\n")
+    for rel, old in {"package-lock.json": "{}\n", "eslint.config.mjs": "// FlatCompat, next 15\n",
+                     "tsconfig.json": '{"compilerOptions": {"jsx": "preserve"}}\n',
+                     "scripts/check-security.mjs": "export const ACCEPTED = {\"GHSA-mrhx-c7xc-m3w5\": \"zod 3\"};\n",
+                     "AGENTS.md": "# Team rules (old)\n", "next.config.ts": "export default {};\n"}.items():
+        (repo / rel).write_text(old)
+    git(repo, "add", "-A")
+    git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "built on the Next 15 template")
+
+
+def test_template_upgrade_holds_back_new_major_dependencies_of_an_old_project(tmp_path, capsys):
+    """Next 16 and zod 4 change APIs the project's own code uses (async params, lint rules, zod's error API): copying
+    the template's package.json into Pawfect would break its next build with no agent allowed to fix it. So a
+    project on older majors keeps its dependency files, its AGENTS.md keeps it on its own versions, and every other
+    template fix still reaches it (docs/template-upgrades.md)."""
+    from engine.stacks import AGENTS_MD, NextSupabaseStack, upgrade_template
+    stack = NextSupabaseStack(link_node_modules=False)
+    repo = build_project_repo(tmp_path / "r", stack)
+    _as_next15_project(repo)
+    assert stack.major_upgrades(repo) == ["eslint-config-next 15 -> 16", "next 15 -> 16", "zod 3 -> 4"]
+    kept = {rel: (repo / rel).read_bytes() for rel in stack.DEPENDENCY_FILES}
+    assert sorted(upgrade_template(repo, stack)) == ["AGENTS.md", "next.config.ts"]
+    assert {rel: (repo / rel).read_bytes() for rel in stack.DEPENDENCY_FILES} == kept
+    assert "outputFileTracingIncludes" in (repo / "next.config.ts").read_text()     # non-version fixes still land
+    agents = (repo / "AGENTS.md").read_text()
+    assert "next 15.5.28" in agents and "zod 3.24.1" in agents and "never edit package.json" in agents
+    assert "Next.js 16" not in agents and "z.flattenError" not in agents
+    assert "requireOwner" in agents and "StudioBridge" in agents                       # the rest of the rules stay
+    assert "dependencies held back (eslint-config-next 15 -> 16; next 15 -> 16; zod 3 -> 4)" in capsys.readouterr().out
+    assert upgrade_template(repo, stack) == []                                          # stable: nothing the next time
+
+    # A change that opts in takes the whole template, dependencies included, and from then on it's a current project.
+    changed = upgrade_template(repo, stack, dependencies=True)
+    assert set(stack.DEPENDENCY_FILES) <= set(changed)
+    assert (repo / "AGENTS.md").read_text() == AGENTS_MD and "Next.js 16" in AGENTS_MD
+    assert json.loads((repo / "package.json").read_text())["dependencies"]["next"].startswith("16.")
+    assert stack.major_upgrades(repo) == [] and upgrade_template(repo, stack) == []
+
+
+def test_template_upgrade_takes_patch_and_minor_dependency_bumps(tmp_path):
+    """A security patch inside the same majors (next 16.4.1 -> 16.4.x) reaches every project automatically."""
+    from engine.stacks import NextSupabaseStack, upgrade_template
+    stack = NextSupabaseStack(link_node_modules=False)
+    repo = build_project_repo(tmp_path / "r", stack)
+    pkg = json.loads((repo / "package.json").read_text())
+    pkg["dependencies"]["next"] = "16.0.0"
+    (repo / "package.json").write_text(json.dumps(pkg))
+    git(repo, "add", "-A")
+    git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "older patch")
+    assert stack.major_upgrades(repo) == []
+    assert upgrade_template(repo, stack) == ["package.json"]
 
 
 # --------------------------------------------------------------------------- tech lead (docs/tech-lead.md)

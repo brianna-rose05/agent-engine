@@ -147,8 +147,9 @@ class NextSupabaseStack(PythonStack):
 
     def is_ui_module(self, module: str) -> bool:
         return module.startswith("src/components/")
-    # Pages, server actions, layout and small client wrappers, plus the integrator's own tests.
-    integration_scope = ["src/app/*", "src/middleware.ts", "tests/unit/*"]
+    # Pages, server actions, layout and small client wrappers, plus the integrator's own tests. src/proxy.ts is
+    # Next 16's name for middleware; src/middleware.ts stays editable for projects still on Next 15.
+    integration_scope = ["src/app/*", "src/proxy.ts", "src/middleware.ts", "tests/unit/*"]
     # Pages every web app has, whatever its plan lists: the owner claims the app there (src/lib/owner.ts).
     required_pages = ("/owner-setup",)
     # The root layout renders the template's StudioBridge (src/lib/studio-bridge.tsx), which tells Studio's preview
@@ -225,6 +226,46 @@ class NextSupabaseStack(PythonStack):
             if not rel.startswith(self.PROJECT_OWNED) and (self.template / rel).is_file():
                 out[rel] = (self.template / rel).read_bytes()
         return out
+
+    # Template files that only work with the template's own dependency versions: the dependencies themselves, the
+    # lint and TypeScript settings for them, and the security check (its ACCEPTED list names advisories of exactly
+    # those versions). upgrade_template copies these only to a project on the same major versions (docs/template-upgrades.md).
+    DEPENDENCY_FILES = ("package.json", "package-lock.json", "eslint.config.mjs", "tsconfig.json",
+                        "scripts/check-security.mjs")
+
+    @staticmethod
+    def _major(spec: str) -> str | None:
+        m = re.search(r"\d+", spec or "")
+        return m.group(0) if m else None
+
+    @staticmethod
+    def _deps(package_json: bytes) -> dict[str, str]:
+        import json
+        try:
+            data = json.loads(package_json)
+        except ValueError:
+            return {}
+        return {**(data.get("dependencies") or {}), **(data.get("devDependencies") or {})}
+
+    def major_upgrades(self, repo: Path) -> list[str]:
+        """The template's dependencies whose major version is newer than the project's ("next 15 -> 16"), or [] when
+        the project is on the template's majors (patch and minor bumps are safe to take) or has no package.json."""
+        mine = Path(repo) / "package.json"
+        if not mine.exists():
+            return []
+        ours, theirs = self._deps(mine.read_bytes()), self._deps((self.template / "package.json").read_bytes())
+        out = []
+        for name, spec in sorted(theirs.items()):
+            old, new = self._major(ours.get(name, "")), self._major(spec)
+            if old and new and old != new:
+                out.append(f"{name} {old} -> {new}")
+        return out
+
+    def held_back_agents_md(self, repo: Path) -> str:
+        """AGENTS.md for a project whose dependencies stay behind: the current rules, minus the version-specific ones."""
+        deps = self._deps((Path(repo) / "package.json").read_bytes())
+        versions = ", ".join(f"{n} {deps[n]}" for n in ("next", "react", "zod") if n in deps) or "see package.json"
+        return AGENTS_MD.replace(VERSION_RULES, HELD_BACK_RULES.format(versions=versions))
 
     def slug(self, module: str) -> str:
         stem = re.sub(r"\.tsx?$", "", module.split("src/", 1)[-1])
@@ -315,10 +356,36 @@ Write these files:
 Everything must type-check (`npx tsc --noEmit`) and every migration must apply to a fresh database."""
 
 
+# The rules that depend on the template's dependency versions (package.json). A project still on older majors
+# (upgrade_template holds its dependencies back, docs/template-upgrades.md) gets HELD_BACK_RULES in their place.
+VERSION_RULES = """- TypeScript strict. Next.js 16 App Router, React 19, zod 4. No new npm dependencies: use what package.json has.
+- Next.js 16: `params` and `searchParams` are Promises, and so are `cookies()` and `headers()`: always `await` them
+  (`export default async function Page({ params }: { params: Promise<{ id: string }> }) { const { id } = await params; }`).
+  Middleware is now `src/proxy.ts` exporting `function proxy(request)` (Node runtime), not src/middleware.ts.
+  `revalidateTag(tag, "max")` takes a second argument; `revalidatePath(path)` is unchanged. There is no `next lint`:
+  lint with `npx eslint`.
+- Lint includes React's hook rules (eslint-plugin-react-hooks 7), as errors: never call `setState` directly in a
+  useEffect body (derive the value while rendering, or set it in the event handler); never call `Date.now()` or
+  `Math.random()` in any component body, server pages included (server code uses `new Date()`; a client component
+  gets the time as a prop or reads it in an effect or event handler); never read `ref.current` while rendering;
+  never mutate props or state.
+- zod 4 (if you validate input with zod): string formats are top-level (`z.email()`, `z.url()`, `z.uuid()`; use
+  `z.guid()` for any 8-4-4-4-12 id, since `z.uuid()` rejects made-up ids like 00000000-0000-0000-0000-000000000001).
+  Custom messages use `{ error: "..." }` (not `message`, `required_error` or `invalid_type_error`). A ZodError's list is
+  `.issues` (`.errors` is gone); use `z.flattenError(err)` instead of `err.flatten()`. `z.record(z.string(), value)`
+  needs both arguments; `z.strictObject` / `z.looseObject` replace `.strict()` / `.passthrough()`; `.extend(B.shape)`
+  replaces `.merge(B)`; `z.enum(MyEnum)` replaces `z.nativeEnum`.
+"""
+
+HELD_BACK_RULES = """- TypeScript strict. Next.js App Router. No new npm dependencies: use what package.json has.
+- This project stays on the dependency versions in its package.json ({versions}), older than the current template's:
+  write code for those versions, and never edit package.json or package-lock.json. Moving it to the template's
+  versions is a separate change (docs/template-upgrades.md).
+"""
+
 AGENTS_MD = """# Team rules (Next.js + Supabase)
 
-- TypeScript strict. Next.js App Router. No new npm dependencies: use what package.json has.
-- Database access only through the `Db` interface in src/lib/db.ts, passed in as the first argument.
+""" + VERSION_RULES + """- Database access only through the `Db` interface in src/lib/db.ts, passed in as the first argument.
   Parameterized SQL only ($1, $2...). Wrap multi-step writes in `db.transaction`.
 - Business rules fail with `AppError` (src/lib/errors.ts): code + a short, friendly message.
 - Contracts are read-only after planning: supabase/migrations/*.sql and src/contracts/*.ts.
@@ -352,14 +419,26 @@ AGENTS_MD = """# Team rules (Next.js + Supabase)
 STACKS = {"python": PythonStack, "next-supabase": NextSupabaseStack}
 
 
-def upgrade_template(repo: Path, stack: PythonStack) -> list[str]:
+def upgrade_template(repo: Path, stack: PythonStack, dependencies: bool = False) -> list[str]:
     """Bring an existing project's template files up to the current template, in one commit on main (pushed when
     the repo has a remote). Returns the files changed. Regression (first live preview): Pawfect was built before the
     template shipped its migrations with serverless builds, so its preview failed with ENOENT on every page, and no
-    agent may edit template files to fix it."""
+    agent may edit template files to fix it.
+
+    A new major version of a dependency (Next 15 -> 16, zod 3 -> 4) can break the project's own code, which no check
+    here would see. So when the template's majors are newer than the project's, its dependency files
+    (NextSupabaseStack.DEPENDENCY_FILES) stay as they are and its AGENTS.md keeps it on its own versions; everything
+    else is updated. `dependencies=True` (a change request that opts in, docs/template-upgrades.md) copies them too."""
     repo = Path(repo)
+    files = stack.template_files()
+    held = [] if dependencies or not files else getattr(stack, "major_upgrades", lambda r: [])(repo)
+    if held:
+        for rel in stack.DEPENDENCY_FILES:
+            files.pop(rel, None)
+        files["AGENTS.md"] = stack.held_back_agents_md(repo).encode()
+        print(f"template: dependencies held back ({'; '.join(held)}): see docs/template-upgrades.md")
     changed = []
-    for rel, body in stack.template_files().items():
+    for rel, body in files.items():
         dest = repo / rel
         if not dest.exists() or dest.read_bytes() != body:
             dest.parent.mkdir(parents=True, exist_ok=True)
