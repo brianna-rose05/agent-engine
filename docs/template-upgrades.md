@@ -69,6 +69,10 @@ allowed to fix it: dev tasks may not touch template files, and the integrator ma
   (Next 15) advisories only while the project's package.json is on those majors, so a held-back project keeps
   shipping with them listed as known, and a current one gets the empty `ACCEPTED` list. (It used to be held back,
   which left a project built before it existed with no security check at all: Tool library's ship, Nov 5.)
+- Once a project's package.json is on Next 16 or newer, the upgrade also renames `src/middleware.ts` to
+  `src/proxy.ts` and its `middleware` function to `proxy` (Next 16's name; `rename_middleware_for_next16`). It's a
+  rename across two files, which no task can plan. Tasks may also own `src/proxy.ts` (or `src/middleware.ts` on
+  Next 15) for changes to what runs before every page. (Regression: Tool library's change 4, Nov 6.)
 - `dependencies=True` copies everything, dependency files included. The worker passes it only for a change request
   that opts in (`change.upgradeTemplate`, see below). After that the project is on the template's majors and later
   runs update it normally.

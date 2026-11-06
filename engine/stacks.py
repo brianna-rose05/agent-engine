@@ -124,12 +124,14 @@ class NextSupabaseStack(PythonStack):
     """Next.js (App Router, TypeScript) + Supabase Postgres, tested with Vitest against an in-test
     Postgres (PGlite) that applies the project's real migrations."""
     name = "next-supabase"
-    module_rule = "a .ts or .tsx file under src/server/, src/components/, src/app/ or src/lib/"
+    module_rule = "a .ts or .tsx file under src/server/, src/components/, src/app/ or src/lib/, or src/proxy.ts"
     contract_rule = "a migration supabase/migrations/NNNN_name.sql or a file under src/contracts/"
     stub_marker = "Not implemented"
     unimplemented_marker = "Not implemented"
     nested_files_ok = True
-    module_re = re.compile(r"^src/(server|components|app|lib)/[A-Za-z0-9_\-/\[\]().]+\.tsx?$")
+    # src/proxy.ts (Next 16's middleware) and src/middleware.ts (Next 15) may be a task's module too. Regression (Tool
+    # library's change 4, Nov 6): a change to what runs before every page had no valid module to plan it in.
+    module_re = re.compile(r"^(src/(server|components|app|lib)/[A-Za-z0-9_\-/\[\]().]+\.tsx?|src/(proxy|middleware)\.ts)$")
     contract_re = re.compile(r"^(supabase/migrations/\d{4}_[a-z0-9_]+\.sql|src/contracts/[A-Za-z0-9_\-]+\.ts)$")
     migration_re = re.compile(r"^supabase/migrations/(\d{4})_[^/]+\.sql$")
     reserved = {"supabase/migrations/0000_base.sql", "src/lib/db.ts", "src/lib/errors.ts", "src/lib/db-postgres.ts",
@@ -420,6 +422,35 @@ AGENTS_MD = """# Team rules (Next.js + Supabase)
 STACKS = {"python": PythonStack, "next-supabase": NextSupabaseStack}
 
 
+MIDDLEWARE_FN_RE = re.compile(r"\bexport\s+(default\s+)?(async\s+)?function\s+middleware\b")
+
+
+def rename_middleware_for_next16(repo: Path) -> list[str]:
+    """Next 16 renamed middleware to proxy: src/middleware.ts exporting `middleware` becomes src/proxy.ts exporting
+    `proxy` (same body, same `config`). Done here, mechanically, once a project's package.json is on Next 16 or
+    newer, because no agent can do it: a rename spans two files. Returns the removed paths ([] when nothing to do).
+    Regression (Tool library's change 4, Nov 6): the planner found nothing else to change for Next 16, but had no
+    valid way to plan this rename and failed three times."""
+    import json
+    old, new = repo / "src/middleware.ts", repo / "src/proxy.ts"
+    if not old.is_file() or new.exists():
+        return []
+    try:
+        major = int(re.search(r"\d+", json.loads((repo / "package.json").read_text())["dependencies"]["next"]).group(0))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return []
+    if major < 16:
+        return []
+    text = old.read_text()
+    renamed = MIDDLEWARE_FN_RE.sub(lambda m: f"export {m.group(1) or ''}{m.group(2) or ''}function proxy", text)
+    if renamed == text and "export default" not in text:
+        return []              # not a shape we recognise: leave it (Next 16 still runs middleware.ts, deprecated)
+    new.write_text(renamed)
+    old.unlink()
+    print("template: src/middleware.ts renamed to src/proxy.ts for Next 16")
+    return ["src/middleware.ts"]
+
+
 def upgrade_template(repo: Path, stack: PythonStack, dependencies: bool = False) -> list[str]:
     """Bring an existing project's template files up to the current template, in one commit on main (pushed when
     the repo has a remote). Returns the files changed. Regression (first live preview): Pawfect was built before the
@@ -445,10 +476,15 @@ def upgrade_template(repo: Path, stack: PythonStack, dependencies: bool = False)
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(body)
             changed.append(rel)
+    removed = rename_middleware_for_next16(repo)
+    if removed:
+        changed += ["src/proxy.ts"]
     if not changed:
         return []
     run = lambda *a: subprocess.run(["git", *a], cwd=repo, capture_output=True, text=True)  # noqa: E731
     run("add", "--", *changed)
+    if removed:
+        run("rm", "-q", "--cached", "--", *removed)
     if run("commit", "-qm", "Update template files\n\n" + "\n".join(changed)).returncode:
         run("checkout", "--", *changed)
         return []

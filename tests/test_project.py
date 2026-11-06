@@ -1373,3 +1373,35 @@ def test_template_next_config_type_checks_on_older_next_majors():
     typed = text.split("const nextConfig: NextConfig = {", 1)[1].split("\n};", 1)[0]
     assert "experimental" not in typed and "turbopack" not in typed
     assert "Object.assign(nextConfig" in text
+
+
+def test_template_upgrade_to_next16_renames_middleware_to_proxy(tmp_path):
+    """Regression (Tool library's change 4, Nov 6): on Next 16 the only thing left was src/middleware.ts ->
+    src/proxy.ts, a rename across two files that no task could plan. The template upgrade does it mechanically."""
+    from engine.stacks import NextSupabaseStack, upgrade_template
+    stack = NextSupabaseStack(link_node_modules=False)
+    repo = build_project_repo(tmp_path / "r", stack)
+    _as_next15_project(repo)
+    body = ('import { NextResponse } from "next/server";\n\nexport function middleware() {\n'
+            '  return NextResponse.next();\n}\n\nexport const config = { matcher: ["/(.*)"] };\n')
+    (repo / "src/middleware.ts").write_text(body)
+    git(repo, "add", "-A")
+    git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "middleware")
+    upgrade_template(repo, stack)                                   # still on Next 15: left alone
+    assert (repo / "src/middleware.ts").exists() and not (repo / "src/proxy.ts").exists()
+
+    changed = upgrade_template(repo, stack, dependencies=True)      # now on Next 16
+    assert "src/proxy.ts" in changed and not (repo / "src/middleware.ts").exists()
+    proxy = (repo / "src/proxy.ts").read_text()
+    assert "export function proxy()" in proxy and "matcher" in proxy and "middleware" not in proxy
+    tracked = git(repo, "ls-files", "src").split()
+    assert "src/proxy.ts" in tracked and "src/middleware.ts" not in tracked
+    assert git(repo, "status", "--porcelain").strip() == ""
+    assert upgrade_template(repo, stack, dependencies=True) == []   # nothing the next time
+
+
+def test_a_task_may_own_the_proxy_file():
+    from engine.stacks import NextSupabaseStack
+    rx = NextSupabaseStack.module_re
+    assert rx.match("src/proxy.ts") and rx.match("src/middleware.ts") and rx.match("src/server/tools.ts")
+    assert not rx.match("src/other.ts") and not rx.match("src/proxy.tsx") and not rx.match("scripts/x.ts")
