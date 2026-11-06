@@ -1045,7 +1045,8 @@ def test_template_upgrade_holds_back_new_major_dependencies_of_an_old_project(tm
     _as_next15_project(repo)
     assert stack.major_upgrades(repo) == ["eslint-config-next 15 -> 16", "next 15 -> 16", "zod 3 -> 4"]
     kept = {rel: (repo / rel).read_bytes() for rel in stack.DEPENDENCY_FILES}
-    assert sorted(upgrade_template(repo, stack)) == ["AGENTS.md", "next.config.ts"]
+    assert sorted(upgrade_template(repo, stack)) == ["AGENTS.md", "next.config.ts", "scripts/check-security.mjs"]
+    assert "ACCEPTED_ON_OLDER_MAJORS" in (repo / "scripts/check-security.mjs").read_text()   # Ship's check always runs
     assert {rel: (repo / rel).read_bytes() for rel in stack.DEPENDENCY_FILES} == kept
     assert "outputFileTracingIncludes" in (repo / "next.config.ts").read_text()     # non-version fixes still land
     agents = (repo / "AGENTS.md").read_text()

@@ -61,13 +61,14 @@ allowed to fix it: dev tasks may not touch template files, and the integrator ma
   (`NextSupabaseStack.major_upgrades`). Patch and minor bumps (a security fix inside Next 16) are taken as before.
 - When any major is newer in the template, the project is **held back**: the dependency files
   (`NextSupabaseStack.DEPENDENCY_FILES`: `package.json`, `package-lock.json`, `eslint.config.mjs`,
-  `tsconfig.json`, `scripts/check-security.mjs`) stay exactly as they are, and its `AGENTS.md` gets the current
+  `tsconfig.json`) stay exactly as they are, and its `AGENTS.md` gets the current
   rules with the version-specific ones replaced by "this project stays on next 15.5.28, zod 3.24.1: write code for
   those versions, never edit package.json". Every other template fix (`src/lib`, the other check scripts,
   `next.config.ts`) still lands. The worker logs `template: dependencies held back (next 15 -> 16; ...)`.
-- `scripts/check-security.mjs` is held back with the dependencies because its `ACCEPTED` list describes exactly
-  those versions: a held-back project keeps shipping with its known zod 3 / postcss advisories listed as known
-  (as before this upgrade), rather than having every Ship blocked until someone upgrades it.
+- `scripts/check-security.mjs` is always updated: its `ACCEPTED_ON_OLDER_MAJORS` list accepts the zod 3 / postcss
+  (Next 15) advisories only while the project's package.json is on those majors, so a held-back project keeps
+  shipping with them listed as known, and a current one gets the empty `ACCEPTED` list. (It used to be held back,
+  which left a project built before it existed with no security check at all: Tool library's ship, Nov 5.)
 - `dependencies=True` copies everything, dependency files included. The worker passes it only for a change request
   that opts in (`change.upgradeTemplate`, see below). After that the project is on the template's majors and later
   runs update it normally.

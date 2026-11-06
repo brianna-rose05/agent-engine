@@ -227,11 +227,12 @@ class NextSupabaseStack(PythonStack):
                 out[rel] = (self.template / rel).read_bytes()
         return out
 
-    # Template files that only work with the template's own dependency versions: the dependencies themselves, the
-    # lint and TypeScript settings for them, and the security check (its ACCEPTED list names advisories of exactly
-    # those versions). upgrade_template copies these only to a project on the same major versions (docs/template-upgrades.md).
-    DEPENDENCY_FILES = ("package.json", "package-lock.json", "eslint.config.mjs", "tsconfig.json",
-                        "scripts/check-security.mjs")
+    # Template files that only work with the template's own dependency versions: the dependencies themselves and the
+    # lint and TypeScript settings for them. upgrade_template copies these only to a project on the same major versions
+    # (docs/template-upgrades.md). The security check is not one of them: it knows the older majors' accepted advisories
+    # (ACCEPTED_ON_OLDER_MAJORS), and Ship runs it, so every project must have it. Regression (Tool library's ship,
+    # Nov 5): held back, it was missing from a project built before it existed and the security check couldn't start.
+    DEPENDENCY_FILES = ("package.json", "package-lock.json", "eslint.config.mjs", "tsconfig.json")
 
     @staticmethod
     def _major(spec: str) -> str | None:

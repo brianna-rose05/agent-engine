@@ -23,6 +23,37 @@ import { WARN_EXIT } from "./app-server.mjs";
  */
 export const ACCEPTED = {};
 
+/**
+ * Advisories of older majors a project may still be held on (docs/template-upgrades.md): accepted only while its
+ * package.json is on that major, so this one file works for every project. Regression (Tool library's ship, Nov 5):
+ * this script used to be held back with the dependencies, and a project built before it existed had none at all.
+ */
+export const ACCEPTED_ON_OLDER_MAJORS = {
+  "zod 3": { "GHSA-mrhx-c7xc-m3w5": "zod 3: fixed only in zod 4 (a major upgrade of the template)" },
+  "next 15": {
+    "GHSA-qx2v-qp2m-jg93": "postcss inside next 15: fixed only in next 16",
+    "GHSA-6g55-p6wh-862q": "postcss inside next 15: fixed only in next 16",
+    "GHSA-fxqj-rqcc-2cmp": "postcss inside next 15: fixed only in next 16",
+    "GHSA-r28c-9q8g-f849": "postcss inside next 15: fixed only in next 16",
+  },
+};
+
+/** The accepted advisories for a project's package.json text (its dependencies' majors). */
+export function acceptedFor(packageJson) {
+  let deps = {};
+  try {
+    deps = JSON.parse(packageJson).dependencies ?? {};
+  } catch {
+    // no package.json: the template's own list
+  }
+  const out = { ...ACCEPTED };
+  for (const [key, ids] of Object.entries(ACCEPTED_ON_OLDER_MAJORS)) {
+    const [name, major] = key.split(" ");
+    if ((String(deps[name] ?? "").match(/\d+/) ?? [])[0] === major) Object.assign(out, ids);
+  }
+  return out;
+}
+
 // Built from pieces so this file doesn't match itself.
 const BEGIN = "-----" + "BEGIN";
 export const SECRET_PATTERNS = [
@@ -157,7 +188,7 @@ function main() {
   const notes = [];
 
   const audit = spawnSync("npm", ["audit", "--omit=dev", "--json"], { encoding: "utf8", timeout: 120_000 });
-  const deps = readAudit(audit.stdout || "");
+  const deps = readAudit(audit.stdout || "", acceptedFor(existsSync("package.json") ? readFileSync("package.json", "utf8") : ""));
   if (deps.unreachable) {
     warnings.push(`Dependencies weren't audited (${deps.unreachable.replace(/[.\s]+$/, "")}). Nothing was blocked for it.`);
   } else {

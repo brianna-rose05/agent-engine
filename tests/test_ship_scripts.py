@@ -86,6 +86,19 @@ def test_audit_blocks_on_new_high_advisories_and_lists_the_templates_known_ones(
 
 
 @needs_node
+def test_security_check_accepts_older_majors_advisories_only_on_those_majors(tmp_path):
+    """Regression (Tool library's ship, Nov 5): the script was held back with a Next 15 project's dependencies, so a
+    project built before it existed had none and the check couldn't start. Now one file serves every project."""
+    pkgs = [{"dependencies": {"next": "15.5.28", "zod": "3.24.1"}}, {"dependencies": {"next": "16.4.1", "zod": "^4.6.6"}}]
+    script = (f'import {{ acceptedFor }} from "{mod("check-security.mjs")}";'
+              + "".join(f"console.log(JSON.stringify(Object.keys(acceptedFor({json.dumps(json.dumps(p))}))));" for p in pkgs)
+              + "console.log(JSON.stringify(Object.keys(acceptedFor(''))));")
+    old, new, none = [json.loads(x) for x in node(script, tmp_path).splitlines()]
+    assert "GHSA-mrhx-c7xc-m3w5" in old and "GHSA-qx2v-qp2m-jg93" in old and len(old) == 5
+    assert new == [] and none == []
+
+
+@needs_node
 def test_unguarded_mutations_are_found_and_guarded_ones_are_not(tmp_path):
     app = tmp_path / "src" / "app"
     files = {
