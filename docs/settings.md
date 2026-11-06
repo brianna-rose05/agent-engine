@@ -47,8 +47,11 @@ The setup wizard's own AI calls (questions, requirements, stack, design) run in 
 ### One-time setup: STUDIO_KEY_SECRET (in Convex)
 
 Keys are stored encrypted (AES-256-GCM, bound to the project), with an encryption key derived from the
-`STUDIO_KEY_SECRET` Convex environment variable. Until it's set, Studio refuses to save a key and says why. Set it once
-to a long random value (at least 32 characters):
+`STUDIO_KEY_SECRET` Convex environment variable. Until it's set, Studio refuses to save a key and says why.
+
+The `Convex backend` workflow (.github/workflows/convex.yml) creates it automatically on the first deploy that finds it
+missing (a random value, never printed) and never changes it afterwards. To set it by hand instead, use a long random
+value (at least 32 characters):
 
 ```bash
 cd web

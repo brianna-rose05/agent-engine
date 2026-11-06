@@ -42,4 +42,12 @@ jobs:
           # GITHUB_DISPATCH_TOKEN (lets the app start the Worker) is pasted into the Convex dashboard by hand:
           # a token limited to starting workflows on this repo, never copied here from another service.
           npx convex env set ENGINE_REPO "${{ github.repository }}" > /dev/null
+          # STUDIO_KEY_SECRET encrypts projects' own API keys at rest (docs/settings.md). Created once, randomly, and
+          # never changed here: changing it makes every stored key unreadable.
+          if [ -z "$(npx convex env get STUDIO_KEY_SECRET 2>/dev/null)" ]; then
+            KEYSECRET=$(openssl rand -base64 32)
+            echo "::add-mask::$KEYSECRET"
+            npx convex env set STUDIO_KEY_SECRET "$KEYSECRET" > /dev/null
+            echo "STUDIO_KEY_SECRET created."
+          fi
           echo "Convex settings updated."
