@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { useAction, useMutation } from "convex/react";
 import { api, useOwner } from "@/lib/convex";
+import { EditGate, ViewOnlyNote } from "@/components/Access";
 import { useProject } from "@/lib/project-store";
 import { Avatar } from "@/components/ui";
 import { ApiKeyCard } from "@/components/ApiKeyCard";
@@ -58,7 +59,7 @@ function useWizard() {
 }
 
 export default function SetupPage() {
-  const { project, wizard, liveStatus, mode } = useProject();
+  const { project, wizard, liveStatus, mode, canEdit } = useProject();
   const current: StepId = liveStatus && liveStatus !== "draft" ? "team" : (wizard?.step ?? "questions");
   const [viewing, setViewing] = useState<StepId | null>(null);
   const shown = viewing ?? current;
@@ -103,10 +104,14 @@ export default function SetupPage() {
       <motion.div key={shown} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
           {wizard?.error && shown === current && hasDraft(wizard, current) && <ErrorBox text={wizard.error} />}
           {shown === "describe" && <DescribeStep name={project.name} description={project.description} />}
-          {shown === "questions" && <QuestionsStep w={wizard!} readOnly={current !== "questions"} />}
-          {shown === "requirements" && <RequirementsStep w={wizard!} readOnly={current !== "requirements"} />}
-          {shown === "stack" && <StackStep w={wizard!} readOnly={current !== "stack"} />}
-          {shown === "design" && <DesignStep w={wizard!} readOnly={current !== "design"} />}
+          {!canEdit && <ViewOnlyNote className="mb-4" />}
+          {/* viewers see every step as it stands; the backend refuses their edits too (docs/accounts.md) */}
+          <EditGate>
+          {shown === "questions" && <QuestionsStep w={wizard!} readOnly={!canEdit || current !== "questions"} />}
+          {shown === "requirements" && <RequirementsStep w={wizard!} readOnly={!canEdit || current !== "requirements"} />}
+          {shown === "stack" && <StackStep w={wizard!} readOnly={!canEdit || current !== "stack"} />}
+          {shown === "design" && <DesignStep w={wizard!} readOnly={!canEdit || current !== "design"} />}
+          </EditGate>
           {shown === "team" && <TeamStep />}
       </motion.div>
 

@@ -4,7 +4,7 @@ import {
 import { ConvexError, v, type GenericId } from "convex/values";
 import { anyApi } from "convex/server";
 
-import { checkOwner } from "./owner";
+import { actorOf, requireRole, resolveKey, type Actor } from "./owner";
 import { canRequestChange, checkChangeText, nextChangeNumber, type ChangeRequest } from "./changes";
 import { budgetOf, canSpendMore, checkBudget } from "./budget";
 import { canShip } from "./ship";
@@ -16,10 +16,11 @@ const owner = { key: v.string() };
 
 export const checkKey = queryGeneric({
   args: owner,
-  handler: async (_ctx, { key }) => {
+  handler: async (ctx, { key }) => {
     try {
-      checkOwner(key);
-      return { ok: true as const };
+      // who is signed in, for the screen: the role decides which actions are enabled (docs/accounts.md)
+      const a = await resolveKey(ctx, key);
+      return { ok: true as const, role: a.role, via: a.via, name: a.user?.name ?? null, email: a.user?.email ?? null };
     } catch (e) {
       return { ok: false as const, message: e instanceof ConvexError ? String(e.data) : "Something went wrong." };
     }
@@ -29,16 +30,17 @@ export const checkKey = queryGeneric({
 export const list = queryGeneric({
   args: owner,
   handler: async (ctx, { key }) => {
-    checkOwner(key);
+    await requireRole(ctx, key, "viewer");
     const rows = await ctx.db.query("projects").order("desc").take(50);
-    return rows.map((p) => ({ id: p._id, name: p.name, status: p.status, costUsd: p.costUsd, createdAt: p._creationTime }));
+    return rows.map((p) => ({ id: p._id, name: p.name, status: p.status, costUsd: p.costUsd, createdAt: p._creationTime,
+                              by: (p.createdBy as Actor | undefined)?.name ?? null }));
   },
 });
 
 export const get = queryGeneric({
   args: { ...owner, id: v.string() },
   handler: async (ctx, { key, id }) => {
-    checkOwner(key);
+    const a = await requireRole(ctx, key, "viewer");
     const pid = ctx.db.normalizeId("projects", id);
     const p = pid && (await ctx.db.get(pid));
     if (!p) return null;
@@ -52,7 +54,8 @@ export const get = queryGeneric({
                  canRetry: (p.status === "failed" || p.status === "stopped") && Boolean(p.plan),
                  budgetUsd: budgetOf(p), costUsd: p.costUsd,
                  canChange: Boolean(p.repo) && canRequestChange(p.status, Boolean(p.plan), false),
-                 changes: ((p.changes ?? []) as ChangeRequest[]).map((c) => ({ n: c.n, text: c.text, at: c.at })),
+                 changes: ((p.changes ?? []) as ChangeRequest[]).map((c) => ({ n: c.n, text: c.text, at: c.at, ...(c.by ? { by: c.by } : {}) })),
+                 by: (p.createdBy as Actor | undefined)?.name ?? null,
                  createdAt: p._creationTime, error: p.error ?? null, wizard: p.wizard ?? null, previewUrl: p.previewUrl ?? null,
                  durableDb: Boolean(p.durableDb),
                  // ship to production (convex/ship.ts): the screen reduces the events, the row says what's queued
@@ -61,8 +64,9 @@ export const get = queryGeneric({
                  answers: p.answers ?? {}, // your answers to the tech lead, {taskId: text} (convex/answers.ts)
                  // features saved for the next version at approval (convex/pm.ts), and whether they can be built now
                  deferred: p.deferred ?? [], canBuildSaved: buildSavedBlocker(p) === null,
-                 // owner setup codes for the app's /owner-setup page (convex/setup.ts): owner-only, like this whole query
-                 setupCodes: setupCodesForWorker(p.setupCodes) },
+                 // owner setup codes for the app's /owner-setup page (convex/setup.ts): Studio owners only, since a
+                 // code makes whoever enters it the app's admin (editors and viewers get {})
+                 setupCodes: a.role === "owner" ? setupCodesForWorker(p.setupCodes) : {} },
       events: events.map((e) => ({ kind: e.kind, task_id: e.taskId, data: e.data, ts: e.ts })),
     };
   },
@@ -72,7 +76,7 @@ export const create = mutationGeneric({
   args: { ...owner, name: v.string(), description: v.string(), model: v.union(v.literal("haiku"), v.literal("sonnet")),
           setup: v.optional(v.boolean()), budgetUsd: v.optional(v.number()) },
   handler: async (ctx, { key, name, description, model, setup, budgetUsd }) => {
-    checkOwner(key);
+    const by = actorOf(await requireRole(ctx, key, "editor"));
     const budget = checkBudget(budgetUsd ?? budgetOf({}));
     if (!budget.ok) throw new ConvexError(budget.message);
     const n = name.trim();
@@ -82,12 +86,13 @@ export const create = mutationGeneric({
     if (setup) {
       // Setup wizard first (Questions -> Requirements -> Stack -> Design); the team starts when Design is locked.
       const id = await ctx.db.insert("projects", { name: n, description: d, model, status: "draft", costUsd: 0,
-                                                    budgetUsd: budget.usd, setupCodes: newSetupCodes(), wizard: { step: "questions", busy: "questions" } });
+                                                    budgetUsd: budget.usd, setupCodes: newSetupCodes(), wizard: { step: "questions", busy: "questions" },
+                                                    ...(by ? { createdBy: by } : {}) });
       await ctx.scheduler.runAfter(0, anyApi.wizard.generateQuestions, { key, id });
       return id;
     }
     const id = await ctx.db.insert("projects", { name: n, description: d, model, status: "queued", costUsd: 0, budgetUsd: budget.usd,
-                                         setupCodes: newSetupCodes() });
+                                         setupCodes: newSetupCodes(), ...(by ? { createdBy: by } : {}) });
     await ctx.scheduler.runAfter(0, anyApi.projects.startWorker, { projectId: id });
     return id;
   },
@@ -102,7 +107,7 @@ export const create = mutationGeneric({
 export const ensureSetupCodes = mutationGeneric({
   args: { ...owner, id: v.string() },
   handler: async (ctx, { key, id }) => {
-    checkOwner(key);
+    await requireRole(ctx, key, "owner"); // setup codes are the owner's (docs/accounts.md)
     const pid = ctx.db.normalizeId("projects", id);
     const p = pid && (await ctx.db.get(pid));
     if (!pid || !p) return;
@@ -115,7 +120,7 @@ export const ensureSetupCodes = mutationGeneric({
 export const retryFailed = mutationGeneric({
   args: { ...owner, id: v.id("projects") },
   handler: async (ctx, { key, id }) => {
-    checkOwner(key);
+    await requireRole(ctx, key, "editor");
     const p = await ctx.db.get(id);
     const blocker = retryBlocker(p);
     if (blocker) throw new ConvexError(blocker);
@@ -132,7 +137,7 @@ export const retryFailed = mutationGeneric({
 export const answerAndRetry = mutationGeneric({
   args: { ...owner, id: v.id("projects"), taskId: v.string(), text: v.string() },
   handler: async (ctx, { key, id, taskId, text }) => {
-    checkOwner(key);
+    await requireRole(ctx, key, "editor");
     const p = await ctx.db.get(id);
     const blocker = retryBlocker(p);
     if (blocker || !p) throw new ConvexError(blocker ?? "This project doesn't exist any more.");
@@ -150,7 +155,7 @@ export const answerAndRetry = mutationGeneric({
  * change request (convex/comments.ts), so both follow exactly the same rules. Returns the change's number.
  */
 export async function startChangeRequest(ctx: GenericMutationCtx<AnyDataModel>, id: GenericId<"projects">, text: string,
-                                         upgradeTemplate = false): Promise<number> {
+                                         upgradeTemplate = false, by?: Actor): Promise<number> {
   const p = await ctx.db.get(id);
   if (!p) throw new ConvexError("This project doesn't exist any more.");
   if (!canRequestChange(p.status, Boolean(p.plan), false)) {
@@ -166,7 +171,7 @@ export async function startChangeRequest(ctx: GenericMutationCtx<AnyDataModel>, 
   }
   const changes = (p.changes ?? []) as ChangeRequest[];
   const entry: ChangeRequest = { n: nextChangeNumber(changes), text: checked.text, at: Date.now(),
-                               ...(upgradeTemplate ? { upgradeTemplate: true } : {}) };
+                               ...(upgradeTemplate ? { upgradeTemplate: true } : {}), ...(by ? { by } : {}) };
   await ctx.db.patch(id, { status: "queued", mode: "change", resume: false, error: undefined, changeFrom: p.status,
                            pendingChange: undefined, planNote: undefined, changes: [...changes, entry] });
   await ctx.scheduler.runAfter(0, anyApi.projects.startWorker, { projectId: id });
@@ -177,8 +182,8 @@ export async function startChangeRequest(ctx: GenericMutationCtx<AnyDataModel>, 
 export const requestChange = mutationGeneric({
   args: { ...owner, id: v.id("projects"), text: v.string(), upgradeTemplate: v.optional(v.boolean()) },
   handler: async (ctx, { key, id, text, upgradeTemplate }) => {
-    checkOwner(key);
-    return startChangeRequest(ctx, id, text, Boolean(upgradeTemplate));
+    const a = await requireRole(ctx, key, "editor");
+    return startChangeRequest(ctx, id, text, Boolean(upgradeTemplate), actorOf(a));
   },
 });
 
@@ -186,13 +191,14 @@ export const requestChange = mutationGeneric({
 export const rebuild = mutationGeneric({
   args: { ...owner, id: v.id("projects") },
   handler: async (ctx, { key, id }) => {
-    checkOwner(key);
+    const by = actorOf(await requireRole(ctx, key, "editor"));
     const p = await ctx.db.get(id);
     if (!p || !["failed", "done", "rejected", "stopped"].includes(p.status)) throw new ConvexError("Only a stopped project can be built again.");
     const copies = (await ctx.db.query("projects").collect()).filter((x) => x.name.startsWith(p.name.replace(/ \(\d+\)$/, ""))).length;
     const nid = await ctx.db.insert("projects", {
       name: `${p.name.replace(/ \(\d+\)$/, "")} (${copies + 1})`, description: p.description, model: p.model,
       status: "queued", costUsd: 0, budgetUsd: budgetOf(p), setupCodes: newSetupCodes(), ...(p.wizard ? { wizard: p.wizard } : {}),
+      ...(by ? { createdBy: by } : {}),
     });
     await ctx.scheduler.runAfter(0, anyApi.projects.startWorker, { projectId: nid });
     return nid;
@@ -206,7 +212,7 @@ export const rebuild = mutationGeneric({
 export const setBudget = mutationGeneric({
   args: { ...owner, id: v.id("projects"), budgetUsd: v.number() },
   handler: async (ctx, { key, id, budgetUsd }) => {
-    checkOwner(key);
+    await requireRole(ctx, key, "owner"); // the spending limit is the owner's call
     const p = await ctx.db.get(id);
     if (!p) throw new ConvexError("This project doesn't exist any more.");
     const checked = checkBudget(budgetUsd);
@@ -225,7 +231,7 @@ export const decide = mutationGeneric({
   args: { ...owner, id: v.id("projects"), approved: v.boolean(), note: v.optional(v.string()),
           deferred: v.optional(v.array(v.string())) },
   handler: async (ctx, { key, id, approved, note, deferred }) => {
-    checkOwner(key);
+    await requireRole(ctx, key, "editor");
     const p = await ctx.db.get(id);
     // the first plan and a planned change (pendingChange) wait for the same decision
     if (!p || p.status !== "awaiting_approval") {
@@ -247,7 +253,7 @@ export const decide = mutationGeneric({
 export const buildSaved = mutationGeneric({
   args: { ...owner, id: v.id("projects") },
   handler: async (ctx, { key, id }) => {
-    checkOwner(key);
+    await requireRole(ctx, key, "editor");
     const p = await ctx.db.get(id);
     const blocker = buildSavedBlocker(p);
     if (blocker) throw new ConvexError(blocker);

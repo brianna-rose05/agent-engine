@@ -154,12 +154,13 @@ a private repo for the project, plans it, waits for your approval in the app, th
 
 Repo secrets: `CONVEX_DEPLOY_KEY` (Convex production deploy key) and `PROJECTS_GITHUB_TOKEN` (fine-grained:
 Administration, Contents and Workflows read/write; the worker creates and pushes each project's repo).
-Convex dashboard (production > Settings > Environment Variables): `OWNER_PASSPHRASE` (the app asks for it
-until sign-in exists) and `GITHUB_DISPATCH_TOKEN` (fine-grained, agent-engine only, Actions read/write;
+Convex dashboard (production > Settings > Environment Variables): `OWNER_PASSPHRASE` (always unlocks the app
+as the owner; other people get their own accounts by invite, docs/accounts.md) and `GITHUB_DISPATCH_TOKEN` (fine-grained, agent-engine only, Actions read/write;
 lets the app start the Worker). Vercel: project `studio`, root `web`, env `NEXT_PUBLIC_CONVEX_URL`.
 Optional repo secret `POSTGRES_ADMIN_URL` (a Neon connection string): every preview gets its own durable Postgres
 instead of in-memory data that resets (docs/databases.md).
 
 ## Next (milestone 4, remaining)
 
-Sign-in, live project creation, and a revise loop when you send a plan back.
+Live project creation, and a revise loop when you send a plan back. (Sign-in for more than one person is done:
+docs/accounts.md.)

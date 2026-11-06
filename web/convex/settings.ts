@@ -1,6 +1,6 @@
 import { actionGeneric, anyApi, internalQueryGeneric, mutationGeneric, queryGeneric } from "convex/server";
 import { ConvexError, v } from "convex/values";
-import { checkOwner } from "./owner";
+import { requireRole, requireRoleInAction } from "./owner";
 import { emailEnabled } from "./notifications";
 import { checkSlackWebhook, maskWebhook, postToSlack } from "./slack";
 import { KEY_SECRET_ENV, keySecretProblem } from "./apiKey";
@@ -17,7 +17,7 @@ const owner = { key: v.string() };
 export const get = queryGeneric({
   args: owner,
   handler: async (ctx, { key }) => {
-    checkOwner(key);
+    await requireRole(ctx, key, "owner");
     const row = (await ctx.db.query("settings").first()) as { slackWebhookUrl?: string } | null;
     const url = row?.slackWebhookUrl;
     return { slack: url ? { masked: maskWebhook(url) } : null, email: emailEnabled(),
@@ -29,7 +29,7 @@ export const get = queryGeneric({
 export const setSlackWebhook = mutationGeneric({
   args: { ...owner, url: v.string() },
   handler: async (ctx, { key, url }) => {
-    checkOwner(key);
+    await requireRole(ctx, key, "owner");
     const checked = checkSlackWebhook(url);
     if (!checked.ok) throw new ConvexError(checked.message);
     const row = await ctx.db.query("settings").first();
@@ -42,7 +42,7 @@ export const setSlackWebhook = mutationGeneric({
 export const removeSlackWebhook = mutationGeneric({
   args: owner,
   handler: async (ctx, { key }) => {
-    checkOwner(key);
+    await requireRole(ctx, key, "owner");
     const row = await ctx.db.query("settings").first();
     if (row) await ctx.db.patch(row._id, { slackWebhookUrl: undefined, updatedAt: Date.now() });
   },
@@ -63,7 +63,7 @@ export const TEST_MESSAGE = "Studio test message: Slack notifications are workin
 export const testSlack = actionGeneric({
   args: owner,
   handler: async (ctx, { key }): Promise<{ ok: boolean; message: string }> => {
-    checkOwner(key);
+    await requireRoleInAction(ctx as never, key, "owner");
     const url = (await ctx.runQuery(anyApi.settings.webhook, {})) as string | null;
     if (!url) return { ok: false, message: "Save a webhook URL first." };
     const r = await postToSlack(fetch, url, TEST_MESSAGE);

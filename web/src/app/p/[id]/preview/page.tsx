@@ -6,7 +6,8 @@ import { useMutation, useQuery } from "convex/react";
 import {
   Check, ExternalLink, Eye, Loader2, Monitor, MousePointerClick, Pencil, Plus, RefreshCw, RotateCcw, Smartphone, Trash2, X,
 } from "lucide-react";
-import { api, useOwner } from "@/lib/convex";
+import { ASK_FOR_EDIT, api, useOwner } from "@/lib/convex";
+import { EditGate } from "@/components/Access";
 import { useProject } from "@/lib/project-store";
 import {
   PHONE_HEIGHT, PHONE_WIDTH, bridgePath, pageUrl, pathOf, pinFromClick, pinStatus, pinStyle, pinsOnScreen, popoverPlacement,
@@ -72,7 +73,7 @@ function LivePreview() {
 type Draft = { x: number; y: number; width: number; text: string; busy: boolean; error: string | null }; // width: the frame's, in px
 
 function PreviewScreen({ preview, data }: { preview: string; data: Data }) {
-  const { project } = useProject();
+  const { project, canEdit } = useProject();
   const { key } = useOwner();
   const add = useMutation(api.comments.add);
   const origin = previewOrigin(preview);
@@ -164,11 +165,14 @@ function PreviewScreen({ preview, data }: { preview: string; data: Data }) {
               </button>
             ))}
           </div>
+          <EditGate>
           <button onClick={() => { setCommenting((c) => !c); setDraft(null); }} aria-pressed={commenting}
+            title={canEdit ? undefined : ASK_FOR_EDIT}
             className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium ${
               commenting ? "bg-you text-white" : "text-ink ring-1 ring-line hover:bg-surface"}`}>
             {commenting ? <X size={13} /> : <Plus size={13} />} {commenting ? "Done commenting" : "Comment"}
           </button>
+          </EditGate>
           <span className="min-w-0 truncate rounded-md bg-surface px-2 py-1 font-mono text-[12px] text-muted ring-1 ring-line"
                 title={hasBridge ? "The page the app says is open" : "The page the preview was opened at"}>
             {path}
@@ -224,7 +228,9 @@ function PreviewScreen({ preview, data }: { preview: string; data: Data }) {
         </p>
       </section>
 
+      <EditGate>
       <PinList comments={comments} data={data} path={path} viewport={viewport} active={active} setActive={setActive} go={go} />
+      </EditGate>
     </div>
   );
 }
@@ -416,6 +422,7 @@ function PinRow({ c, here, active, selected, onToggle, onShow }: {
             <span className="font-mono text-muted">{c.path}</span>
             <span>· {c.viewport}</span>
             {!c.pathKnown && <span title="The app didn't report its page, so this is the page the preview was opened at">· page as opened</span>}
+            {c.by && <span>· by {c.by.name}</span>}
             <span className={`ml-auto ${c.status === "sent" ? "text-dev" : c.status === "open" ? "text-you" : ""}`}>{pinStatus(c)}</span>
           </p>
           {editing !== null ? (

@@ -2,7 +2,7 @@
 
 import { History } from "lucide-react";
 import { useMutation } from "convex/react";
-import { api, useOwner } from "@/lib/convex";
+import { ASK_FOR_EDIT, api, useOwner } from "@/lib/convex";
 import { anyRunning, useProject } from "@/lib/project-store";
 import { CheckpointList } from "@/components/Checkpoints";
 import { Avatar } from "@/components/ui";
@@ -16,16 +16,17 @@ function errorText(e: unknown): string {
 
 /** Rolling back starts a worker, so only the live app can; it needs Convex, which the replay doesn't have. */
 function LiveHistory() {
-  const { state, project, t0, liveStatus } = useProject();
+  const { state, project, t0, liveStatus, canEdit } = useProject();
   const { key } = useOwner();
   const rollbackTo = useMutation(api.checkpoints.rollbackTo);
   const status = liveStatus ?? state.status;
-  const allowed = canRollback(status, anyRunning(state));
+  const allowed = canEdit && canRollback(status, anyRunning(state));
   return (
     <CheckpointList
       history={state.history}
       t0={t0}
-      blocked={allowed ? undefined : "You can roll back once the team has finished what it's doing."}
+      blocked={allowed ? undefined : !canEdit ? `${ASK_FOR_EDIT} to roll back.`
+        : "You can roll back once the team has finished what it's doing."}
       onRollback={allowed ? async (n) => {
         try {
           await rollbackTo({ key: key!, id: project.id, n });

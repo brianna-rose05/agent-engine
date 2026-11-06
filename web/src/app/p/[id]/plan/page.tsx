@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowRight, Check, FileCode2, Loader2, MessageSquareReply, ShieldCheck } from "lucide-react";
+import { EditGate, ViewOnlyNote } from "@/components/Access";
 import { useProject } from "@/lib/project-store";
 import { currentPlanner, layers } from "@/lib/reduce";
 import type { ChangeState, Plan, TaskState } from "@/lib/types";
@@ -126,6 +127,8 @@ export default function PlanPage() {
             exit={{ opacity: 0, y: 16 }}
             className="sticky bottom-4 mt-8 rounded-2xl border border-line bg-surface p-4 shadow-[0_8px_30px_rgba(0,0,0,0.06)]"
           >
+            <ViewOnlyNote className="mb-2" />
+            <EditGate>
             {replying ? (
               <div className="flex flex-col gap-3">
                 <textarea
@@ -207,6 +210,7 @@ export default function PlanPage() {
                 {approveError && <p role="alert" className="basis-full text-xs text-bad">{approveError}</p>}
               </div>
             )}
+            </EditGate>
           </motion.div>
         )}
       </AnimatePresence>

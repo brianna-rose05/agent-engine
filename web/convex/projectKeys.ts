@@ -1,6 +1,6 @@
 import { actionGeneric, anyApi, internalMutationGeneric, mutationGeneric, queryGeneric } from "convex/server";
 import { ConvexError, v } from "convex/values";
-import { checkOwner } from "./owner";
+import { requireRole, requireRoleInAction } from "./owner";
 import { KEY_SECRET_ENV, checkAnthropicKey, encryptKey, keySecretProblem } from "./apiKey";
 
 /*
@@ -15,7 +15,7 @@ const owner = { key: v.string() };
 export const status = queryGeneric({
   args: { ...owner, id: v.string() },
   handler: async (ctx, { key, id }) => {
-    checkOwner(key);
+    await requireRole(ctx, key, "viewer"); // which key, never the key: fine for everyone signed in
     const pid = ctx.db.normalizeId("projects", id);
     const p = pid && (await ctx.db.get(pid));
     if (!p) return null;
@@ -30,7 +30,7 @@ export const status = queryGeneric({
 export const set = actionGeneric({
   args: { ...owner, id: v.id("projects"), apiKey: v.string() },
   handler: async (ctx, { key, id, apiKey }) => {
-    checkOwner(key);
+    await requireRoleInAction(ctx as never, key, "owner");
     const checked = checkAnthropicKey(apiKey);
     if (!checked.ok) throw new ConvexError(checked.message);
     const secret = process.env[KEY_SECRET_ENV];
@@ -54,7 +54,7 @@ export const store = internalMutationGeneric({
 export const remove = mutationGeneric({
   args: { ...owner, id: v.id("projects") },
   handler: async (ctx, { key, id }) => {
-    checkOwner(key);
+    await requireRole(ctx, key, "owner");
     if (!(await ctx.db.get(id))) throw new ConvexError("This project doesn't exist any more.");
     await ctx.db.patch(id, { anthropicKeyEnc: undefined, anthropicKeyLast4: undefined });
   },

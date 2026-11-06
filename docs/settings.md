@@ -1,6 +1,7 @@
 # Settings: Slack notifications and per-project Anthropic keys
 
-Two things the owner sets in Studio. Both need one-time setup in Slack or in Convex, described below.
+Two things the owner sets in Studio. Both need one-time setup in Slack or in Convex, described below. Settings are
+owner-only; the People section on the same page (who can use Studio, and invites) is described in docs/accounts.md.
 
 ## Slack notifications
 

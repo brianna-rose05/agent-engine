@@ -43,6 +43,8 @@ export default defineSchema({
     // STUDIO_KEY_SECRET, decrypted only for the worker (projectForWorker); the screen gets the last 4 characters only
     anthropicKeyEnc: v.optional(v.string()),
     anthropicKeyLast4: v.optional(v.string()),
+    // the account that created the project (docs/accounts.md): {id, name}; absent when the owner passphrase did
+    createdBy: v.optional(v.object({ id: v.string(), name: v.string() })),
   }),
   events: defineTable({
     projectId: v.id("projects"),
@@ -68,4 +70,33 @@ export default defineSchema({
     slackWebhookUrl: v.optional(v.string()),
     updatedAt: v.number(),
   }),
+  // Studio accounts (convex/accounts.ts, docs/accounts.md). No open sign-up: people join through an invite.
+  // passwordHash and tokenHash never leave the backend; the browser gets a token once and the db keeps its SHA-256.
+  users: defineTable({
+    email: v.string(), // lowercased, unique
+    name: v.string(),
+    passwordHash: v.string(), // PBKDF2-SHA256 (convex/credentials.ts)
+    role: v.union(v.literal("owner"), v.literal("editor"), v.literal("viewer")),
+    createdAt: v.number(),
+  }).index("by_email", ["email"]),
+  sessions: defineTable({
+    userId: v.id("users"),
+    tokenHash: v.string(),
+    expiresAt: v.number(),
+    createdAt: v.number(),
+  }).index("by_token", ["tokenHash"]).index("by_user", ["userId"]),
+  invites: defineTable({
+    email: v.string(),
+    role: v.union(v.literal("owner"), v.literal("editor"), v.literal("viewer")),
+    tokenHash: v.string(),
+    expiresAt: v.number(),
+    createdBy: v.optional(v.string()), // the inviting account's name; absent when the owner passphrase invited
+    usedAt: v.optional(v.number()),
+  }).index("by_token", ["tokenHash"]).index("by_email", ["email"]),
+  // failed sign-ins per email, for the rate limit (convex/credentials.ts signInBlockedFor)
+  signInAttempts: defineTable({
+    email: v.string(),
+    failures: v.number(),
+    windowStart: v.number(),
+  }).index("by_email", ["email"]),
 });

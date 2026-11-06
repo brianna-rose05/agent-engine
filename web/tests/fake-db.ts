@@ -2,7 +2,7 @@ import { getFunctionName } from "convex/server";
 
 /*
  * A small in-memory stand-in for a Convex ctx (db, scheduler, runQuery/runMutation) so handlers can be run as they
- * are (`fn._handler(ctx, args)`). Only what the handlers under test use: get, insert, patch, normalizeId and
+ * are (`fn._handler(ctx, args)`). Only what the handlers under test use: get, insert, patch, delete, normalizeId and
  * query(table).first/collect/take, with withIndex/order accepted and ignored except for an equality filter.
  */
 
@@ -49,6 +49,12 @@ export function fakeDb(seed: Record<string, Record<string, unknown>[]> = {}) {
       const d = find(id);
       if (!d) throw new Error(`no ${id}`);
       for (const [k, v] of Object.entries(p)) { if (v === undefined) delete d[k]; else d[k] = v; }
+    },
+    delete: async (id: string) => {
+      for (const rows of Object.values(tables)) {
+        const i = rows.findIndex((d) => d._id === id);
+        if (i >= 0) rows.splice(i, 1);
+      }
     },
     normalizeId: (_t: string, id: string) => (find(id) ? id : null),
     query,

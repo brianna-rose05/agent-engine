@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Hammer, Loader2 } from "lucide-react";
+import { ASK_FOR_EDIT } from "@/lib/convex";
 import { useProject } from "@/lib/project-store";
 import { listText, type PmSuggestion } from "@/lib/pm";
 import { money } from "@/lib/reduce";
@@ -42,7 +43,7 @@ export function PmCard({ suggestion, budget }: { suggestion: Exclude<PmSuggestio
 
 /** Build the features the PM saved for later (live only): a resume in the same repo, merged work stays. */
 export function BuildSavedButton() {
-  const { mode, canBuildSaved, buildSaved } = useProject();
+  const { mode, canBuildSaved, buildSaved, canEdit } = useProject();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   if (mode !== "live" || !buildSaved) return null;
@@ -59,8 +60,8 @@ export function BuildSavedButton() {
   };
   return (
     <span className="flex flex-wrap items-center gap-2">
-      <button onClick={go} disabled={busy || !canBuildSaved}
-        title={canBuildSaved ? "Keeps every merged feature and builds the saved ones" : "You can build them once the team has finished"}
+      <button onClick={go} disabled={busy || !canBuildSaved || !canEdit}
+        title={!canEdit ? ASK_FOR_EDIT : canBuildSaved ? "Keeps every merged feature and builds the saved ones" : "You can build them once the team has finished"}
         className="flex items-center gap-1.5 rounded-lg bg-ink px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40">
         {busy ? <Loader2 size={12} className="animate-spin" /> : <Hammer size={12} />}
         {busy ? "Starting…" : "Build saved features"}

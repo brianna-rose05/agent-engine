@@ -8,6 +8,7 @@ import {
   TriangleAlert, X,
 } from "lucide-react";
 import { api, useOwner } from "@/lib/convex";
+import { EditGate } from "@/components/Access";
 import { anyRunning, useProject } from "@/lib/project-store";
 import { shipChecks, shipRunning, versionNotes } from "@/lib/ship";
 import { savedForLater } from "@/lib/pm";
@@ -43,6 +44,7 @@ function LiveShip() {
   const shipNow = useMutation(api.ship.shipNow);
   const rollbackProduction = useMutation(api.ship.rollbackProduction);
   return (
+    <EditGate>
     <ShipScreen
       onShip={async () => {
         try {
@@ -59,6 +61,7 @@ function LiveShip() {
         }
       }}
     />
+    </EditGate>
   );
 }
 

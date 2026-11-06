@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Loader2, RotateCcw } from "lucide-react";
+import { ASK_FOR_EDIT } from "@/lib/convex";
 import { useProject, anyRunning } from "@/lib/project-store";
 import { modelName } from "@/lib/reduce";
 import type { TaskState } from "@/lib/types";
@@ -52,7 +53,7 @@ export function TechLeadThread({ task }: { task: TaskState }) {
 }
 
 function AnswerBox({ taskId, question }: { taskId: string; question: string }) {
-  const { state, mode, canRetry, answers, answerAndRetry } = useProject();
+  const { state, mode, canRetry, answers, answerAndRetry, canEdit } = useProject();
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -60,6 +61,7 @@ function AnswerBox({ taskId, question }: { taskId: string; question: string }) {
   const running = anyRunning(state);
   const length = text.trim().length;
   const blocked = mode === "demo" ? "This is a replay of a recorded run, so answers aren't sent anywhere."
+    : !canEdit ? `${ASK_FOR_EDIT} to answer.`
     : running ? "The team is still at work. Answer once everything has stopped."
     : !canRetry ? "You can answer once the build has stopped." : null;
   const previous = answers[taskId];
@@ -89,7 +91,7 @@ function AnswerBox({ taskId, question }: { taskId: string; question: string }) {
         value={text}
         onChange={(e) => { setText(e.target.value); setSent(false); setError(null); }}
         maxLength={ANSWER_MAX}
-        disabled={busy || sent}
+        disabled={busy || sent || !canEdit}
         placeholder="Your answer, in plain words. The dev agent gets it on its next try."
         className="min-h-20 w-full resize-y rounded-xl border border-line bg-surface p-3 text-sm outline-none focus:ring-2 focus:ring-lead/30 disabled:opacity-60"
       />

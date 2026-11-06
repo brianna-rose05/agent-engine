@@ -7,7 +7,7 @@ import { ArrowRight, ClipboardCheck, Code2, ShieldCheck, Sparkles } from "lucide
 import demo from "@/demo/garden.json";
 import { Shell } from "@/components/Shell";
 import { useMutation } from "convex/react";
-import { api, liveEnabled, useOwner } from "@/lib/convex";
+import { ASK_FOR_EDIT, api, liveEnabled, useAccess, useOwner } from "@/lib/convex";
 import { OwnerGate } from "@/components/OwnerGate";
 import { BUDGET_DEFAULT, BUDGET_MAX, BUDGET_MIN, checkBudget } from "../../convex/budget";
 
@@ -26,7 +26,19 @@ export default function NewProjectPage() {
 
 function LiveForm() {
   const { key } = useOwner();
+  const { canEdit } = useAccess();
   const create = useMutation(api.projects.create);
+  if (!canEdit) {
+    // viewers (docs/accounts.md): projects are in the sidebar; starting one runs paid agents, so it's for editors
+    return (
+      <div className="mx-auto flex max-w-md flex-col gap-2 px-6 py-24 text-center">
+        <h2 className="text-xl font-semibold tracking-tight">You have view access</h2>
+        <p className="text-sm text-muted">
+          Open a project from the sidebar to follow along. {ASK_FOR_EDIT} to start projects of your own.
+        </p>
+      </div>
+    );
+  }
   return (
     <NewProject
       create={async (name, description, model, budgetUsd) =>

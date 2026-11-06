@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { GitPullRequestArrow, Loader2 } from "lucide-react";
+import { EditGate, ViewOnlyNote } from "./Access";
 import { useProject } from "@/lib/project-store";
 import { CHANGE_TEXT_MAX, CHANGE_TEXT_MIN } from "../../convex/changes";
 
@@ -40,6 +41,7 @@ export function ChangeRequestBox({ compact = false }: { compact?: boolean }) {
   };
 
   return (
+    <EditGate>
     <section className="rounded-2xl border border-line bg-surface p-4" aria-labelledby="change-request-title">
       <div className="flex flex-wrap items-center gap-3">
         <span className="grid size-7 place-items-center rounded-lg bg-planner-bg text-planner">
@@ -51,6 +53,7 @@ export function ChangeRequestBox({ compact = false }: { compact?: boolean }) {
             For features and data. The planner plans only the change, you approve it, and the team builds it in the
             same repo. Merged work stays.
           </p>
+          <ViewOnlyNote className="mt-1" />
         </div>
         {!open && (
           <button onClick={() => setOpen(true)} className="rounded-lg bg-ink px-3 py-1.5 text-sm font-medium text-white">
@@ -109,11 +112,13 @@ export function ChangeRequestBox({ compact = false }: { compact?: boolean }) {
                 {c.text}
                 {c.upgradeTemplate && <span className="ml-1.5 text-xs text-faint">(and template update)</span>}
               </span>
+              {c.by && <span className="shrink-0 text-xs text-faint">by {c.by.name}</span>}
               <span className="shrink-0 text-xs text-faint tabular-nums">{when(c.at)}</span>
             </li>
           ))}
         </ol>
       )}
     </section>
+    </EditGate>
   );
 }

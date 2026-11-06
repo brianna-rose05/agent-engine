@@ -84,3 +84,11 @@ body {
   .ship-pop { animation: none; }
   .ship-confetti { display: none; }
 }
+
+/* actions a viewer can't take (components/Access.tsx EditGate): visibly off */
+fieldset:disabled button,
+fieldset:disabled textarea,
+fieldset:disabled input {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

@@ -4,7 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import demo from "@/demo/garden.json";
 import { initialState, reduce } from "./reduce";
 import { useMutation, useQuery } from "convex/react";
-import { api, liveEnabled, useOwner } from "./convex";
+import { api, liveEnabled, useAccess, useOwner } from "./convex";
 import { OwnerGate } from "@/components/OwnerGate";
 import type { EngineEvent, Project, ProjectState } from "./types";
 import type { Wizard } from "../../convex/wizard";
@@ -47,6 +47,8 @@ type Store = {
   canBuildSaved?: boolean;      // live: features were saved for later and the team can build them now (convex/pm.ts)
   buildSaved?: () => Promise<void>; // live: build the saved features; throws with a message to show when it can't
   setupCodes?: SetupCodes;      // live, owner only: codes for the app's /owner-setup page (convex/setup.ts); the demo has none
+  canEdit: boolean;             // the signed-in person may start and change work (docs/accounts.md); the demo: true
+  isOwner: boolean;             // ...and change owner-only things (spending limit, API key); the demo: true
 };
 
 /** A task agent is busy right now (the demo has no project row to ask). */
@@ -73,7 +75,7 @@ const DECISION_T = DEMO_EVENTS.find((e) => e.kind === "plan_decision")!.t;
 const DEMO_END = DEMO_EVENTS[DEMO_EVENTS.length - 1].t;
 
 /** Replays a real recorded run. Pauses after the plan until the viewer approves, like the real app. */
-function useDemo(): Omit<Store, "project" | "mode"> {
+function useDemo(): Omit<Store, "project" | "mode" | "canEdit" | "isOwner"> {
   const [clock, setClock] = useState(0);
   const [speed, setSpeed] = useState(4);
   const [decision, setDecision] = useState<null | { approved: boolean; note: string }>(null);
@@ -149,6 +151,7 @@ type LiveData = {
 /** Live: the project's events from Convex, which pushes new ones as the engine writes them. */
 function LiveProvider({ id, children }: { id: string; children: React.ReactNode }) {
   const { key } = useOwner();
+  const access = useAccess();
   const data = useQuery(api.projects.get, key ? { key, id } : "skip") as LiveData | undefined;
   const decide = useMutation(api.projects.decide);
   const askChange = useMutation(api.projects.requestChange);
@@ -162,10 +165,10 @@ function LiveProvider({ id, children }: { id: string; children: React.ReactNode 
   const missingCodes = Boolean(data) && !(isSetupCode(codes?.preview) && isSetupCode(codes?.production));
   const ensured = useRef<string | null>(null);
   useEffect(() => {
-    if (!missingCodes || !key || ensured.current === id) return;
+    if (!missingCodes || !key || !access.isOwner || ensured.current === id) return; // codes are the owner's
     ensured.current = id;
     ensureSetupCodes({ key, id }).catch(() => { ensured.current = null; }); // try again on the next change
-  }, [missingCodes, key, id, ensureSetupCodes]);
+  }, [missingCodes, key, id, ensureSetupCodes, access.isOwner]);
   const t0 = data?.events[0]?.ts;
   const state = useMemo(() => {
     if (!data) return initialState();
@@ -198,7 +201,8 @@ function LiveProvider({ id, children }: { id: string; children: React.ReactNode 
     changeHistory: data?.project.changes ?? [],
     budgetUsd: data?.project.budgetUsd,
     spentUsd: data?.project.costUsd,
-    setBudget: async (usd: number) => {
+    // the spending limit is the owner's (docs/accounts.md): without setBudget the Budget card only shows it
+    setBudget: !access.isOwner ? undefined : async (usd: number) => {
       try {
         await saveBudget({ key: key!, id, budgetUsd: usd });
       } catch (e) {
@@ -226,6 +230,8 @@ function LiveProvider({ id, children }: { id: string; children: React.ReactNode 
       }
     },
     canBuildSaved: Boolean(data?.project.canBuildSaved),
+    canEdit: access.canEdit,
+    isOwner: access.isOwner,
     setupCodes: codes ?? {},
     buildSaved: async () => {
       try {
@@ -240,7 +246,7 @@ function LiveProvider({ id, children }: { id: string; children: React.ReactNode 
 
 function DemoProvider({ children }: { children: React.ReactNode }) {
   const demoStore = useDemo();
-  return <Ctx.Provider value={{ ...demoStore, mode: "demo", project: demo.project as Project }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ ...demoStore, mode: "demo", project: demo.project as Project, canEdit: true, isOwner: true }}>{children}</Ctx.Provider>;
 }
 
 export function ProjectProvider({ id, children }: { id: string; children: React.ReactNode }) {

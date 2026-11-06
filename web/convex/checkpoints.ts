@@ -1,6 +1,6 @@
 import { anyApi, mutationGeneric } from "convex/server";
 import { ConvexError, v } from "convex/values";
-import { checkOwner } from "./owner";
+import { requireRole } from "./owner";
 
 /*
  * Checkpoints and rollback (docs/checkpoints.md). Every finished build or change is a save point (a
@@ -86,7 +86,7 @@ export function commitUrl(repo: string | null | undefined, sha: string): string 
 export const rollbackTo = mutationGeneric({
   args: { key: v.string(), id: v.id("projects"), n: v.number() },
   handler: async (ctx, { key, id, n }) => {
-    checkOwner(key);
+    await requireRole(ctx, key, "editor");
     const p = await ctx.db.get(id);
     if (!p) throw new ConvexError("This project doesn't exist any more.");
     if (!canRollback(p.status, false)) {

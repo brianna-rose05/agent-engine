@@ -1,5 +1,6 @@
 "use client";
 
+import { EditGate, ViewOnlyNote } from "./Access";
 import { useState } from "react";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { KeyRound } from "lucide-react";
@@ -22,7 +23,14 @@ function errorText(e: unknown, fallback: string): string {
  */
 export function ApiKeyCard() {
   const { mode } = useProject();
-  return mode === "live" ? <LiveApiKey /> : null;
+  if (mode !== "live") return null;
+  // which key runs is for everyone to see; setting or removing it is the owner's (docs/accounts.md)
+  return (
+    <EditGate owner>
+      <LiveApiKey />
+      <ViewOnlyNote owner className="mt-1.5" />
+    </EditGate>
+  );
 }
 
 function LiveApiKey() {

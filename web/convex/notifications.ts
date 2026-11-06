@@ -2,7 +2,7 @@ import { internalActionGeneric, mutationGeneric, queryGeneric, anyApi } from "co
 import type { GenericDataModel, GenericMutationCtx } from "convex/server";
 import type { GenericId } from "convex/values";
 import { v } from "convex/values";
-import { checkOwner } from "./owner";
+import { requireRole } from "./owner";
 
 /*
  * Notifications for the owner: written by engine:record when something needs them or finished (see
@@ -107,7 +107,7 @@ const owner = { key: v.string() };
 export const recent = queryGeneric({
   args: { ...owner, limit: v.optional(v.number()) },
   handler: async (ctx, { key, limit }) => {
-    checkOwner(key);
+    await requireRole(ctx, key, "viewer");
     const rows = await ctx.db.query("notifications").withIndex("by_ts").order("desc").take(Math.min(limit ?? 20, 50));
     const unread = (await ctx.db.query("notifications").withIndex("by_read", (q) => q.eq("read", false)).take(100)).length;
     return {
@@ -121,7 +121,7 @@ export const recent = queryGeneric({
 export const markRead = mutationGeneric({
   args: { ...owner, id: v.id("notifications") },
   handler: async (ctx, { key, id }) => {
-    checkOwner(key);
+    await requireRole(ctx, key, "viewer");
     const n = await ctx.db.get(id);
     if (n && !n.read) await ctx.db.patch(id, { read: true });
   },
@@ -130,7 +130,7 @@ export const markRead = mutationGeneric({
 export const markAllRead = mutationGeneric({
   args: owner,
   handler: async (ctx, { key }) => {
-    checkOwner(key);
+    await requireRole(ctx, key, "viewer");
     const rows = await ctx.db.query("notifications").withIndex("by_read", (q) => q.eq("read", false)).take(200);
     for (const n of rows) await ctx.db.patch(n._id, { read: true });
   },
@@ -144,10 +144,11 @@ export function emailBody(title: string, body: string, path: string, appUrl: str
 
 /** Sends one notification email through Resend's REST API. Skips silently when email isn't set up. */
 export const sendEmail = internalActionGeneric({
-  args: { title: v.string(), body: v.string(), path: v.string() },
-  handler: async (_ctx, { title, body, path }) => {
+  // `to` is for invites (convex/accounts.ts); notifications go to NOTIFY_EMAIL
+  args: { title: v.string(), body: v.string(), path: v.string(), to: v.optional(v.string()) },
+  handler: async (_ctx, { title, body, path, to: invitee }) => {
     const apiKey = process.env.RESEND_API_KEY;
-    const to = process.env.NOTIFY_EMAIL;
+    const to = invitee ?? process.env.NOTIFY_EMAIL;
     if (!apiKey || !to) return;
     const { subject, text } = emailBody(title, body, path, process.env.APP_URL);
     const r = await fetch("https://api.resend.com/emails", {
