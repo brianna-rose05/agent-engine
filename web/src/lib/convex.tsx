@@ -13,8 +13,13 @@ export const api = anyApi;
 const client = url ? new ConvexReactClient(url) : null;
 
 const STORAGE_KEY = "studio.owner";
-type Owner = { key: string | null; setKey: (k: string | null) => void };
-const OwnerCtx = createContext<Owner>({ key: null, setKey: () => {} });
+/**
+ * `ready`: the stored key has been read (it can only be read after the first render). `restored`: the key that was
+ * read from storage, so the sign-in gate can wait for its check instead of flashing the sign-in form on every page
+ * load. Regression (Nov 6): every page load showed "Sign in" for a moment, which looked like being signed out.
+ */
+type Owner = { key: string | null; setKey: (k: string | null) => void; ready: boolean; restored: string | null };
+const OwnerCtx = createContext<Owner>({ key: null, setKey: () => {}, ready: true, restored: null });
 
 /**
  * `key` is what every Convex call carries: the owner passphrase or a session token from signing in
@@ -26,12 +31,17 @@ export function useOwner() {
 
 function OwnerProvider({ children }: { children: React.ReactNode }) {
   const [key, setKeyState] = useState<string | null>(null);
+  const [ready, setReady] = useState(false);
+  const [restored, setRestored] = useState<string | null>(null);
   useEffect(() => {
     try {
-      setKeyState(localStorage.getItem(STORAGE_KEY));
+      const k = localStorage.getItem(STORAGE_KEY);
+      setKeyState(k);
+      setRestored(k);
     } catch {
       /* storage unavailable: ask each visit */
     }
+    setReady(true);
   }, []);
   const setKey = useCallback((k: string | null) => {
     setKeyState(k);
@@ -42,7 +52,7 @@ function OwnerProvider({ children }: { children: React.ReactNode }) {
       /* ignore */
     }
   }, []);
-  return <OwnerCtx.Provider value={{ key, setKey }}>{children}</OwnerCtx.Provider>;
+  return <OwnerCtx.Provider value={{ key, setKey, ready, restored }}>{children}</OwnerCtx.Provider>;
 }
 
 export function Providers({ children }: { children: React.ReactNode }) {

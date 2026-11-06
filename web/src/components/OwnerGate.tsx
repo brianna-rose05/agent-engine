@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useAction } from "convex/react";
 import { KeyRound, LogIn } from "lucide-react";
 import { api, liveEnabled, useOwner, useOwnerCheck } from "@/lib/convex";
+import { gateView } from "@/lib/gate";
 
 /** Live features need a signed-in person or the owner passphrase (docs/accounts.md). Demo mode doesn't. */
 export function OwnerGate({ children }: { children: React.ReactNode }) {
@@ -21,10 +22,12 @@ const field = "rounded-xl border border-line bg-surface px-3 py-2.5 text-[15px] 
 const primary = "rounded-xl bg-ink px-4 py-2.5 text-sm font-medium text-white disabled:opacity-40";
 
 function Gate({ children }: { children: React.ReactNode }) {
-  const { key, setKey } = useOwner();
+  const { key, setKey, ready, restored } = useOwner();
   const { state, message } = useOwnerCheck();
   const [mode, setMode] = useState<"account" | "passphrase">("account");
-  if (state === "ok") return <>{children}</>;
+  const view = gateView({ ready, state, key, restored });
+  if (view === "app") return <>{children}</>;
+  if (view === "wait") return <div role="status" aria-label="Loading" className="min-h-[60vh]" />;
   // a stored key that stopped working: a session that ended ("Please sign in again.") or a wrong passphrase
   const session = Boolean(key?.startsWith("sst_"));
   const stale = state === "wrong" && session ? message : null;
