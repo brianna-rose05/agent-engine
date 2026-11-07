@@ -108,13 +108,21 @@ def test_unguarded_mutations_are_found_and_guarded_ones_are_not(tmp_path):
         "book/actions.ts": '"use server";\nexport async function book() {}',
         "admin/actions.ts": '"use server";\nimport { requireOwner } from "@/lib/owner";\nexport async function wipe() {}',
         "page.tsx": "export default function P() { return null; }",
+        # through the project's own helper (Pawfect v2's ship, Nov 7): relative and @/app imports, two levels
+        "_lib/guard.ts": 'import { getActor } from "@/lib/session";\nexport async function requireSession() { return getActor(); }',
+        "_lib/owner-only.ts": 'import { requireSession } from "./guard";\nexport async function ownerOnly() { return requireSession(); }',
+        "_lib/format.ts": "export const money = (n: number) => `$${n}`;",
+        "owner/hours/actions.ts": '"use server";\nimport { requireSession } from "../../_lib/guard";\nexport async function save() {}',
+        "owner/services/actions.ts": '"use server";\nimport { ownerOnly } from "@/app/_lib/owner-only";\nexport async function save() {}',
+        "dogs/actions.ts": '"use server";\nimport { money } from "../_lib/format";\nexport async function add() {}',
     }
     for rel, body in files.items():
         (app / rel).parent.mkdir(parents=True, exist_ok=True)
         (app / rel).write_text(body)
     out = json.loads(node(f'import {{ unguardedMutations }} from "{mod("check-security.mjs")}";'
                           "console.log(JSON.stringify(unguardedMutations()));", tmp_path))
-    assert [x.split(":")[0] for x in sorted(out)] == ["src/app/api/open/route.ts", "src/app/book/actions.ts"]
+    assert [x.split(":")[0] for x in sorted(out)] == ["src/app/api/open/route.ts", "src/app/book/actions.ts",
+                                                       "src/app/dogs/actions.ts"]
 
 
 @needs_node

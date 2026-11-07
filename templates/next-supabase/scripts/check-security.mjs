@@ -12,7 +12,7 @@
 // Exit 0: passed. Exit 10: passed with warnings. Exit 1: failed.
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { WARN_EXIT } from "./app-server.mjs";
 
@@ -156,6 +156,36 @@ export function readAudit(stdout, accepted = ACCEPTED) {
   return { blocking, warnings, known, lows };
 }
 
+const GUARD_IMPORT = /@\/lib\/(session|owner)["']/;
+const GUARD_CALL = /\b(getActor|requireActor|getAuth|requireOwner|isOwner)\s*\(/;
+const LOCAL_IMPORT = /(?:from\s+|import\s+)["']((?:\.{1,2}\/|@\/(?:app|lib)\/)[^"']+)["']/g;
+
+/** The project file an import names ("./x", "../_lib/guard", "@/app/_lib/guard"), or null. */
+function resolveLocal(fromFile, spec) {
+  const base = spec.startsWith("@/") ? join("src", spec.slice(2)) : join(dirname(fromFile), spec);
+  for (const f of [base, ...[".ts", ".tsx", ".js", ".jsx"].map((e) => base + e), ...["index.ts", "index.tsx"].map((i) => join(base, i))]) {
+    if (existsSync(f) && statSync(f).isFile()) return f;
+  }
+  return null;
+}
+
+/**
+ * Whether a file reaches the template's sign-in or owner checks: itself, or through the project's own helpers it
+ * imports (two levels: a shared requireSession() in src/app/_lib that calls getActor). Regression (Pawfect v2's
+ * ship, Nov 7): 8 action files that all called such a helper were flagged as unguarded.
+ */
+export function reachesGuard(file, text = readFileSync(file, "utf8"), depth = 2, seen = new Set()) {
+  if (GUARD_IMPORT.test(text) || GUARD_CALL.test(text)) return true;
+  if (depth === 0) return false;
+  seen.add(file);
+  for (const m of text.matchAll(LOCAL_IMPORT)) {
+    const f = resolveLocal(file, m[1]);
+    if (!f || seen.has(f) || f.startsWith(join("src", "lib", "session")) || f.startsWith(join("src", "lib", "owner"))) continue;
+    if (reachesGuard(f, readFileSync(f, "utf8"), depth - 1, seen)) return true;
+  }
+  return false;
+}
+
 /** Route handlers and server action files that change data without reaching a sign-in or owner check. */
 export function unguardedMutations(root = "src/app") {
   const out = [];
@@ -173,8 +203,7 @@ export function unguardedMutations(root = "src/app") {
         /export\s+(?:async\s+)?(?:function\s+|const\s+)(POST|PUT|PATCH|DELETE)\b/.test(text);
       const action = /^\s*["']use server["']/m.test(text);
       if (!route && !action) continue;
-      const guarded = /@\/lib\/(session|owner)["']/.test(text) ||
-        /\b(getActor|requireActor|getAuth|requireOwner|isOwner)\s*\(/.test(text);
+      const guarded = reachesGuard(p, text);
       if (!guarded) out.push(`${relative(".", p)}: ${route ? "a route handler that changes" : "server actions that change"} data without checking who is signed in`);
     }
   };
