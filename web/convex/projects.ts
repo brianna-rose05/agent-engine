@@ -289,6 +289,36 @@ export const markStarting = internalMutationGeneric({
   handler: async (ctx, { projectId, error }) => {
     const p = await ctx.db.get(projectId);
     if (!p || p.status !== "queued") return;
-    await ctx.db.patch(projectId, error ? { status: "failed", error } : { status: "starting" });
+    if (error) {
+      await ctx.db.patch(projectId, { status: "failed", error });
+      return;
+    }
+    const since = Date.now();
+    await ctx.db.patch(projectId, { status: "starting", startingSince: since });
+    await ctx.scheduler.runAfter(WORKER_START_LIMIT_MS, anyApi.projects.checkStarted, { projectId, since });
+  },
+});
+
+/**
+ * GitHub can accept a run and then never start it (Actions minutes or billing ran out: "The job was not started
+ * because recent account payments have failed"). The worker moves a project off "starting" as soon as it runs, so
+ * one still "starting" from the same dispatch after WORKER_START_LIMIT_MS never ran: fail it with the reason, so
+ * the owner can try again. Regression (Pawfect's change 2, Nov 6): it waited in "starting" for good, which hid the
+ * change forms.
+ */
+export const WORKER_START_LIMIT_MS = 20 * 60_000;
+export const WORKER_NEVER_STARTED =
+  "GitHub accepted the run but never started it. Check the Actions tab of the engine's GitHub repo (out of minutes " +
+  "or a billing problem stops every run), then try again.";
+export function neverStarted(p: { status: string; startingSince?: number } | null, since: number): boolean {
+  return Boolean(p) && p!.status === "starting" && p!.startingSince === since;
+}
+
+export const checkStarted = internalMutationGeneric({
+  args: { projectId: v.id("projects"), since: v.number() },
+  handler: async (ctx, { projectId, since }) => {
+    const p = await ctx.db.get(projectId);
+    if (!neverStarted(p as { status: string; startingSince?: number } | null, since)) return;
+    await ctx.db.patch(projectId, { status: "failed", error: WORKER_NEVER_STARTED });
   },
 });

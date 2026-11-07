@@ -23,6 +23,7 @@ export default defineSchema({
     mode: v.optional(v.string()), // the next/current worker run: "change" (docs/change-requests.md), else a build or retry
     changes: v.optional(v.array(v.any())), // change requests, oldest first: {n, text, at} (convex/changes.ts)
     pendingChange: v.optional(v.any()), // the latest planned change (changes/{n}.json) from change_plan_ready
+    startingSince: v.optional(v.number()), // when GitHub accepted the worker run (convex/projects.ts checkStarted)
     changeFrom: v.optional(v.string()), // status before the running change, restored if the change is sent back
     budgetUsd: v.optional(v.number()), // spending limit in $, enforced by the engine (convex/budget.ts, engine/budget.py)
     checkpoints: v.optional(v.array(v.any())), // save points, oldest first: {n, tag, sha, label, at, merged} (convex/checkpoints.ts)
